@@ -1,8 +1,9 @@
-# ISA Spec — `msfcore` (Protocol Emulator Core) (private draft)
+# ISA Spec — `msfcore` (Protocol Emulator Core) (private, v1.0)
 
-> Draft ISA for the PRU-style RISC core, **F1 footprint baseline** (8 regs, 16-bit instr,
-> 256-word SRAM, ~12 MHz). Locked only once the architecture decision is confirmed.
-> All numbers in cycles refer to one `clk` edge.
+> ISA for the **hybrid core**: RISC brain + 16-bit serial shift datapath + event-driven
+> stalls + open-drain I/O + ROM-resident UART-RX bootloader (F1.5 footprint: 8 regs,
+> 16-bit instr, 512-word IMEM, ~12 MHz). All decisions from `design-questions.md`
+> (24 Sep 2026) are folded in. All numbers in cycles refer to one `clk` edge.
 
 ## 1. Machine model
 
@@ -10,13 +11,25 @@
 - **Registers:** R0–R7 (16-bit). R0 is not special (unlike ARM) — keep firmware simple.
 - **Flags:** `Z` (result == 0), `N` (MSB of result). Affected **only** by
   `ADDS`, `SUBS`, `INCR`, `DECR`. All other instructions leave flags untouched.
-- **PC:** 8-bit word pointer (0–255), wraps.
+- **PC:** 9-bit word pointer (0–511), wraps.
 - **Cycle counter:** 16-bit free-running, resets with `rst_n`, increments every cycle.
   Read-only via `CNT_R`. This is the timing primitive for all protocol firmware.
-- **Reset:** PC ← 0, R0–R7 ← 0, flags undefined, cycle counter ← 0,
+- **Shift datapath:** 16-bit serial in/out register (OSR), MSB-first (Q69/Q76).
+  `SHIFT_OUT rs`: OSR MSB → serial pin, OSR ← {OSR[14:0], r[rs][0]}. `SHIFT_IN`:
+  OSR ← {OSR[14:0], serial pin}. Serial pin = bit 7 (stretch pin, §8 item 3).
+- **Event stalls (Q68):** `WAIT_EDGE #imm8` (stall until a transition on pin
+  `imm8[2:0]`) and `WAIT_CMP rs` (stall until cycle counter == r[rs], full 16-bit
+  range — no immediate needed). Each has a 16-bit hardware timeout: on timeout the
+  core resumes and sets Z, so a hang can't be a dead chip.
+- **Reset:** PC ← 0 (bootloader ROM), R0–R7 ← 0, flags undefined, cycle counter ← 0,
   `uio_out` ← 0, `uio_oe` ← 0 (all pins input mode after reset).
-- **Instruction memory:** 256 × 16-bit SRAM, written via master load port (loading is
-  done by the testbench/assembler before run; the core only reads).
+- **Instruction memory:** 512 × 16-bit, Tiny Tapeout SRAM macro (Q48). Synchronous
+  **registered** read — fetch at edge N, valid at N+1 (see §7).
+- **Bootloader (Q71/Q77):** words 0–127 of IMEM hold a ROM-resident UART-RX
+  bootloader (128 words). On power-up the core runs it; it loads a firmware image
+  into IMEM words 128–511 over the UART RX pin (bit 1) with **CRC-8 + fail-safe
+  halt/blink on corruption** (competitor-research rec #3), then jumps to 128.
+  This is the "reprogrammable after fabrication" path.
 
 ## 2. Pin interface model (Tiny Tapeout)
 
@@ -26,6 +39,7 @@
 | `uio_in` | 8 | `uio` pins read (when `uio_oe[a]=0`) |
 | `uio_out` | 8 | driven value when `uio_oe[a]=1` |
 | `uio_oe` | 8 | 0 = input (wire undriven), 1 = output |
+| `uo_out` | 8 | done/status flag (Q21): firmware writes a status byte (e.g. bit0 = idle/done, bit1 = framing error) |
 | `clk`, `rst_n`, `ena` | 1 | clock / async reset (active low) / always-1 power enable |
 
 **Emulator GPIO abstraction:** pin `a[2:0]` (0–7) on the `uio` bank is one "emulator GPIO".
@@ -42,9 +56,9 @@ timing is deterministic to ±1 cycle and schedulable via the cycle counter. Inpu
 ## 3. Instruction encoding (16-bit)
 
 Bit positions: `b15..b11` = opcode (5b), then per format:
-- **R format:** `b10..b8` = rd, `b9..b7`? — no: `b10..b8` = rs, `b7..b5` = rt, `b4..b0` reserved (0).
+- **R format:** `b10..b8` = rd, `b7..b5` = rs, `b4..b2` = rt, `b1..b0` reserved (0).
   (Order: rd, rs, rt in operand order, left to right.)
-- **I format:** `b10..b8` = rd, `b7..b2` = imm6, `b1..b0` reserved (0).
+- **I format:** `b10..b8` = rd, `b7..b0` = imm8 (zero-extended to 16 bits).
 - **B format:** `b10..b2` = rel9 (signed, two's complement; offset from PC+1), `b1..b0` reserved (0).
 - **A format:** `b10..b0` = imm11 (absolute).
 
@@ -54,7 +68,7 @@ All reserved bits must be 0.
 
 | op | mnemonic | format | semantics (exec in 1 cycle) |
 |---|---|---|---|
-| 00000 | `LDR rd, #imm6` | I | rd ← imm6 (zero-ext). |
+| 00000 | `LDR rd, #imm8` | I | rd ← imm8 (zero-extended; 0–255). |
 | 00001 | `ADDS rd, rs, rt` | R | rd ← rs + rt (16b); sets Z, N. |
 | 00010 | `SUBS rd, rs, rt` | R | rd ← rs − rt; sets Z, N. |
 | 00011 | `AND rd, rs, rt` | R | rd ← rs & rt. |
@@ -63,7 +77,7 @@ All reserved bits must be 0.
 | 00110 | `SHL rd, rs, #imm3` | R* | rd ← rs << imm3 (b4..b2 = imm3). |
 | 00111 | `SHR rd, rs, #imm3` | R* | rd ← rs >> imm3 (logical). |
 | 01000 | `MOV rd, rs` | R | rd ← rs. |
-| 01001 | `JMP #imm11` | A | PC ← imm11 (0–2047; SRAM alias: low 8 bits). |
+| 01001 | `JMP #imm11` | A | PC ← imm11 (0–2047; IMEM alias: low 9 bits). |
 | 01010 | `JZ rel9` | B | if Z: PC ← PC+1+rel9. |
 | 01011 | `JNZ rel9` | B | if !Z. |
 | 01100 | `JP rel9` | B | if !N (result non-negative). |
@@ -78,12 +92,16 @@ All reserved bits must be 0.
 | 10101 | `INCR rd` | I | rd ← rd + 1; sets Z, N. |
 | 10110 | `DECR rd` | I | rd ← rd − 1; sets Z, N. (countdown loops) |
 | 10111 | `IN_RD rd` | I | rd ← `{8'h00, ui_in}` (dedicated input bus). |
-| 11000 | `CALL` | — | r7 ← PC+1 (reserved), PC ← PC+1+??? — see §8 item 3 (reserve only). |
-| 11xxx | reserved | — | unimplemented ops decode as NOP (single-cycle, no state change). |
+| 11000 | `CALL` | — | r7 ← PC+1; PC ← PC+1 (1-level call, R7 = return reg). |
+| 11001 | `RET` | — | PC ← r7. |
+| 11010 | `WAIT_EDGE #imm8` | I | stall until a transition on pin `imm8[2:0]`; 16-bit timeout → resume + set Z. |
+| 11011 | `WAIT_CMP rs` | I | stall until cycle counter == r[rs]; 16-bit timeout → resume + set Z. |
+| 11100 | `SHIFT_OUT rs` | I | OSR MSB → serial pin; OSR ← {OSR[14:0], r[rs][0]}. |
+| 11101 | `SHIFT_IN` | — | OSR ← {OSR[14:0], serial pin}. |
+| 1111x | reserved | — | unimplemented ops decode as NOP (single-cycle, no state change). |
 
 \* `SHL`/`SHR` shift amount is `b4..b2` (3 bits; shift ≥ 8 yields 0 — acceptable).
-All I-format opcodes use `b10..b8` = register, `b7..b2` = imm (wider where noted),
-`b1..b0` = 0.
+All I-format opcodes use `b10..b8` = register, `b7..b0` = imm8 (zero-extended).
 
 ## 4. GPIO bit map (draft, 8 pins on `uio`)
 
@@ -99,7 +117,7 @@ maps protocol signals to **bit positions** and uses `OE_*` for direction. Draft 
 | 4 | MISO | SPI (read) |
 | 5 | SDA | I2C |
 | 6 | SCL | I2C |
-| 7 | reserved | stretch (e.g. USB or RNG) |
+| 7 | stretch | JTAG/SWD/PS2/USB-LS + serial shift pin |
 
 Open-drain (I2C): firmware sets SDA/SCL via `PIN_W` then **releases** them with
 `OE_CLR` so pull-ups win; drives Low by `OE_SET` + 0. Two-wire half-duplex fits
@@ -107,18 +125,17 @@ naturally with one 8-bit datapath. (Final map confirmed in M1.3.)
 
 ## 5. Worked example — blink bit 0, half-period 50 µs @ 12 MHz (600 cycles)
 
-> 50 µs = 600 cycles; imm6 caps `LDR` at 63, so the delay is a `DECR`/`JNZ` loop:
-> 600 = 63 × 9 + 33 → 9 full iterations of 63 + one of 33, or simply 2×63+474 with a
-> nested loop. Firmware convention (M1.3): a `delay(count)` macro expands to the optimal
-> nested loop. Sketch (single-level, count ≤ 63):
+> 50 µs = 600 cycles. imm8 caps a single `LDR` loop at 255, so 600 = 2×255 + 90
+> (two 255-loops + one 90-loop). Firmware convention (M1.3): a `delay(count)` macro
+> expands to the optimal `DECR`/`JNZ` loop chain. Sketch (single-level, count ≤ 255):
 
 ```asm
-        LDR   R1, #63       ; loop count
+        LDR   R1, #255      ; loop count (imm8)
         LDR   R2, #1        ; toggle mask
 start:
 loop:   XOR   R3, R3, R2    ; toggle state (R3 = 0 after reset)
         PIN_W R3            ; out_stage ← R3 (visible on pad next cycle)
-        LDR   R4, #63
+        LDR   R4, #255
 dly:    DECR  R4
         JNZ   dly           ; counts down to 0 (Z set on 0 → JNZ exits)
         JZ    start          ; (or JNZ start) back to loop
@@ -128,24 +145,33 @@ dly:    DECR  R4
 
 | Protocol | Bit time | Cycles/bit | Method |
 |---|---|---|---|
-| UART 115200 | 8.68 µs | 104 | `LDR`#63 × loop `DECR`/`JNZ` + residue; drift 0.17 %/bit |
-| SPI 1.0 Mbit | 1.0 µs | 12 | tight loop, SCK on pad-pair |
-| I2C 100 kHz | 10 µs | 120 | SCL/SDA open-drain via `OE_CLR` release |
+| UART 115200 | 8.68 µs | 104 | `LDR #104` + `DECR`/`JNZ` loop; drift 0.17 %/bit (accepted, Q26) |
+| UART 9600 | 104.2 µs | 1250 | nested loops (imm8 cap); baud 9600–115200 selectable (Q35) |
+| SPI 1.0 Mbit | 1.0 µs | 12 | `SHIFT_OUT`/`SHIFT_IN` + SCK loop; CPOL/CPHA in firmware (Q29) |
+| I2C 100 kHz | 10 µs | 120 | `LDR #120` loop; SCL/SDA open-drain via `OE_CLR` release |
+| I2C 400 kHz | 2.5 µs | 30 | `LDR #30` loop (firmware option, Q28) |
+| JTAG @1 MHz (demo) | 1 µs | 12 | firmware TAP state machine on pins 0–3 (Q74) |
 | USB 1.0 low (stretch) | 1.5 Mbit: 667 ns | 8 | 8-cycle bit — DOABLE at 12 MHz, 1 cycle/bit-edge → USB **stretch is viable** |
+| PS/2 @10 kbit (stretch) | 100 µs | 1200 | nested `DECR` loops |
 
 (USB 1.0: 1.5 Mbit/s → 1 bit = 667 ns = 8 cycles exactly. Strong signal that 12 MHz
-was the right call.)
+was the right call. **10 Mbit Ethernet: dropped** — 1.2 cycles/bit, infeasible (Q73).
+8 MHz fallback if 12 MHz fails timing (Q25).)
 
 ## 7. Rules & synthesis constraints
-- Single-cycle execute for every op (no multi-cycle ops in F1 → simplest control).
+- Single-cycle execute for every op (no multi-cycle ops → simplest control; no multiply, Q11).
 - No latches: every `case`/`if` fully specified.
-- SRAM is a synchronous 1-cycle read (fetch pipeline: fetch at edge N, use at N).
-  → 1-cycle penalty vs combinational mem; accounted in budgets above.
+- IMEM is the Tiny Tapeout SRAM macro (Q48): synchronous **registered** read
+  (fetch at edge N, valid at N+1). Budget the extra cycle — competitor pitfall #2:
+  the IHP 256×8 macro forced a multi-cycle fetch on the IEEE Simple CPU (TTIHP26b #234).
+- 12 MHz target, 5% timing margin (Q51); 8 MHz fallback (Q25).
 
 ## 8. Open items (feed into M1.3 / decision)
-1. imm6 (LDR) vs imm9 (LDR) — currently imm6, loops for long delays.
-2. Pin-pair convention (§4) needs the final GPIO mapping.
-3. Should `CALL`/`RET` land in reserved opcodes now (cost: 1 free reg as stack)?
-   Cheap to add: `CALL` pushes PC into **R7 as dedicated call stack (1 level)** →
-   suggest reserving op `11000`/`11001` for `CALL`/`RET` immediately (no RTL cost
-   until M2).
+1. ~~imm6 vs imm9~~ → **Decided: imm8** (I-format `b7..b0`); `WAIT_CMP` register-based (Q8).
+2. ~~`CALL`/`RET`~~ → **Decided: adopted** — opcodes `11000`/`11001`, R7 = return reg (Q9).
+3. Serial shift pin: fixed at bit 7 (stretch pin) or 3-bit pin select in the opcode?
+   Default: **fixed bit 7** (keeps the encoding simple); revisit if JTAG/SWD need a second serial pair.
+4. Bootloader CRC: **CRC-8 + halt/blink on corruption** (competitor-research rec #3) — confirm checksum width.
+5. Optional (nanoPIO idea): per-instruction `delay` field (0–7 stall cycles) would fold
+   bit-times into the instruction. **Out of scope for v1.0** — revisit only if firmware
+   IMEM pressure shows up.

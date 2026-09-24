@@ -144,11 +144,13 @@
 - **Clock target: ~12 MHz** (chosen 2026-09-23). Keeps the USB 1.0 low-speed (1.5 Mbit/s) stretch goal alive; very achievable at 130nm. UART/SPI/I2C are comfortably within budget at this clock.
 - **HDL: SystemVerilog** (Muath, 2026-09-24). Develop the design in SV *first* for speed. **Hardcaml (OCaml) is a later, optional conversion** — only if comfortable; not a blocker. (Hardcaml is Jane Street's own HCL, so a conversion is a submission plus, but don't gate on it.)
 - **ISA must be locked before control logic** (Muath, 2026-09-24). The instruction set for the control logic is the gating item — do M1.1 (`docs/sam/isa.md`) to a full stop before any M2 RTL.
-- **Architecture model: PENDING → research recommends HYBRID** (RISC brain + hardware shift
-  datapath + event-driven stalls + open-drain I/O + ROM bootloader). See
+- **Architecture model: DECIDED — HYBRID** (RISC brain + 16-bit serial shift datapath +
+  event-driven stalls `WAIT_EDGE`/`WAIT_CMP rs` + open-drain I/O + ROM UART-RX bootloader).
+  (Sam, 24 Sep 2026; all `design-questions.md` §J answered.) See
   `docs/sam/architecture-research.md` (private) for the full report + ~8 K cell budget.
-- **Core footprint: PENDING → research recommends F1.5** (8 regs, 16-bit instr, **512-word**
-  IMEM, 16-bit shift register, 16-bit free-running counter). See `docs/sam/architecture-research.md`.
+- **Core footprint: DECIDED — F1.5** (8 regs, 16-bit instr, **512-word** IMEM on the
+  **Tiny Tapeout SRAM macro** (⚠️ registered read), 16-bit shift register, 16-bit
+  free-running counter, 9-bit PC). (Sam, 24 Sep 2026.)
 - **Reprogrammability claim (the competition's explicit goal):** chip is reprogrammable for any
   bit-bangable single/dual-wire protocol within 12 MHz / 8 pins, via firmware + a serial bootloader.
   Prove it by adding JTAG or SWD as firmware-only (no RTL change).
@@ -168,9 +170,14 @@
 
 ## Open questions
 - Friend has FPGA access — plan an FPGA test flow for RTL before ASIC (blog recommends it).
+  → **Decided: FPGA pre-check on the AUP_ZU3 (Zynq UltraScale+ ZU3)** (design-questions Q45).
 - Team split with collaborator: TBD (keep AI/planning artifacts private — see .gitignore).
+  → **Decided: paired programming, work together** (design-questions Q55).
 
 ## Current gate
-- **Blocking M2: finalize `docs/sam/isa.md`** (instruction set for the control logic — Muath 2026-09-24).
-  The draft exists; needs the PENDING decisions (model + footprint) resolved, then a review pass
-  with the collaborator. Everything in M2 hangs off this.
+- ~~Blocking M2: finalize `docs/sam/isa.md`~~ → **DONE (24 Sep 2026).** All
+  `design-questions.md` items answered; decisions folded into `docs/sam/isa.md` v1.0
+  (imm8, reg-based `WAIT_CMP rs`, 512-word IMEM + SRAM macro, shift datapath,
+  `WAIT_EDGE`/`WAIT_CMP` stalls, 128-word ROM bootloader, JTAG firmware demo).
+  Remaining `isa.md` §8 items are minor (serial-pin select, CRC width, optional delay field).
+- **M2 (core RTL in SystemVerilog) is now unblocked.**
