@@ -83,7 +83,7 @@ All reserved bits must be 0.
 | 01100 | `JP rel9` | B | if !N (result non-negative). |
 | 01101 | `JN rel9` | B | if N (result negative). |
 | 01110 | `NOP` | — | nothing. Timing adjustment. |
-| 01111 | reserved | — | — |
+| 01111 | `MEM_W rs` | I | SRAM[waddr] ← r[rs]; waddr ← waddr+1 (auto-increment, wraps 128→511). Used by the bootloader to stream firmware into IMEM words 128–511. |
 | 10000 | `PIN_W rs` | I | out_stage ← r[rs]; `uio_out` commits out_stage on next posedge (see §2). Whole 8-bit word. |
 | 10001 | `PIN_R rd` | I | rd ← `{8'h00, uio_in}` (8-bit read, zero-extended). |
 | 10010 | `OE_SET imm8` | I | `uio_oe` ← `uio_oe | imm8` (drives listed pins to output). |
@@ -98,7 +98,8 @@ All reserved bits must be 0.
 | 11011 | `WAIT_CMP rs` | I | stall until cycle counter == r[rs]; 16-bit timeout → resume + set Z. |
 | 11100 | `SHIFT_OUT rs` | I | OSR MSB → serial pin; OSR ← {OSR[14:0], r[rs][0]}. |
 | 11101 | `SHIFT_IN` | — | OSR ← {OSR[14:0], serial pin}. |
-| 1111x | reserved | — | unimplemented ops decode as NOP (single-cycle, no state change). |
+| 11110 | reserved | — | decodes as NOP (single-cycle, no state change). |
+| 11111 | reserved | — | decodes as NOP (single-cycle, no state change). |
 
 \* `SHL`/`SHR` shift amount is `b4..b2` (3 bits; shift ≥ 8 yields 0 — acceptable).
 All I-format opcodes use `b10..b8` = register, `b7..b0` = imm8 (zero-extended).
@@ -165,6 +166,60 @@ was the right call. **10 Mbit Ethernet: dropped** — 1.2 cycles/bit, infeasible
   (fetch at edge N, valid at N+1). Budget the extra cycle — competitor pitfall #2:
   the IHP 256×8 macro forced a multi-cycle fetch on the IEEE Simple CPU (TTIHP26b #234).
 - 12 MHz target, 5% timing margin (Q51); 8 MHz fallback (Q25).
+
+## 7.5 M1.2 — Block diagram + area budget
+
+```
+                 +----------------------------------------------------------+
+ ui_in(8) -------| IN_RD  |                                                |
+ uio_in(8) ------| PIN_R  |                                                |
+                 |        |                                                |
+                 | +------+-------+   +-----------+   +------------------+ |
+                 | |  FETCH      |   |  DECODE    |   |  EXECUTE (ALU)   | |
+                 | | PC(9b)      |-->| opcode map |-->| R/I/B/A fmts     | |
+                 | | +1, branch  |   |            |   | Z/N flags        | |
+                 | | SRAM read   |   +-----------+   | SHL/SHR/flags    | |
+                 | | (registered)|        |         +------------------+ |
+                 | +-------------+        |                |             |
+                 |        ^                 |                |           |
+                 |        |                 v                v           |
+                 | +------+----------------------+ +------------------+ |
+                 | |  STALL LOGIC               | | REGISTER FILE      | |
+                 | | WAIT_EDGE (pin transition)| | 8 x 16b, 2R/1W     | |
+                 | | WAIT_CMP (cnt == r[rs])   | +------------------+ |
+                 | | + 16b HW timeout (sets Z) |                      | |
+                 | +-----------------------------------------------+ |
+                 |        |                                            |
+                 | +--------+--------+   +-----------+   +-----------+ |
+                 | | PIN I/O         |   | CYCLE     |   | SHIFT     | |
+                 | | out_stage (1c) |   | COUNTER   |   | DATAPATH  | |
+                 | | OE_SET/OE_CLR  |   | 16b free- |   | OSR 16b   | |
+                 | | -> uio_out/oe  |   | running   |   | MSB-first | |
+                 | +----------------+   +-----------+   +-----------+ |
+                 +----------------------------------------------------------+
+ IMEM: 512x16 SRAM macro (words 0-127 = bootloader ROM, 128-511 = firmware)
+```
+
+Per-block cell estimate (IHP 130nm, 12 MHz, ~1.5K cells per 16b FF row of
+register file, SRAM macro ~1.5K for 512x16):
+
+| Block | Est. cells | Notes |
+|---|---|---|
+| Register file (8x16, 2R/1W) | ~350 | 128 FFs + muxes |
+| ALU + flags | ~300 | 16b adder, sub, logic ops, shift |
+| Decode/control | ~800 | 5b opcode case, format muxes, branch |
+| Fetch (PC + SRAM read) | ~250 | 9b PC + registered SRAM read |
+| Stall logic | ~500 | edge detect + compare + 16b timeout |
+| Pin I/O | ~250 | out_stage, OE set/clear |
+| Cycle counter | ~120 | 16b FF |
+| Shift datapath | ~200 | 16b OSR + mux |
+| IMEM SRAM macro (512x16) | ~1500 | IHP macro, registered read |
+| Bootloader ROM (in IMEM) | 0 | lives in SRAM words 0-127 |
+| **Total** | **~4.3K** | **< 18K gate met with large margin** |
+
+Even with 2x pessimism the design is ~8.6K — well under the 18K budget.
+The SRAM macro dominates; if the macro is unavailable in the flow, an
+FF-based 512x16 RAM would add ~8K (still under 18K).
 
 ## 8. Open items (feed into M1.3 / decision)
 1. ~~imm6 vs imm9~~ → **Decided: imm8** (I-format `b7..b0`); `WAIT_CMP` register-based (Q8).
