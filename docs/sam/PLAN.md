@@ -30,6 +30,12 @@
   *next* instruction during a stall).
 - Boot ROM regenerated: 94-word UART-RX bootloader (`bootloader.s` →
   `tt_um_msf_bootrom_data.v` via `assembler.py`).
+- **Known test gap:** all 9 tests preload firmware by writing `u_sram.mem`
+  directly (`load_sram()` in `test_core.py`), bypassing the `MEM_W` boot
+  path. No test exercises the ROM bootloader *loading* firmware into SRAM
+  → tracked as M3.0 below.
+- `MEM_W` auto-increments SRAM addr 128→511 and wraps; firmware image size
+  is implicit (author must not exceed 384 words).
 
 ---
 
@@ -101,6 +107,16 @@
 ---
 
 ## M3 — Protocol firmware + verification (the scored part)
+
+### 3.0 Boot-path verification (closes the M2 test gap)
+- End-to-end test: reset → ROM bootloader runs → drive a UART stream on
+  `uio_in` → bootloader writes image words via `MEM_W` (auto-increment
+  128→511) → core hands off to PC 128 → firmware runs and is observed on
+  `uio_out`.
+- Replaces `load_sram()` (direct `u_sram.mem` writes) for at least one
+  protocol test, proving the "reprogrammable after fab" claim in sim.
+- **Gate:** a firmware image loaded *only* through the UART-RX boot path
+  executes correctly; a corrupt checksum (if added) is rejected.
 
 ### 3.1 UART TX firmware + checker
 - Firmware: bit-bang 115200 (104 cycles/bit) using `PIN_W` + cycle counters.
