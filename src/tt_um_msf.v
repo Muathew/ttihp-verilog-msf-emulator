@@ -43,7 +43,7 @@ module tt_um_msf (
       .rd(sram_rd)
   );
 
-  wire [15:0] imem_rd = imem_raddr[7] ? sram_rd : rom_rd;
+  wire [15:0] imem_rd = (imem_raddr >= 9'd128) ? sram_rd : rom_rd;
 
   // ---- control ----
   wire [7:0]  pin_w;

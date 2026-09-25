@@ -23,15 +23,17 @@ module tt_um_msf_sram (
   reg [15:0] rd_r;
   integer i;
 
+  wire [8:0] sram_ridx = (raddr >= 9'd128) ? (raddr - 9'd128) : 9'd0;
+  wire [8:0] sram_widx = (waddr >= 9'd128) ? (waddr - 9'd128) : 9'd0;
+
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       rd_r <= 16'h0;
-      for (i = 0; i < 384; i = i + 1) mem[i] <= 16'h0;
     end else begin
       if (we) begin
-        mem[waddr[8:2]] <= wd;
+        mem[sram_widx] <= wd;
       end
-      rd_r <= mem[raddr[8:2]];
+      rd_r <= mem[sram_ridx];
     end
   end
 

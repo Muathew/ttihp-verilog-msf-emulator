@@ -1,13 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
 # msfcore micro-assembler (16-bit ISA, isa.md v1.0) + bootloader ROM emitter.
-# STATUS: `__main__` path is BROKEN -- assemble() raises on a 2-operand
-# R-format line (a,b,c unpack; unfixed); OP table was REALIGNED to the
-# final opcode map (NOP=0xE, MEM_W=0x1E), matching tt_um_msf_ctrl's cases.
-# INTEGRATION: `python assembler.py` (in test/) regenerates
-# src/tt_um_msf_bootrom_data.v (initial block, 128 words, 0-word padded).
-# KNOWN BUGS: label mapping assumes a sole-token-per-line for a label only;
-# inline label parsing rewrites lines[] DURING the indexing loop (works, fragile).
-# NEXT: fix the R-format arg unpack; round-trip test on a blink firmware.
 
 """
 Micro-assembler for the msfcore 16-bit ISA (see docs/sam/isa.md v1.0).
@@ -19,7 +11,7 @@ Encoding (16-bit words, b15..b11 = opcode):
   A: b10..b0=imm11
 
 Also provides:
-  assemble_bootloader() -> list of 16-bit words (used to generate the ROM)
+  bootloader_words()    -> list of 16-bit words for bootloader ROM
   crc8(data)            -> CRC-8 (poly 0x07, init 0x00, no reflection)
 """
 
@@ -58,9 +50,9 @@ def _imm(tok, bits=8):
 
 
 def _word(op, rd=0, rs=0, rt=0, imm=0, rel=0, abs11=0):
-    w = op << 11
+    w = (op & 0x1F) << 11
     if op in (0b00001, 0b00010, 0b00011, 0b00100, 0b00101,
-             0b00110, 0b00111, 0b01000):
+              0b00110, 0b00111, 0b01000):
         w |= (rd & 0x7) << 8 | (rs & 0x7) << 5 | (rt & 0x7) << 2
     elif op in (0b01010, 0b01011, 0b01100, 0b01101):
         w |= ((rel & 0x1FF) << 2)
@@ -71,81 +63,110 @@ def _word(op, rd=0, rs=0, rt=0, imm=0, rel=0, abs11=0):
     return w
 
 
-def assemble(text, max_words=512):
-    """Assemble a program (list of lines) into a list of 16-bit words."""
-    lines = []
-    for raw in text.splitlines():
-        line = raw.split(";", 1)[0].strip()
-        if line:
-            lines.append(line)
-
-    # Labels: "lab:" alone on a line, or "lab:" inline before an instruction.
+def assemble(text, max_words=512, base_addr=0):
+    """Assemble an msfcore assembly string into a list of 16-bit machine words."""
+    # Pass 1: strip comments, collect labels and instructions with word addresses
     labels = {}
-    for i, line in enumerate(lines):
-        parts = line.split(None, 1)
-        if parts[0].endswith(":") and len(parts[0]) > 1:
-            labels[parts[0][:-1]] = i
-            # Rejoin inline label with its instruction
-            if len(parts) > 1:
-                lines[i] = parts[1]
-            else:
-                lines[i] = ""  # label-only line -> skip
+    instructions = []  # list of (pc, mnemonic, args, line_num)
 
-    words = []
-    for i, line in enumerate(lines):
+    for line_num, raw in enumerate(text.splitlines(), start=1):
+        line = raw.split(";", 1)[0].strip()
         if not line:
             continue
-        parts = line.split(None, 1)
-        mn = parts[0].upper()
+
+        # Handle multiple labels on a line or inline labels
+        while ":" in line:
+            prefix, remainder = line.split(":", 1)
+            prefix = prefix.strip()
+            # If prefix contains whitespace, it's not a sole label token
+            if " " in prefix or "\t" in prefix:
+                break
+            labels[prefix] = base_addr + len(instructions)
+            line = remainder.strip()
+            if not line:
+                break
+
+        if line:
+            parts = line.split(None, 1)
+            mn = parts[0].upper()
+            args = parts[1].strip() if len(parts) > 1 else ""
+            instructions.append((base_addr + len(instructions), mn, args, line_num))
+
+    # Pass 2: encode instructions
+    words = []
+    for pc, mn, args, line_num in instructions:
         if mn not in OP:
-            raise ValueError(f"line {i}: unknown mnemonic {mn!r}")
-        args = parts[1].strip() if len(parts) > 1 else ""
+            raise ValueError(f"line {line_num}: unknown mnemonic {mn!r}")
         op = OP[mn]
 
         if mn == "MOV":
-            # MOV rd, rs (2-operand form; rt field = 0)
-            a, b = [x.strip() for x in args.split(",")]
-            words.append(_word(op, _reg(a), _reg(b), 0))
-        elif mn in ("ADDS", "SUBS", "AND", "OR", "XOR", "SHL", "SHR"):
-            a, b, c = [x.strip() for x in args.split(",")]
-            rd, rs = _reg(a), _reg(b)
-            if mn in ("SHL", "SHR"):
-                rt = _imm(c, 3)
+            # MOV rd, rs
+            parts = [x.strip() for x in args.split(",")]
+            if len(parts) != 2:
+                raise ValueError(f"line {line_num}: MOV requires rd, rs; got {args!r}")
+            words.append(_word(op, rd=_reg(parts[0]), rs=_reg(parts[1]), rt=0))
+
+        elif mn in ("ADDS", "SUBS", "AND", "OR", "XOR"):
+            parts = [x.strip() for x in args.split(",")]
+            if len(parts) == 3:
+                rd, rs, rt = _reg(parts[0]), _reg(parts[1]), _reg(parts[2])
+            elif len(parts) == 2:
+                rd, rs, rt = _reg(parts[0]), _reg(parts[0]), _reg(parts[1])
             else:
-                rt = _reg(c)
-            words.append(_word(op, rd, rs, rt))
+                raise ValueError(f"line {line_num}: {mn} requires 2 or 3 args; got {args!r}")
+            words.append(_word(op, rd=rd, rs=rs, rt=rt))
+
+        elif mn in ("SHL", "SHR"):
+            parts = [x.strip() for x in args.split(",")]
+            if len(parts) == 3:
+                rd, rs = _reg(parts[0]), _reg(parts[1])
+                rt = _imm(parts[2], 3)
+            elif len(parts) == 2:
+                rd, rs = _reg(parts[0]), _reg(parts[0])
+                rt = _imm(parts[1], 3)
+            else:
+                raise ValueError(f"line {line_num}: {mn} requires 2 or 3 args; got {args!r}")
+            words.append(_word(op, rd=rd, rs=rs, rt=rt))
+
         elif mn == "LDR":
-            a, b = args.split(",")
-            words.append(_word(op, _reg(a), 0, 0, _imm(b)))
+            parts = [x.strip() for x in args.split(",")]
+            if len(parts) != 2:
+                raise ValueError(f"line {line_num}: LDR requires rd, #imm8; got {args!r}")
+            words.append(_word(op, rd=_reg(parts[0]), imm=_imm(parts[1], 8)))
+
         elif mn in ("JZ", "JNZ", "JP", "JN"):
             tgt = args.strip().lstrip("+-")
-            if tgt not in labels:
-                raise ValueError(f"line {i}: unknown label {tgt!r}")
-            rel = labels[tgt] - (i + 1)
+            if tgt in labels:
+                target_pc = labels[tgt]
+            else:
+                target_pc = int(tgt, 0)
+            rel = target_pc - (pc + 1)
             if rel < -256 or rel > 255:
-                raise ValueError(f"line {i}: branch offset {rel} out of rel9 range")
+                raise ValueError(f"line {line_num}: branch offset {rel} out of 9-bit range (-256..255)")
             words.append(_word(op, rel=rel))
+
         elif mn == "JMP":
             t = args.strip()
             if t in labels:
                 v = labels[t]
             else:
                 v = int(t, 0)
-            if v >= 2048:
-                raise ValueError(f"line {i}: JMP target {v} out of imm11 range")
+            if v < 0 or v >= 2048:
+                raise ValueError(f"line {line_num}: JMP target {v} out of imm11 range (0..2047)")
             words.append(_word(op, abs11=v))
+
         elif mn in ("PIN_W", "PIN_R", "CNT_R", "INCR", "DECR", "IN_RD",
                     "SHIFT_OUT", "WAIT_CMP", "MEM_W"):
-            # I-format: register field at b10..b8
-            words.append(_word(op, _reg(args)))
-        elif mn == "OE_SET" or mn == "OE_CLR":
-            words.append(_word(op, 0, 0, 0, _imm(args)))
-        elif mn == "WAIT_EDGE":
-            words.append(_word(op, 0, 0, 0, _imm(args)))
+            words.append(_word(op, rd=_reg(args)))
+
+        elif mn in ("OE_SET", "OE_CLR", "WAIT_EDGE"):
+            words.append(_word(op, imm=_imm(args, 8)))
+
         elif mn in ("NOP", "CALL", "RET", "SHIFT_IN"):
             words.append(_word(op))
+
         else:
-            raise ValueError(f"line {i}: bad args {args!r} for {mn}")
+            raise ValueError(f"line {line_num}: unhandled mnemonic {mn!r}")
 
     if len(words) > max_words:
         raise ValueError(f"program too long: {len(words)} > {max_words}")
@@ -153,7 +174,7 @@ def assemble(text, max_words=512):
 
 
 def crc8(data, poly=0x07, init=0x00):
-    """CRC-8, poly 0x07 (x^8+x^2+x+1), init 0, no reflection (matches bootloader)."""
+    """CRC-8, poly 0x07 (x^8+x^2+x+1), init 0, no reflection."""
     crc = init
     for byte in data:
         crc ^= byte
@@ -163,7 +184,9 @@ def crc8(data, poly=0x07, init=0x00):
 
 
 def bootloader_words():
-    with open(__file__.replace("assembler.py", "bootloader.s"), "r") as f:
+    import os
+    bootloader_path = os.path.join(os.path.dirname(__file__), "bootloader.s")
+    with open(bootloader_path, "r") as f:
         return assemble(f.read(), max_words=128)
 
 

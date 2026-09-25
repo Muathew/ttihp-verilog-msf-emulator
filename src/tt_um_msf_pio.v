@@ -43,7 +43,7 @@ module tt_um_msf_pio (
     end
   end
 
-  assign uio_out = {out_stage[6:0], serial_out};
+  assign uio_out = {serial_out, out_stage[6:0]};
   assign uio_oe  = oe;
   assign uo_out  = uo;
 endmodule

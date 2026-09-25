@@ -9,16 +9,23 @@
 ; R5=running sum, R6=hi byte, R7=word.  INTEGRATION: test/assembler.py
 ; -> src/tt_um_msf_bootrom_data.v (initial block); core runs this at PC=0.
 
+        IN_RD R1
+        LDR   R2, #1
+        AND   R3, R1, R2
+        ADDS  R3, R3, R0
+        JZ    run_boot
+        JMP   128
+run_boot:
         OE_SET 1
         LDR   R1, #1
 tx_on:
         PIN_W R1
-        LDR   R5, #40
-        LDR   R4, #40
+        LDR   R5, #4
+b2:     LDR   R4, #10
 b1:     DECR  R4
         JNZ   b1
         DECR  R5
-        JNZ   b1
+        JNZ   b2
         LDR   R1, #0
         PIN_W R1
         LDR   R1, #0
