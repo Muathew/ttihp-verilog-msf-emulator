@@ -7,13 +7,29 @@
 
 ## Conventions
 - Every step ends with a **gate** (a measurable check). No step is "done" until its gate passes.
-- After any RTL change: `cd test; make -B` must pass.
+- After any RTL change: the cocotb suite must pass.
+  - Linux/macOS: `cd test; make -B`
+  - Windows (this machine): `cd test; ..\.venv\Scripts\python.exe run_tests.py`
+    (Git-for-Windows `sh` fork limits + old WinAVR make break `make`;
+    `run_tests.py` uses the cocotb_tools Python runner + iverilog directly).
+  - Single test: `python run_tests.py -t <name>` (e.g. `-t wait_cmp`).
 - Private working docs live in `docs/sam/`; shared/collaborator docs live in `docs/shared/`.
 - Public submission content: `src/*.v`, `test/*`, `docs/info.md`, `info.yaml`, `README.md`.
 
 ## M0 — Foundations (done)
-- [x] Toolchain verified: iverilog 12, cocotb 2.0.1, ezwinports make, MSYS2 sh
-- [x] Template test passes (`cd test; make -B`)
+- [x] Toolchain verified: iverilog (C:\iverilog), cocotb 2.0.1 venv, `run_tests.py` runner
+- [x] Template test replaced by `test/test_core.py` (9-test suite)
+
+## M2 status snapshot (25 Sep 2026)
+- M2.7 gate met: **9/9 cocotb tests green** (`test_core.py`): blink smoke,
+  ALU/flags + flag preservation, backward branch loop, CALL/RET, cycle
+  counter, shift datapath, pin I/O + OE, WAIT_EDGE, WAIT_CMP.
+- Key RTL fix in `ctrl.v`: WAIT_* stall entry must **hold pc_p** (frozen) so
+  the instruction after the WAIT re-executes; stall match uses latched
+  fields (`wait_sel`/`wait_tgt`), not the live `ir` (which carries the
+  *next* instruction during a stall).
+- Boot ROM regenerated: 94-word UART-RX bootloader (`bootloader.s` →
+  `tt_um_msf_bootrom_data.v` via `assembler.py`).
 
 ---
 

@@ -1,9 +1,10 @@
 # Makefile
-# See https://docs.cocotb.org/en/stable/quickstart.html for more info# STATUS: PROJECT_SOURCES updated to the 7 msfcore files; COCOTB_TEST_MODULES
-# = test_core (module NOT YET WRITTEN -- build will fail until it lands).
+# See https://docs.cocotb.org/en/stable/quickstart.html for more info
+# STATUS: full cocotb setup -- 7 msfcore sources + test_core (9 tests, green).
+# INTEGRATION (Linux/macOS): `. .\setup-env.ps1` then `cd test; make -B` (venv first).
+# INTEGRATION (Windows): Git-for-Windows `sh` fork limits break `make`; use
+# `python run_tests.py` (no make/sh; cocotb_tools runner, iverilog).
 # GATES/SIM/VVP sections unchanged (IHP PDK, glue-level sim support).
-# INTEGRATION: `. .\setup-env.ps1` then `cd test; make -B` (venv first).
-# NEXT: add test/test_core.py, then get a green build before first commit.
 # defaults
 SIM ?= icarus
 FST ?= -fst # Use more efficient FST format
