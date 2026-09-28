@@ -8,7 +8,7 @@ project:
   clock_hz:     12000000  # Clock frequency in Hz (12 MHz target)
 
   # How many tiles your design occupies? A single tile is about 167x108 uM.
-  tiles: "6x2"          # Valid values: 1x1, 1x2, 2x2, 3x2, 4x2, 6x2 or 8x2  (12 tiles ~ 24K cells)
+  tiles: "6x4"          # Valid values: 1x1, 1x2, 2x2, 3x2, 4x2, 6x2 or 8x2  (12 tiles ~ 24K cells)
 
   # Your top module name must start with "tt_um_". Make it unique by including your github username:
   top_module:  "tt_um_msf"
@@ -18,6 +18,14 @@ project:
   # Don't forget to also update `PROJECT_SOURCES` in test/Makefile.
   source_files:
     - "project.v"
+    - "tt_um_msf_alu.v"
+    #- "tt_um_msf_bootrom_data.v"
+    - "tt_um_msf_bootrom.v"
+    - "tt_um_msf_ctrl.v"
+    - "tt_um_msf_pio.v"
+    - "tt_um_msf_regfile.v"
+    - "tt_um_msf_sram.v"
+    - "RM_IHPSG13_2P_512x16_c2_bm_bist.v"
 
 # The pinout of your project. Leave unused pins blank. DO NOT delete or add any pins.
 # This section is for the datasheet/website. Use descriptive names (e.g., RX, TX, MOSI, SCL, SEG_A, etc.).
