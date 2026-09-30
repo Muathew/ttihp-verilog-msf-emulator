@@ -25,7 +25,7 @@ project:
     - "tt_um_msf_pio.v"
     - "tt_um_msf_regfile.v"
     - "tt_um_msf_sram.v"
-    - "RM_IHPSG13_2P_512x16_c2_bm_bist.v"
+    #- "RM_IHPSG13_2P_512x16_c2_bm_bist.v"
 
 # The pinout of your project. Leave unused pins blank. DO NOT delete or add any pins.
 # This section is for the datasheet/website. Use descriptive names (e.g., RX, TX, MOSI, SCL, SEG_A, etc.).
