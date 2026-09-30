@@ -1,0 +1,270 @@
+# TinyTapeOut tt_um_msf process definition for GDS3D
+# Based on ihp-sg13g2 PDK layer definitions from pdk_layers.js
+# Heights converted from µm to nm
+
+# GDS3D-required substrate (virtual base plane)
+LayerStart: Substrate
+Layer: 255
+Height: -2000
+Thickness: 2000
+Red: 0.0
+Green: 0.0
+Blue: 0.0
+Filter: 0.5
+Metal: 0
+Show: 1
+LayerEnd
+
+# PDK Substrate (actual GDS layer)
+LayerStart: PDK-Substrate
+Layer: 235
+Datatype: 4
+Height: -2000
+Thickness: 2000
+Red: 0.2
+Green: 0.2
+Blue: 0.2
+Filter: 0.0
+Metal: 0
+Show: 1
+LayerEnd
+
+LayerStart: NWell
+Layer: 31
+Datatype: 0
+Height: -500
+Thickness: 510
+Red: 0.4
+Green: 0.4
+Blue: 0.4
+Filter: 0.0
+Metal: 0
+Shortkey: 1
+Show: 1
+LayerEnd
+
+LayerStart: Activ
+Layer: 1
+Datatype: 0
+Height: -120
+Thickness: 140
+Red: 0.9
+Green: 0.9
+Blue: 0.9
+Filter: 0.0
+Metal: 0
+Show: 1
+LayerEnd
+
+LayerStart: GatPoly
+Layer: 5
+Datatype: 0
+Height: 0
+Thickness: 160
+Red: 0.75
+Green: 0.35
+Blue: 0.46
+Filter: 0.0
+Metal: 0
+Shortkey: 3
+Show: 1
+LayerEnd
+
+LayerStart: PolyRes
+Layer: 128
+Datatype: 0
+Height: 0
+Thickness: 160
+Red: 0.55
+Green: 0.2
+Blue: 0.0
+Filter: 0.0
+Metal: 0
+Show: 1
+LayerEnd
+
+LayerStart: Contact
+Layer: 6
+Datatype: 0
+Height: 0
+Thickness: 640
+Red: 0.2
+Green: 0.2
+Blue: 0.2
+Filter: 0.0
+Metal: 0
+Shortkey: 4
+Show: 1
+LayerEnd
+
+LayerStart: Metal1
+Layer: 8
+Datatype: 0
+Height: 640
+Thickness: 420
+Red: 1.0
+Green: 0.81
+Blue: 0.55
+Filter: 0.0
+Metal: 1
+Shortkey: 5
+Show: 1
+LayerEnd
+
+LayerStart: Via1
+Layer: 19
+Datatype: 0
+Height: 1060
+Thickness: 540
+Red: 0.2
+Green: 0.2
+Blue: 0.2
+Filter: 0.0
+Metal: 0
+Show: 1
+LayerEnd
+
+LayerStart: Metal2
+Layer: 10
+Datatype: 0
+Height: 1600
+Thickness: 490
+Red: 0.16
+Green: 0.38
+Blue: 0.83
+Filter: 0.0
+Metal: 1
+Shortkey: 7
+Show: 1
+LayerEnd
+
+LayerStart: Via2
+Layer: 29
+Datatype: 0
+Height: 2090
+Thickness: 540
+Red: 0.2
+Green: 0.2
+Blue: 0.2
+Filter: 0.0
+Metal: 0
+Show: 1
+LayerEnd
+
+LayerStart: Metal3
+Layer: 30
+Datatype: 0
+Height: 2630
+Thickness: 490
+Red: 0.65
+Green: 0.75
+Blue: 0.9
+Filter: 0.0
+Metal: 1
+Shortkey: 9
+Show: 1
+LayerEnd
+
+LayerStart: Via3
+Layer: 49
+Datatype: 0
+Height: 3120
+Thickness: 540
+Red: 0.2
+Green: 0.2
+Blue: 0.2
+Filter: 0.0
+Metal: 0
+Show: 1
+LayerEnd
+
+LayerStart: Metal4
+Layer: 50
+Datatype: 0
+Height: 3660
+Thickness: 490
+Red: 0.2
+Green: 0.62
+Blue: 0.86
+Filter: 0.0
+Metal: 1
+Show: 1
+LayerEnd
+
+LayerStart: Via4
+Layer: 66
+Datatype: 0
+Height: 4150
+Thickness: 540
+Red: 0.2
+Green: 0.2
+Blue: 0.2
+Filter: 0.0
+Metal: 0
+Show: 1
+LayerEnd
+
+LayerStart: Metal5
+Layer: 67
+Datatype: 0
+Height: 4690
+Thickness: 490
+Red: 0.15
+Green: 0.11
+Blue: 0.38
+Filter: 0.0
+Metal: 1
+Show: 1
+LayerEnd
+
+LayerStart: TopVia1
+Layer: 125
+Datatype: 0
+Height: 5180
+Thickness: 890
+Red: 0.2
+Green: 0.2
+Blue: 0.2
+Filter: 0.0
+Metal: 0
+Show: 1
+LayerEnd
+
+LayerStart: TopMetal1
+Layer: 126
+Datatype: 0
+Height: 6070
+Thickness: 2000
+Red: 0.4
+Green: 0.4
+Blue: 0.4
+Filter: 0.0
+Metal: 1
+Show: 1
+LayerEnd
+
+LayerStart: TopVia2
+Layer: 133
+Datatype: 0
+Height: 8070
+Thickness: 2800
+Red: 0.4
+Green: 0.4
+Blue: 0.4
+Filter: 0.0
+Metal: 0
+Show: 1
+LayerEnd
+
+LayerStart: TopMetal2
+Layer: 134
+Datatype: 0
+Height: 10870
+Thickness: 3000
+Red: 0.4
+Green: 0.4
+Blue: 0.4
+Filter: 0.0
+Metal: 1
+Show: 1
+LayerEnd

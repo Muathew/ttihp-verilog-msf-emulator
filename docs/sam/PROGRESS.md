@@ -90,3 +90,12 @@ to fit the 2027-01-18 deadline with headroom.
   decisions locked); all M2 block RTL written; assembler + bootrom-style
   firmware drafted; `make -B` passing compile blocked only by generated data
   file (item 1 above).
+- 2026-09-30 — **GDS rendered in GDS3D 1.8** (18.3 MB, 204 671 boundaries,
+  66 074 structures, ~948 MB VRAM, 893 VBOs). Topcell `tt_um_msf` auto-picked.
+  New process file `techfiles/tt_um_msf.txt` created (20 PDK layers).
+  **Known issues** (see `docs/shared/drc-analysis.md`):
+  - Design is **31K cells vs 24K budget** → P&R squeezed logic → unresolved
+    DRC (shorts/spacing) → routing stubs visible in 3D.
+  - SRAM macro (402.61 × 219.77 µm, R90) looks "floated" due to visual
+    contrast + missing TopMetal PDN rendering + Metal4 power halo not visible.
+  - "Wires to nothing" = DRC stubs + unlisted GDS layers (IO pads, layer 63, 189).
