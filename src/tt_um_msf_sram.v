@@ -37,6 +37,7 @@ module tt_um_msf_sram (
 */
 
 
+`ifdef SYNTHESIS
 RM_IHPSG13_2P_512x16_c2_bm_bist sram (
   // ---------- Port A : read-only (instruction fetch) ----------
   .A_CLK      (clk),
@@ -80,5 +81,22 @@ RM_IHPSG13_2P_512x16_c2_bm_bist sram (
   .B_BIST_DIN (16'h0),
   .B_BIST_BM  (16'h0)
 );
+`else
+  reg [15:0] mem [0:511];
+  reg [15:0] rd_r;
+
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      rd_r <= 16'h0;
+    end else begin
+      if (we) begin
+        mem[waddr] <= wd;
+      end
+      rd_r <= mem[raddr];
+    end
+  end
+
+  assign rd = rd_r;
+`endif
 
 endmodule

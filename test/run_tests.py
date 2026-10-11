@@ -22,7 +22,7 @@ HERE = Path(__file__).parent
 SRC = (HERE.parent / "src").resolve()
 
 PROJECT_SOURCES = [
-    "tt_um_msf.v", "tt_um_msf_ctrl.v", "tt_um_msf_regfile.v", "tt_um_msf_alu.v",
+    "project.v", "tt_um_msf_ctrl.v", "tt_um_msf_regfile.v", "tt_um_msf_alu.v",
     "tt_um_msf_sram.v", "tt_um_msf_bootrom.v", "tt_um_msf_pio.v",
 ]
 
@@ -31,12 +31,18 @@ BUILD_DIR = HERE / "sim_build" / "rtl"
 
 def main() -> int:
     testcase = None
+    module = "test_core"
+    if "-m" in sys.argv:
+        module = sys.argv[sys.argv.index("-m") + 1]
+    elif "--all" in sys.argv:
+        module = "test_core,test_protocols,test_extensions,test_reprogrammable,test_crv_formal"
+
     if "-t" in sys.argv:
         name = sys.argv[sys.argv.index("-t") + 1]
         if not name.startswith("test_"):
             name = f"test_{name}"
         # cocotb 2.x filter uses the fully-qualified module.function name
-        testcase = [f"test_core.{name}"]
+        testcase = [f"{module}.{name}"]
 
     runner = get_runner("icarus")
     runner.build(
@@ -55,7 +61,7 @@ def main() -> int:
     (BUILD_DIR / "results.xml").unlink(missing_ok=True)
 
     runner.test(
-        test_module="test_core",
+        test_module=module,
         hdl_toplevel="tb",
         build_dir=str(BUILD_DIR),
         waves=False,

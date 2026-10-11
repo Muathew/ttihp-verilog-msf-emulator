@@ -10,8 +10,7 @@ from assembler import assemble
 def load_sram(dut, words, start_addr=128):
     """Directly preload IMEM words into the SRAM block."""
     for i, w in enumerate(words):
-        sram_idx = (start_addr + i) - 128
-        dut.user_project.u_sram.mem[sram_idx].value = w
+        dut.user_project.u_sram.mem[start_addr + i].value = w
 
 
 @cocotb.test()

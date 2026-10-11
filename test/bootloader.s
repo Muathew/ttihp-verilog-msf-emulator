@@ -1,121 +1,127 @@
 ; msfcore UART-RX bootloader (ROM-resident, IMEM words 0..127)
-; STATUS: NEEDS REVIEW -- written in a hurry. The asmw: section uses an
-; ADDS R3, R7, R0 placeholder + JNZ is_last; checksum/JMP 128 only fires when
-; R7==0; the word count is NOT tracked (the `INCR R6` clobbers the hi byte).
-; BEFORE IT CAN RUN: (1) fix the assembler 2-arg R-format unpack bug, (2) rewrite
-; the last-word / boundary logic, (3) tune bit timing against the golden model
-; (bit time 104-cycle base is nominal; 8N1 LSB-first, idles HIGH).
-; REG MAP: R0=RX mask(2), R1=blink cnt, R2=low byte, R3/loop, R4=delay,
-; R5=running sum, R6=hi byte, R7=word.  INTEGRATION: test/assembler.py
-; -> src/tt_um_msf_bootrom_data.v (initial block); core runs this at PC=0.
+; Power-up: ui_in[0] checked via IN_RD
+;   ui_in[0] = 1: direct SRAM boot (JMP 128)
+;   ui_in[0] = 0: UART RX bootloader (stream 16-bit words into SRAM)
+; Termination: 0xFFFF word ends the stream -> JMP 128
+; 115200 baud, 8N1, LSB-first, idle high
+; Pin 1 = RX (uio_in[1])
+;
+; REG MAP: R0=RX mask(2), R1=temp, R2=low byte, R3=counter,
+; R4=delay, R5=temp, R6=high byte, R7=assembled word
+; INTEGRATION: test/assembler.py -> src/tt_um_msf_bootrom_data.v
 
-        IN_RD R1
-        LDR   R2, #1
-        AND   R3, R1, R2
-        ADDS  R3, R3, R0
-        JZ    run_boot
-        JMP   128
-run_boot:
-        OE_SET 1
-        LDR   R1, #1
-tx_on:
-        PIN_W R1
-        LDR   R5, #4
-b2:     LDR   R4, #10
-b1:     DECR  R4
-        JNZ   b1
-        DECR  R5
-        JNZ   b2
-        LDR   R1, #0
-        PIN_W R1
-        LDR   R1, #0
-        LDR   R5, #0
-BOOT:
-        LDR   R0, #2
-; word count = 384 (R7+1 max) but imm8 caps single loads, so it is built
-; via two-byte loads if needed (M2 note: count logic is PRUNED, see header)
-        LDR   R1, #0
-        LDR   R7, #0
-wait_st:
-        PIN_R R4
-        AND   R4, R4, R0
-        JNZ   wait_st
-        LDR   R4, #32
-ws2:    DECR  R4
-        JNZ   ws2
-        PIN_R R4
-        AND   R4, R4, R0
-        JZ    got_st
-        JMP   wait_st
-got_st:
-        LDR   R3, #8
-low:
-        LDR   R4, #0
-        INCR  R4
-low2:   LDR   R4, #89
-lb:     DECR  R4
-        JNZ   lb
-        INCR  R4
-        LDR   R4, #34
-lb3:    DECR  R4
-        JNZ   lb3
-        PIN_R R4
-        SHL   R2, R2, #1
-        AND   R4, R4, R0
-        OR    R2, R2, R4
-        DECR  R3
-        JNZ   low
-warps:
-        SHL   R2, R2, #2
-        SHL   R2, R2, #2
-        SHL   R2, R2, #2
-        SHL   R2, R2, #2
-        LDR   R3, #8
-high:
-        LDR   R6, #0
-hb:     LDR   R4, #89
-hb2:    DECR  R4
-        JNZ   hb2
-        LDR   R4, #34
-hb3:    DECR  R4
-        JNZ   hb3
-        PIN_R R4
-        SHL   R6, R6, #1
-        AND   R4, R4, R0
-        OR    R6, R6, R4
-        DECR  R3
-        JNZ   high
-; -- inter-word gap (stop bit, loop-to-start) --
-        LDR   R3, #212
-iw:     DECR  R3
-        JNZ   iw
-asmw:
-        MOV   R7, R2
-        OR    R7, R7, R6
-        ADDS  R3, R7, R0
-        JNZ   is_last
-        MEM_W R7
-        ADDS  R5, R5, R7
-        INCR  R6
-        JMP   BOOT
-is_last:
-        JNZ   bad
-        JMP   128      ; hand off to firmware (first IMEM word)
-        ; NOTE: R7 init + word-boundary test rules are rough (see header)
-bad:
-        LDR   R1, #5
-br:     LDR   R4, #1
-        PIN_W R1
-        LDR   R4, #40
-b3:     DECR  R4
-        JNZ   b3
-        LDR   R4, #0
-        PIN_W R4
-        LDR   R4, #40
-b4:     DECR  R4
-        JNZ   b4
-        DECR  R1
-        JNZ   br
-halt:
-        NOP
-        JMP   halt
+; --- Boot select ---
+; ui_in[0] = 0: UART RX bootloader (stream firmware into SRAM)
+; ui_in[0] = 1: direct SRAM boot (jump to 128)
+IN_RD    R1
+LDR      R2, #1
+AND      R3, R1, R2      ; R3 = ui_in[0]
+ADDS     R3, R3, R0       ; Z=1 if ui_in[0]=0
+JZ       uart_boot        ; ui_in[0]=0 (Z=1) -> UART bootloader
+JMP      128              ; ui_in[0]=1 (Z=0) -> direct SRAM boot
+
+; --- UART RX Bootloader ---
+uart_boot:
+LDR      R0, #2
+LDR      R7, #0
+
+rx_word:
+; --- Receive low byte into R2 ---
+LDR      R2, #0
+
+; Re-synchronize: poll until the RX line is idle HIGH, so the WAIT_EDGE
+; below latches this byte's start-bit falling edge (not a mid-byte edge).
+poll_idle_lo:
+PIN_R    R5
+AND      R5, R5, R0
+SUBS     R5, R5, R0      ; Z=1 if pin1 == 2 (HIGH)
+JNZ      poll_idle_lo    ; keep polling while LOW
+
+WAIT_EDGE 1
+LDR      R4, #50
+dly_15_lo:
+DECR     R4
+JNZ      dly_15_lo
+
+; Sample-first (matches the working echo test): read the bit now, then
+; delay to the next bit center. Delaying first would shift every sample by
+; one bit (sampling bit 1 instead of bit 0).
+LDR      R3, #8
+rx_bit_lo:
+PIN_R    R5
+AND      R5, R5, R0
+SHR      R5, R5, #1
+SHL      R5, R5, #7
+SHR      R2, R2, #1
+OR       R2, R2, R5
+LDR      R4, #31
+dly_bit_lo:
+DECR     R4
+JNZ      dly_bit_lo
+DECR     R3
+JNZ      rx_bit_lo
+
+; Skip the stop bit
+LDR      R4, #30
+dly_stop_lo:
+DECR     R4
+JNZ      dly_stop_lo
+
+; --- Receive high byte into R6 ---
+; Re-synchronize on idle before latching the high byte's start bit.
+LDR      R6, #0
+poll_idle_hi:
+PIN_R    R5
+AND      R5, R5, R0
+SUBS     R5, R5, R0      ; Z=1 if pin1 == 2 (HIGH)
+JNZ      poll_idle_hi    ; keep polling while LOW
+
+WAIT_EDGE 1
+LDR      R4, #50
+dly_15_hi:
+DECR     R4
+JNZ      dly_15_hi
+
+LDR      R3, #8
+rx_bit_hi:
+PIN_R    R5
+AND      R5, R5, R0
+SHR      R5, R5, #1
+SHL      R5, R5, #7
+SHR      R6, R6, #1
+OR       R6, R6, R5
+LDR      R4, #31
+dly_bit_hi:
+DECR     R4
+JNZ      dly_bit_hi
+DECR     R3
+JNZ      rx_bit_hi
+
+; Skip the stop bit
+LDR      R4, #30
+dly_stop_hi:
+DECR     R4
+JNZ      dly_stop_hi
+
+; Line idles HIGH after the stop bit, so WAIT_EDGE naturally waits for the
+; next word's start bit (next falling edge).
+; Check for termination: 0x0000 = end of stream marker.
+; word == 0 iff low byte (R2) == 0 AND high byte (R6) == 0.
+; (2*X == 0 mod 2^16 iff X == 0 for X in 0..255, so ADDS X,X is a clean zero test.)
+ADDS     R5, R2, R2      ; Z=1 if R2 == 0
+JNZ      not_done
+ADDS     R5, R6, R6      ; Z=1 if R6 == 0
+JNZ      not_done
+JMP      128             ; 0x0000 terminator -> hand off to firmware
+
+not_done:
+; Assemble 16-bit word: R7 = (R6 << 8) | R2
+; SHL only supports 3-bit shift (0-7), so use 8 single-bit shifts:
+LDR      R4, #8
+sh8:
+SHL      R6, R6, #1
+DECR     R4
+JNZ      sh8
+OR       R7, R6, R2
+MEM_W    R7              ; Store word into SRAM (auto-increment 128..511)
+JMP      rx_word
