@@ -1,4 +1,8 @@
 {
   "verilog.linting.linter": "verilator",
-  "verilog.formatting.verilogHDL.formatter": "verible-verilog-format"
+  "verilog.formatting.verilogHDL.formatter": "verible-verilog-format",
+  "github.copilot.llm-gateway.serverUrl": "https://sam-x570-aorus-pro.tail25777d.ts.net/",
+  "github.copilot.llm-gateway.defaultMaxOutputTokens": 30000,
+  "github.copilot.llm-gateway.agentTemperature": 1,
+  "github.copilot.llm-gateway.thinkingEffortParameter": "xhigh"
 }

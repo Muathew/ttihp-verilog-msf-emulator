@@ -41,7 +41,7 @@ VERILOG_SOURCES += $(PWD)/tb.v
 TOPLEVEL = tb
 
 # List test modules to run, separated by commas and without the .py suffix:
-COCOTB_TEST_MODULES = test_core
+COCOTB_TEST_MODULES = test_core,test_crv_formal,test_extensions,test_protocols,test_reprogrammable,test_golden_model
 
 # include cocotb's make rules to take care of the simulator setup
 include $(shell cocotb-config --makefiles)/Makefile.sim
