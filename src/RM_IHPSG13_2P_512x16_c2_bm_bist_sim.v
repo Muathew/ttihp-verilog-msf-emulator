@@ -45,6 +45,14 @@ module RM_IHPSG13_2P_512x16_c2_bm_bist (
   reg [15:0] mem [0:511];
   reg [15:0] a_dout_r;
 
+  // Zero-init for simulation: real SRAM is X at power-up, but the CPU
+  // would fetch X instructions and propagate X to the outputs.  Zeroing
+  // makes the design deterministic (CPU executes NOPs from SRAM).
+  integer init_i;
+  initial
+    for (init_i = 0; init_i < 512; init_i = init_i + 1)
+      mem[init_i] = 16'h0;
+
   // Port A: synchronous read (registered, 1-cycle latency)
   always @(posedge A_CLK) begin
     if (A_MEN && A_REN)
