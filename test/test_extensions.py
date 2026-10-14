@@ -20,8 +20,9 @@ Implements and verifies all challenge extension and stretch protocols in firmwar
 5. CAN Bus (Controller Area Network):
    - CAN 2.0A 11-bit identifier frame
    - Dominant (0) vs. Recessive (1), SOF, ID, RTR, DLC, Data, CRC delimiter, EOF
-6. 10Mbit Ethernet:
-   - Preamble/SFD transition generator and cycle feasibility timing analysis
+6. 10Mbit Ethernet (10BASE-T TX, Manchester-encoded, 20 MHz overclock):
+   - Firmware bit-bangs a Manchester preamble (7x0xAA) + SFD (0xD5) + short frame
+   - cocotb decodes the half-bit transitions and asserts the recovered bytes
 """
 
 import cocotb
@@ -102,6 +103,34 @@ def _usb_firmware(sync_byte, pid_byte):
 
     lines.append("    done:")
     lines.append("        JMP      done")
+    return "\n".join(lines)
+
+
+def _eth_manchester_levels(frame_bytes):
+    """Manchester half-bit level sequence (0/1) for a byte frame, MSB-first.
+    '1' bit -> [0, 1] (low->high); '0' bit -> [1, 0] (high->low).
+    Each bit = 2 half-bits; the 2nd half-bit of the pair == the data bit."""
+    levels = []
+    for byte in frame_bytes:
+        for i in range(7, -1, -1):
+            b = (byte >> i) & 1
+            levels += [1 - b, b]
+    return levels
+
+
+def _eth_firmware(frame_bytes):
+    """Firmware that bit-bangs the Manchester frame on uio pin 0.
+    R0 = 0 and R1 = 1 are the two level values; each half-bit is one PIN_W
+    (1 cycle @ 20 MHz = 50 ns = one Manchester half-bit)."""
+    levels = _eth_manchester_levels(frame_bytes)
+    lines = [
+        "        OE_SET   1            ; drive uio pin 0 (ETH TX)",
+        "        LDR      R1, #1       ; R1=1, R0=0 (reset) are the level values",
+    ]
+    for L in levels:
+        lines.append(f"        PIN_W    R{L}")
+    lines.append("eth_idle:")
+    lines.append("        JMP      eth_idle")
     return "\n".join(lines)
 
 
@@ -688,59 +717,68 @@ async def test_can_bus_framing(dut):
 
 
 # ==============================================================================
-# 6. 10Mbit Ethernet Feasibility & Transition Analysis
+# 6. 10Mbit Ethernet (10BASE-T) TX -- Manchester bit-bang @ 20 MHz
 # ==============================================================================
 @cocotb.test()
-async def test_ethernet_10mbit_analysis(dut):
-    """Firmware demonstrates Manchester transition generation & reports cycle feasibility."""
-    clock = Clock(dut.clk, 80, unit="ns")
+async def test_ethernet_10mbit_tx(dut):
+    """Firmware bit-bangs a Manchester-encoded 10BASE-T TX frame at 20 MHz
+    (1 core cycle = 50 ns = one half-bit). TX-only scope: preamble (7x0x55) +
+    SFD (0xD5) + a short frame (DA/SA/LEN/DATA). No RX/CRC/FCS."""
+    clock = Clock(dut.clk, 50, unit="ns")   # 20 MHz
     cocotb.start_soon(clock.start())
 
-    # At 12 MHz: 1 cycle = 83.33 ns.
-    # 10BASE-T Ethernet transmits at 10 Mbps using Manchester encoding:
-    # 1 bit = 100 ns.
-    # Half-bit transition = 50 ns (0.6 clock cycles @ 12 MHz).
-    #
-    # Feasibility Analysis:
-    # A single instruction takes 1 cycle (83.33 ns).
-    # Therefore, purely in software on a 12 MHz core, 10BASE-T is sub-cycle.
-    # Solutions for complete 10BASE-T compliance:
-    # (a) Overclocking: Running core at 20-40 MHz provides 2-4 cycles per Manchester half-bit.
-    # (b) Hardware Shift Datapath: msfcore's 16-bit shift datapath (SHIFT_OUT) can serialize
-    #     Manchester half-bits clocked at a higher peripheral rate.
-    #
-    # Firmware generates maximum-frequency preamble alternating pattern:
-    asm = """
-        OE_SET   1            ; Ethernet TX on pin 0
-        LDR      R0, #1
-        LDR      R1, #0
+    # 7x0xAA preamble + SFD 0xD5 + short frame (DA 0x5555, SA 0x5555,
+    # LEN 0x0002, DATA 0xABCD) = 16 bytes = 128 bits = 256 half-bits.
+    # (IEEE 802.3 10BASE-T: preamble = 7x0xAA (10101010), SFD = 0xD5.)
+    frame = ([0xAA] * 7) + [0xD5] + [0x55, 0x55] + [0x55, 0x55] + [0x00, 0x02] + [0xAB, 0xCD]
+    levels = _eth_manchester_levels(frame)
+    n_levels = len(levels)
 
-        ; Preamble alternating pulses (1-0-1-0-1-0)
-        PIN_W    R0
-        PIN_W    R1
-        PIN_W    R0
-        PIN_W    R1
-        PIN_W    R0
-        PIN_W    R1
-        PIN_W    R0
-        PIN_W    R1
-    done:
-        JMP      done
-    """
-    words = assemble(asm, base_addr=128)
+    words = assemble(_eth_firmware(frame), base_addr=128)
     load_sram(dut, words)
     await reset_core(dut, direct_boot=True)
 
-    # Observe maximum-rate pin toggles
-    toggle_count = 0
-    prev_val = None
-    for _ in range(40):
+    # @20 MHz one sample per cycle == one Manchester half-bit.
+    n_samples = n_levels + 40
+    timeline = []
+    for _ in range(n_samples):
         await RisingEdge(dut.clk)
-        val = int(dut.uio_out.value) & 1
-        if val != prev_val:
-            toggle_count += 1
-            prev_val = val
+        timeline.append(int(dut.uio_out.value) & 1)
 
-    dut._log.info(f"Ethernet preamble burst generated {toggle_count} single-cycle transitions.")
-    assert toggle_count >= 6, "Maximum-frequency preamble transitions not generated"
-    dut._log.info("10Mbit Ethernet Feasibility & Transition Analysis test PASSED!")
+    # Locate the frame (skip the short leading reset/OE_SET zero burst).
+    start = None
+    for i in range(len(timeline) - n_levels + 1):
+        if timeline[i:i + n_levels] == levels:
+            start = i
+            break
+    assert start is not None, (
+        f"Manchester level sequence ({n_levels} half-bits) not found in "
+        f"timeline (len={len(timeline)})")
+
+    # Recover the bytes from the sampled timeline: within each 2-half-bit
+    # Manchester pair the 2nd half-bit equals the data bit.
+    decoded = []
+    for k in range(len(frame)):
+        byte_val = 0
+        for i in range(7, -1, -1):
+            bit = timeline[start + k * 16 + 2 * (7 - i) + 1]
+            byte_val = (byte_val << 1) | bit
+        decoded.append(byte_val)
+
+    assert decoded == frame, (
+        f"decoded {len(decoded)} bytes != frame\n  expected={frame}\n  got      ={decoded}")
+
+    # Structural checks
+    assert decoded[:7] == [0xAA] * 7, "preamble must be 7x0xAA (IEEE 802.3)"
+    assert decoded[7] == 0xD5, "SFD must be 0xD5"
+    # Manchester integrity: every half-bit pair is a real transition.
+    for k in range(len(frame)):
+        for i in range(8):
+            pair = (timeline[start + k * 16 + 2 * i], timeline[start + k * 16 + 2 * i + 1])
+            assert pair in ((0, 1), (1, 0)), \
+                f"invalid Manchester pair {pair} at byte {k} bit {i}"
+
+    dut._log.info(
+        f"ETH 10Mbit TX: {len(frame)} bytes / {n_levels} half-bits recovered "
+        f"(@ 20 MHz, 1 cycle/half-bit)")
+    dut._log.info("10Mbit Ethernet TX (Manchester, 20 MHz) test PASSED!")
