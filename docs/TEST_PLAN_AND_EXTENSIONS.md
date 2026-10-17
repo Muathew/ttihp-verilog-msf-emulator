@@ -1,3 +1,11 @@
+> **Status (2026-10-17, ISA v2):** this is the original v1 plan, kept for
+> history. The current verification stack — independent ISA model, random
+> differential testing, formal properties with mutation checks, and the
+> firmware demos with real USB/Ethernet framing — is described in
+> [golden-model.md](golden-model.md). The "Formal & Architectural Invariant"
+> tests named below are directed simulations (now `test_crv_invariants.py`);
+> real formal proofs are in `formal/run_formal.py`.
+
 # Protocol Emulator ASIC — Comprehensive Verification & Extensions Plan
 
 **Target Design**: Tiny Tapeout Protocol Emulator ASIC (`tt_um_msf`)  

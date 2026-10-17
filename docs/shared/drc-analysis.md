@@ -1,11 +1,20 @@
 # DRC Failure & 3D Rendering Analysis — tt_um_msf
 
+> **Correction (2026-10-17).** Several numbers below were wrong and are fixed
+> inline: 6x4 *tiles* is ~1.21 x 0.62 mm = **~0.75 mm²** (not 6 x 4 mm =
+> 24 mm²); the SRAM macro outline 402.61 x 219.77 µm is **~0.088 mm²** (not
+> 0.88 mm²); the "31K cells" figure dates from the flip-flop SRAM build — after
+> the macro integration the logic was ~2.3K generic gates, and the v2 design
+> (threads, SERDES, CRC) maps to the figure reported by `tools/synth_check.py`
+> (see docs/sam/PROGRESS.md). The GDS analysed here (2026-09-30) predates the
+> current RTL and is no longer in the repository; CI regenerates it.
+
 > Updated 2026-09-30. Based on `tt_um_msf.gds` (18.3 MB, 204 671 boundaries, 66 074 structures).
 
 ## 1. Why the SRAM looks "floated / plopped in" in GDS3D
 
 The `RM_IHPSG13_2P_512x16_c2_bm_bist` macro is a **fixed-size blackbox** (402.61 × 219.77 µm,
-~0.88 mm²) placed by OpenROAD at `[42, 160]` µm with `R90` orientation. In the 3D view it
+~0.088 mm²) placed by OpenROAD at `[42, 160]` µm with `R90` orientation. In the 3D view it
 appears as a dense rectangular block sitting on top of the standard-cell forest. Three
 things make it look "floating":
 
@@ -34,9 +43,9 @@ hide a specific layer, that layer is the culprit.
 
 | Metric | Value |
 |---|---|
-| Die size | 6 × 4 mm = 24 mm² |
+| Die size | 6 × 4 tiles ≈ 1.21 × 0.62 mm ≈ 0.75 mm² |
 | Budget | ~24K logic cells |
-| Synthesized design | **~31K logic cells** (from `review.md`) |
+| Synthesized design | ~31K cells *with the old flip-flop SRAM*; ~2.3K generic gates after the macro (stale claim, see note) |
 | Over budget | **~7K cells (29 % over)** |
 
 The P&R tool (OpenROAD) was forced to **squeeze 31K cells into a 24K-cell area**. This
@@ -70,7 +79,7 @@ confirms the SRAM was integrated in the 30/9 update, resolving the FF blowup, bu
 
 ## 5. GDS3D process file notes
 
-`techfiles/tt_um_msf.txt` (created 2026-09-30) defines 20 layers based on the
+`docs/shared/gds3d/tt_um_msf.txt` (created 2026-09-30) defines 20 layers based on the
 `ihp-sg13g2` PDK from `pdk_layers.js`. Known gaps:
 
 - **IO pad layers** not defined (need to check which GDS layers the TT pads use).

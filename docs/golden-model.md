@@ -1,122 +1,88 @@
-# Golden Reference Model — msfcore Protocol Emulator
+# Verification of msfcore
 
-**Date**: 12 Oct 2026  
-**Files**: `test/golden_model.py`, `test/test_golden_model.py`  
-**Status**: Implemented, all 36 tests green (including 3 new golden-model tests)
+Verification is layered so that no single source of truth checks itself:
+the ISA spec (`docs/sam/isa.md`) is implemented twice, independently, as RTL
+and as a Python reference model; protocol behaviour is checked by decoders
+and slave models written from the protocol specs; and the pipeline invariants
+are proved with formal methods for *every* program.
 
----
+## 1. Independent ISA reference model — `test/isa_model.py`
 
-## 1. What It Is
+Written from `isa.md`, not from the RTL. It has no fetch pipeline, no flush
+flag and no pc-hold trick: only instruction semantics plus the documented
+cost rules (1 cycle per instruction, 2 for a taken redirect, slot
+alternation in dual-thread mode, blocking ops that release in their own slot,
+inputs visible two cycles after the pad). It is stepped one clock at a time,
+so per-cycle events (edges, cycle-counter matches, timeouts, CRC busy) are
+exact.
 
-An independent, pure-Python cycle-accurate reference model of the msfcore protocol
-emulator core.  Used in cocotb to **differentially verify** the RTL: the model and
-the DUT are stepped in lock-step, and observable state (PC, register file, Z/N
-flags, pad outputs) is diffed every cycle.  Any divergence between the hardware
-and the ISA/golden model is caught on the first divergent cycle.
+*Why it replaced the old `MsfCoreModel`:* the old model was a line-by-line
+transliteration of the RTL pipeline. It reproduced bug B1 (the instruction
+after a WAIT executing twice) and could therefore never find it.
 
-The model also provides **protocol reference waveforms** (UART, SPI, I2C, USB 1.0
-low) that serve as the golden side of each protocol-level check.
+## 2. Random differential testing — `test/test_random_diff.py`
 
----
+`rand_prog.py` generates constrained-random programs: bounded loops, forward
+skips, `CALL`/`RET` leaf subroutines, `JR`, WAITs with random input activity
+and small timeouts, data-RAM traffic, shift-register and pin ops, CRC bursts,
+and in dual mode thread start / stop / restart from either thread. Each
+program runs on the RTL and on the model with the same per-cycle pad
+schedule; `diffcheck.py` compares **every** issue and stall-release event
+(cycle, thread, PC, instruction word) and the full architectural state at
+each issue (both register files, flags, OUT/OE/UO, SR). 80 programs per run
+(~45 000 instructions); a failure prints the seed (`MSF_SEED=<n>`) and a
+disassembly window.
 
-## 2. Model Components (`test/golden_model.py`)
+Mutation sanity check: removing the taken-branch penalty from the model makes
+the first random program fail at its first branch.
 
-### 2.1 `MsfCoreModel` — Cycle-Accurate Core Model
+## 3. Formal properties — `formal/run_formal.py`
 
-Mirrors `src/tt_um_msf_ctrl.v` + `src/tt_um_msf_pio.v` + the registered SRAM/ROM
-read path:
+Properties are in the RTL under `ifdef FORMAL` and checked with Yosys' SAT
+engine (bounded model checking from reset, depth 16). The instruction memory
+read data, data-RAM read data, pins and peripheral status are **free
+inputs**, so the proofs hold for every program and environment.
 
-| Feature | Detail |
+| ID | Property |
 |---|---|
-| Fetch pipeline | 2-stage (registered SRAM read → flush bubble). PC + flush updated per RTL semantics. |
-| ALU + flags | `ADDS`/`SUBS`/`INCR`/`DECR` set Z/N; all other ops leave flags untouched. |
-| Cycle counter | 16-bit free-running (`CNT_R`), resets with `rst_n`. |
-| Shift datapath | 16-bit OSR, MSB-first. `SHIFT_OUT`/`SHIFT_IN`/`PIN_W` bit-7 driver. |
-| Output stage | `out_stage` latches 1 cycle after `PIN_W` (pad register). `uio_out = {ser_out, out_stage[6:0]}`. |
-| Open-drain OE | `OE_SET`/`OE_CLR` OR/AND the 8-bit OE register. |
-| Stall FSM | `WAIT_EDGE` (pin transition) / `WAIT_CMP` (counter match) + 16-bit hardware timeout → resume + set Z. |
-| MEM_W | Auto-incrementing SRAM write port (128→511, wraps). |
-| Boot | PC 0 = ROM bootloader (jumps to 128 on `ui_in[0]=1`). |
+| F1 | the issuing word was fetched in the previous cycle from the issuing thread's own address |
+| F2 | per thread, no instruction is skipped or repeated (independent ghost "next address") |
+| F3 | a WAIT completes only by its own event (edge/level/CNT match, re-derived by ghost logic), or by timeout after exactly TMO+1 stalled cycles (single mode) / within one slot of expiry (dual) |
+| F4 | thread T1 never issues in single-thread mode |
+| F5 | pin, SRAM-port, register-file and peripheral side effects only come from an issuing or completing instruction |
+| F6 | flags change only through the owning thread's flag ops / blocking ops (or T1's TSTART) |
+| F7 | the fetched word comes from the bank (ROM/SRAM) of the address it was fetched with |
 
-**API:**
+Every `cover()` point (WAIT edge/CMP/timeout release, LD release in T1, dual
+issue, TSTOP) is shown reachable, so the properties are not vacuous.
 
-```python
-model = MsfCoreModel()
-model.load_sram(fw_words)       # IMEM words 128..
-model.load_rom(rom_words)       # IMEM words 0..127
-model.reset()
-model.step(uio_in=0, ui_in=1)  # one clock
-snap = model.snapshot()        # dict: pc, regs, z, n, cnt, uio_out, uio_oe, ...
-```
+**Mutation check:** the review bugs are re-introduced into copies of the RTL
+and each must make the proof fail:
 
-### 2.2 Protocol Reference Models
-
-| Function | Purpose |
+| Mutant | Caught by |
 |---|---|
-| `uart_frame_bits(byte)` | Expected TX pin levels: start(0), 8 data bits LSB-first, stop(1). |
-| `UartRxDecoder` | Decode sampled RX bits → byte (with error counting). |
-| `spi_master_waveform(byte, cpol, cpha)` | Expected SCK/MOSI edge placement per SPI mode. |
-| `I2cConditionDetector` | Classic I2C bus-state detector (START / STOP / data-bit on SCL rising edge). |
-| `nrzi_encode(bits, initial_state)` | USB NRZI (logical 1 = no transition, 0 = toggle). |
-| `usb_bit_stuff(bits)` | Insert a stuffing 0 after every run of 5 consecutive 1s. |
-| `usb_low_packet(sync, pid, payload)` | Full USB 1.0 low-speed NRZI + bit-stuffed field. |
+| B1 pc not advanced on stall release | F1/F2 |
+| B2 WAIT_EDGE/WAIT_CMP release conditions mixed | F3 |
+| B3 combinational ROM/SRAM bank select | F7 (needs depth >= 14 to reach the boot ROM's `JMP 128`) |
 
----
+## 4. Directed and protocol-level tests
 
-## 3. Cocotb Test Suite (`test/test_golden_model.py`)
-
-| Test | What It Checks |
+| Module | Scope |
 |---|---|
-| `test_golden_lockstep` | Differential: 60-cycle lock-step DUT vs `MsfCoreModel`. Compares PC, R0–R7, Z, N, `uio_out`, `uio_oe` every cycle. |
-| `test_golden_uart_reference` | UART TX frame for 0xA5 matches expected bit sequence; RX decode round-trips 0x3D. |
-| `test_golden_i2c_conditions` | I2C detector classifies START, data-bit-0, and STOP from a clean open-drain sequence. |
+| `test_core`, `test_isa_v2` | every instruction, hand-derived expected values, exact cycle costs, input-sync latency |
+| `test_regressions` | one test per review bug B1-B5 (each failed on v1) |
+| `test_peripherals` | CRC check values (CRC-8/16/32/5), TX in every mode decoded from the pins, RX with +-2 % baud and +-1.5 % + jitter, TX->RX loopback |
+| `test_threads` | isolation, start/stop/restart, zero-cost branches, determinism of T0 vs any T1 load, events in the other thread's slot |
+| `test_boot` | framed UART and parallel loading, back-to-back bytes, late host, NAK + retry, data RAM, `G` anywhere |
+| `test_firmware` | the `firmware/` demos against independent decoders and slave models (SPI slave all modes, wired-AND I2C slave with stretching, USB NRZI/CRC16/EOP, 10BASE-T Manchester/FCS/TP_IDL/NLP) |
+| `test_protocols`, `test_extensions`, `test_reprogrammable`, `test_crv_invariants` | the original v1 bit-bang demos and constrained-random invariants, kept as regression |
+| `test_golden_model` | lock-step RTL vs model on a fixed image; protocol/CRC reference self-checks |
 
-### Lock-step phasing (cocotb)
+## 5. Pre-hardening check — `tools/synth_check.py`
 
-```
-await RisingEdge(dut.clk)      # DUT takes the edge; enter write phase
-dut.uio_in.value = ...         # set inputs for next cycle
-model.step(...)                 # model: S → S'
-await ReadOnly()               # settle non-blocking assignments
-# read DUT state, diff vs model.snapshot()
-```
-
-The free-running `cnt` is **not** compared in the strict assert (its absolute
-phase is a reset-deassertion testbench artifact, not a design property).
-
----
-
-## 4. Integration
-
-- Listed in `test/Makefile` → `COCOTB_TEST_MODULES` (runs with `make` / `make -B`).
-- No new simulator dependencies; pure Python.
-- Self-test: `python3 test/golden_model.py` (exits 0 on success).
-
----
-
-## 5. Results
-
-```
-TESTS=36 PASS=36 FAIL=0 SKIP=0
-  test_golden_model.test_golden_lockstep         PASS
-  test_golden_model.test_golden_uart_reference   PASS
-  test_golden_model.test_golden_i2c_conditions   PASS
-```
-
-Full suite (test_core, test_crv_formal, test_extensions, test_protocols,
-test_reprogrammable, test_golden_model) all green.
-
----
-
-## 6. Design Notes
-
-- **Why pure Python?**  The model must be *independent* of the simulator so it
-  can be used for formal cross-checks, firmware co-sim, and CI without Icarus.
-- **Why `ReadOnly` in the loop?**  `RisingEdge` returns in the write phase
-  (NBA not yet settled).  `ReadOnly()` waits for all deltas to settle before
-  we read DUT register values.  Without it, `pc_p` reads one cycle stale.
-- **Why exclude `cnt`?**  The DUT's async reset holds `cnt=0` for 5 cycles
-  (the low-`rst_n` window).  The model's `cnt` starts incrementing from the
-  first `step()`.  This one-cycle offset is a testbench artifact; the *rate*
-  (1 count/clk) is what matters and is implicitly verified by the lock-step
-  staying aligned for 60 cycles.
+Maps the RTL onto the IHP `sg13g2_stdcell` liberty (slow corner) with Yosys +
+ABC and reports cell count, area against the 24-tile budget and the longest
+register-to-register logic depth. Current result: 6 893 cells (823 flip-flops),
+93 336 um² + the 88 482 um² SRAM macro = 24 % of the 24-tile area before
+routing; 69 gate levels (+ 6.4 ns SRAM clk->q at the slow corner), hence
+`CLOCK_PERIOD` = 40 ns. Sign-off remains the LibreLane GDS action in CI.

@@ -1,5 +1,34 @@
 # msf-emulator — Progress Tracker
 
+## Status 2026-10-17 — ISA v2 implemented (see IMPLEMENTATION_PLAN.md)
+
+| Phase | Result |
+|---|---|
+| 0 Infrastructure | `run_tests.py` reads sources from info.yaml, `--all` runs every module, fixes the conda-venv DLL issue; review probes ported to `test_regressions.py` |
+| 1 Bug fixes B1-B5 | WAIT double execution, WAIT kind mix-up, ROM/SRAM bank select, boot back-to-back bytes, boot late host — all fixed, each with a regression test |
+| 2 Input synchronisers | 2-FF on `ui_in` / `uio_in` (+2 cycle input latency, documented and tested) |
+| 3 ISA v2 core | EXT group, LDH, pin set/clr/tgl/write-imm, UO writes, SR load/read/XFER/config, LD/ST data RAM, MEM_A, SWAP, JR, CALL imm11, WAIT_EDGE conditions + ui bank, TMO, STAT; assembler v2; independent ISA model; random differential test |
+| 4 Peripherals | SERDES TX/RX, CRC unit |
+| 5 Threads | 2 barrel-interleaved hardware threads, TSTART/TSTOP/TID |
+| 6 Boot ROM v2 | framed protocol, CRC-8, ACK/NAK, UART + parallel loaders, `tools/msf_boot.py` (103/128 ROM words) |
+| 7 Firmware | UART, SPI (modes 0-3), I2C (ACK/NACK, stretching), USB LS TX+RX, 10BASE-T TX, two-thread demo |
+| 8 Formal | properties F1-F7, BMC depth 16 from reset with all inputs free, 6/6 covers, mutants B1/B2/B3 caught; CI workflow `formal.yaml` |
+| 9 Area/timing | `tools/synth_check.py` (IHP sg13g2, slow corner): 6 893 cells (823 FFs), 93 336 um² + SRAM 88 482 um² = **24 % of the 24-tile area** before routing; longest reg-to-reg path 69 generic gates (~10-21 ns) + SRAM clk->q 6.4 ns -> `CLOCK_PERIOD` relaxed 20 -> 40 ns (25 MHz; designs needs <= 20 MHz) |
+| 10 Docs | isa.md v2, info.md, info.yaml pinout, README, verification doc; dead files and stale GDS removed |
+
+Test suite: `python test/run_tests.py --all` — 103 cocotb tests green
+(random diff: 80 programs, ~45k instructions RTL == model).
+
+Open items before submission:
+* Push and let the GDS action harden v2 (the committed GDS was removed: it
+  predated v2). Check DRC/LVS/timing in the action, then `make GATES=yes`.
+* Bring-up on silicon / FPGA: loader over USB-UART, then the firmware demos.
+
+---
+
+## History (v1 tracker, 2026-09-24)
+
+
 > Private working doc (`docs/sam/`). Mirrors the plan in `PLAN.md` and reports the
 > **actual** state against repo evidence (files present, test suite output), updated
 > **2026-09-24**.

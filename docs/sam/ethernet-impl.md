@@ -1,68 +1,52 @@
-# 10Mbit Ethernet (10BASE-T) on msfcore — implementation note (private)
+# 10BASE-T on msfcore — implementation note
 
-> Branch `ethernet`. Supersedes the "dropped — 1.2 cycles/bit, infeasible" line in
-> `isa.md` §6 (Q73). This note records the feasibility math, the chosen strategy,
-> the cycle/area budget, and the (honest) scope.
+> v2 (2026-10-17). Supersedes the v1 note, whose demo unrolled every half-bit
+> into its own `PIN_W` (waveform playback, 16-byte frame, no FCS, no link
+> pulses). The v2 transmitter is real firmware: `firmware/eth_10baset_tx.s`,
+> checked by `test/test_firmware.py::test_fw_10baset_frame_fcs_tpidl_nlp`.
 
-## TL;DR
+## Feasibility
 
-10BASE-T is **feasible in firmware** if the core is overclocked from its 12 MHz
-nominal to **20 MHz**. At 20 MHz one core cycle = 50 ns = one Manchester half-bit,
-so firmware bit-bangs one `PIN_W` per half-bit (the PIO output stage latches each
-level and holds it for a full cycle). **TX-only**: preamble (7×0xAA) + SFD (0xD5) +
-a short frame. No RX, no CRC/FCS, no CSMA/CD.
+* 10 Mbit/s Manchester = 20 M half-bits/s. At a **20 MHz** core clock one
+  cycle is one half-bit. A CPU can't produce a level every cycle *and* fetch
+  data, so the bits come from the **SERDES TX engine** in Manchester mode
+  (`TX_DIV` = 1), double-buffered: one 16-bit word shifts out (32 cycles)
+  while the firmware loads the next one from data RAM.
+* 12 MHz (the USB-friendly default) gives 0.6 cycles per half-bit: not
+  possible. The demo board can supply 20 MHz (e.g. RP2040 120 MHz / 6); the
+  design is constrained at 40 ns (25 MHz) in `src/config.json`, 25 % above
+  the 20 MHz this needs.
 
-## Feasibility math
+## What the firmware sends
 
-- 10 Mbit/s → 1 bit = 100 ns; Manchester half-bit = 50 ns.
-- @ 12 MHz (nominal): 1 cycle = 83.33 ns → 0.6 cycles/half-bit → **infeasible**
-  (this is why Q73 dropped it).
-- @ 20 MHz: 1 cycle = 50 ns → **exactly 1 cycle/half-bit** (integer, zero drift).
-- @ 40 MHz: 1 cycle = 25 ns → 2 cycles/half-bit (safer, coarser cadence; insert
-  one `NOP` after each `PIN_W`).
+1. 7 x `0x55` preamble + `0xD5` SFD (pushed as LE words `5555 5555 5555 D555`).
+2. The frame from data RAM (DA, SA, EtherType, payload; >= 60 bytes) as LE
+   16-bit words, LSB-first on the wire.
+3. **FCS**: the CRC unit runs CRC-32 (reflected `0xEDB88320`, init
+   `0xFFFFFFFF`, 16 bits per `CRC_W`) on each word as it is pushed — 16 cycles
+   per word, well inside the 32-cycle word time — and the firmware sends
+   `~CRC` as two more words. Checked against `zlib.crc32`.
+4. **TP_IDL**: TX runs in *release mode*, so its pins show the OUT register
+   whenever no symbol is on the line. OUT is set to TD+ high while the frame
+   is sent; it appears on the exact half-bit boundary after the last FCS bit
+   and the firmware returns the line to idle 6 cycles (300 ns) later.
+5. **Normal link pulses**: a 100 ns (2-cycle) positive pulse every 16 ms
+   (5 x 3.2 ms absolute `WAIT_CMP` steps, so no drift), which keeps a link
+   partner's link-integrity test happy.
 
-Chosen: **20 MHz, 1 cycle per half-bit.**
+The pair is driven differentially (`TX_DIFF`: TD- = complement of TD+) and
+needs an external resistor network + magnetics.
 
-## Strategy comparison
+## Cycle budget (per 16-bit word = 32 cycles)
 
-| # | Strategy | Verdict |
-|---|---|---|
-| 1 | Overclock core (20 MHz) + firmware bit-bang | **Chosen.** No new RTL, no area, build stays green; 20 MHz is a 1.67× overclock of a ~4.3 K-cell core with short critical paths — plausible on IHP130. |
-| 2 | Dedicated HW Manchester/shift datapath at a faster periph clock | Rejected. Tiny Tapeout has **one** clock; a faster peripheral clock needs a clock multiplier (area) + a new clock tree — not justified for a TX-only generator. The existing 16-bit OSR/ISR is clocked at the core rate and has no "load OSR from register" op, so it can't act as a fast level FIFO. |
-| 3 | Dual-clock subdomain (12.5 MHz periph) | Rejected. Same clock-tree/area cost as (2) for no benefit at this scope. |
+`LD` (2) + `TX_PUSH` (1, or stalls until the buffer frees) + `CRC_W` (1) +
+`INCR`/`DECR` (2) + `JNZ` (2) = 8 cycles of work per 32: the SERDES never
+underruns. After the last data word, the CRC finishes, the FCS words are
+computed and pushed while the previous word is still on the line.
 
-## Cycle / area budget
+## Out of scope
 
-- Firmware: `OE_SET 1` + `LDR R1,#1` + 256 × `PIN_W` (256 half-bits) + hold loop
-  ≈ **260 words** (fits the 384 usable SRAM words 128–511).
-- Area: **unchanged** (~4.3 K cells, << 18 K gate). No RTL added.
-- Timing: 20 MHz is a 1.67× overclock of the 12 MHz nominal (5% margin → 12.6 MHz).
-  **Caveat:** the cocotb sim is timing-independent, so it validates the firmware's
-  *cycle counting* at 20 MHz, not physical timing closure (deferred to M4.2 P&R).
-  If 20 MHz is too aggressive, fall back to 40 MHz / 2 cycles per half-bit.
-
-## What "10Mbit Ethernet" means here (scope)
-
-- **In scope (TX):** Manchester-encoded preamble 7×0xAA (10101010, the IEEE 802.3
-  10BASE-T preamble), SFD 0xD5, and a short 16-byte frame (DA 0x5555, SA 0x5555,
-  LEN 0x0002, DATA 0xABCD) → 128 bits → 256 half-bits, emitted at 10 Mbit/s on
-  `uio` pin 0.
-- **Out of scope:** RX path, CRC/FCS, inter-frame gap, CSMA/CD, minimum 64-byte
-  frame, full MAC state machine. A real 10 Mbit MAC is not achievable in this
-  footprint; a TX bit-bang is the meaningful, achievable part.
-
-## Manchester rule (per spec)
-
-- '1' bit = low→high = `[0, 1]` half-bits.
-- '0' bit = high→low = `[1, 0]` half-bits.
-- Each bit = 2 half-bits; the **second** half-bit of the pair == the data bit
-  (used by the test's decoder).
-
-## Verification
-
-- `test/test_extensions.py :: test_ethernet_10mbit_tx` (replaces the
-  `test_ethernet_10mbit_analysis` stub).
-- Run: `..\.venv\Scripts\python.exe run_tests.py -m test_extensions -t ethernet_10mbit_tx`
-- Pass criteria: the 256-half-bit level sequence is recovered from `uio_out`
-  bit 0; decoded bytes == the 16-byte frame; preamble == 7×0xAA; SFD == 0xD5;
-  every half-bit pair is a valid transition.
+* **Receive**: recovering a 10 MHz Manchester stream needs >= 4x
+  oversampling (80 MHz). The RX engine handles NRZ/NRZI (UART, USB low speed)
+  but not 10BASE-T.
+* MAC-level behaviour (CSMA/CD, collision detect, auto-negotiation FLPs).

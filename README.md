@@ -1,42 +1,59 @@
-![](../../workflows/gds/badge.svg) ![](../../workflows/docs/badge.svg) ![](../../workflows/test/badge.svg) ![](../../workflows/fpga/badge.svg)
+![](../../workflows/gds/badge.svg) ![](../../workflows/docs/badge.svg) ![](../../workflows/test/badge.svg) ![](../../workflows/formal/badge.svg) ![](../../workflows/fpga/badge.svg)
 
-# Tiny Tapeout Verilog Project Template
+# msfcore — a reprogrammable protocol-emulator ASIC
 
-- [Read the documentation for project](docs/info.md)
+A 16-bit CPU for IHP SG13G2 (Tiny Tapeout, 6x4 tiles) whose instruction set
+is built for bit-banging: protocols are firmware, loaded over UART or a
+parallel port after fabrication. Entry for the Jane Street protocol emulator
+ASIC competition.
+
+* **Deterministic hardware threads** — two barrel-interleaved threads, each
+  with its own registers and stall state; one thread's timing never depends on
+  the other's (e.g. an exact square wave on T0 while T1 echoes UART).
+* **Exact timing** — 1 cycle per instruction, documented costs for every op,
+  absolute cycle-counter waits (`WAIT_CMP`) for drift-free bit schedules,
+  edge/level waits with programmable timeouts.
+* **Line-code SERDES** — NRZ / NRZI / Manchester, bit stuffing, differential
+  pairs, gapless double buffering; RX with de-stuffing and edge resync.
+  Framing stays in firmware, so the same hardware serves UART, USB and
+  10BASE-T.
+* **CRC unit** — any CRC up to 32 bits (CRC-8, USB CRC5/16, Ethernet CRC-32).
+* **512 x 16 SRAM** (IHP two-port macro): 384 words of firmware + 128 words of
+  data RAM, 128-word boot ROM with a CRC-checked framed loader.
+
+Firmware in [`firmware/`](firmware): UART, SPI (modes 0-3, full duplex),
+I2C (ACK/NACK, repeated start, clock stretching), USB low-speed TX and RX
+with CRC16, 10BASE-T transmit with FCS and link pulses, and a two-thread demo.
+
+## Documentation
+
+* [Datasheet](docs/info.md) — pinout, boot protocol, how to test
+* [ISA v2.0](docs/sam/isa.md) — encodings, timing model, peripherals, threads
+* [Implementation plan](docs/sam/IMPLEMENTATION_PLAN.md) — review findings and phases
+* [Verification](docs/golden-model.md) — reference model, random differential testing, formal
+
+## Repository layout
+
+| Path | Contents |
+|---|---|
+| `src/` | RTL (Verilog-2005): `project.v` top, `tt_um_msf_ctrl.v` core, `_serdes`, `_crc`, `_pio`, `_sram`, `_bootrom`, `_regfile`, `_alu` |
+| `firmware/` | assembly programs + `msf.inc` constants |
+| `test/` | cocotb suite, assembler (`assembler.py`), ISA reference model (`isa_model.py`), boot ROM source (`bootloader.s`) |
+| `formal/` | formal properties runner (`run_formal.py`, yosys `sat`) |
+| `tools/` | `msf_boot.py` host loader, `synth_check.py` area/timing pre-check |
+
+## Running
+
+```sh
+pip install -r test/requirements.txt        # cocotb; plus Icarus Verilog
+cd test && make                              # RTL suite (Windows: python run_tests.py --all)
+python formal/run_formal.py --yosys yowasp-yosys   # pip install yowasp-yosys
+python test/assembler.py                     # regenerate the boot ROM after editing bootloader.s
+python tools/msf_boot.py firmware/uart_tx.s --port COM5   # load onto silicon
+```
 
 ## What is Tiny Tapeout?
 
-Tiny Tapeout is an educational project that aims to make it easier and cheaper than ever to get your digital and analog designs manufactured on a real chip.
-
-To learn more and get started, visit https://tinytapeout.com.
-
-## Set up your Verilog project
-
-1. Add your Verilog files to the `src` folder.
-2. Edit the [info.yaml](info.yaml) and update information about your project, paying special attention to the `source_files` and `top_module` properties. If you are upgrading an existing Tiny Tapeout project, check out our [online info.yaml migration tool](https://tinytapeout.github.io/tt-yaml-upgrade-tool/).
-3. Edit [docs/info.md](docs/info.md) and add a description of your project.
-4. Adapt the testbench to your design. See [test/README.md](test/README.md) for more information.
-
-The GitHub action will automatically build the ASIC files using [LibreLane](https://www.zerotoasiccourse.com/terminology/librelane/).
-
-## Enable GitHub actions to build the results page
-
-- [Enabling GitHub Pages](https://tinytapeout.com/faq/#my-github-action-is-failing-on-the-pages-part)
-
-## Resources
-
-- [FAQ](https://tinytapeout.com/faq/)
-- [Digital design lessons](https://tinytapeout.com/digital_design/)
-- [Learn how semiconductors work](https://tinytapeout.com/siliwiz/)
-- [Join the community](https://tinytapeout.com/discord)
-- [Build your design locally](https://www.tinytapeout.com/guides/local-hardening/)
-
-## What next?
-
-- [Submit your design to the next shuttle](https://app.tinytapeout.com/).
-- Edit [this README](README.md) and explain your design, how it works, and how to test it.
-- Share your project on your social network of choice:
-  - LinkedIn [#tinytapeout](https://www.linkedin.com/search/results/content/?keywords=%23tinytapeout) [@TinyTapeout](https://www.linkedin.com/company/100708654/)
-  - Mastodon [#tinytapeout](https://chaos.social/tags/tinytapeout) [@matthewvenn](https://chaos.social/@matthewvenn)
-  - X (formerly Twitter) [#tinytapeout](https://twitter.com/hashtag/tinytapeout) [@tinytapeout](https://twitter.com/tinytapeout)
-  - Bluesky [@tinytapeout.com](https://bsky.app/profile/tinytapeout.com)
+Tiny Tapeout is an educational project that makes it easier and cheaper than
+ever to get digital designs manufactured on a real chip. See
+https://tinytapeout.com.
