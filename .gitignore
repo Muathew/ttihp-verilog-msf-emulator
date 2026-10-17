@@ -17,3 +17,13 @@ src/a.out
 
 # Private AI/planning artifacts (not part of the open-source submission)
 setup-env.ps1
+
+# Generated hardening outputs (the GDS action in CI produces these)
+*.gds
+gds_render*.png
+gds_render*.svg
+
+# Local formal / synthesis scratch
+formal/work/
+
+__pycache__/
