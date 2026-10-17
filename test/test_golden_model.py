@@ -1,40 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Golden reference model test suite for the msfcore protocol emulator.
+Golden reference test suite for the msfcore protocol emulator.
 
-Uses ``golden_model.py`` (the independent Python reference) in two ways:
+1. test_golden_lockstep -- runs a firmware image on the RTL and on the
+   independent ISA model (isa_model.py) and diffs every issue/release event
+   and the full architectural state (diffcheck.py). If the RTL ever drifts
+   from the ISA spec, this fails on the first divergent cycle.
 
-1. :func:`test_golden_lockstep` -- runs :class:`MsfCoreModel` in lock-step
-   with the DUT, diffing observable core state (PC, register file, Z/N,
-   cycle counter, pad outputs) every cycle.  If the RTL ever drifts from
-   the ISA/golden model, this fails on the first divergent cycle.
-
-2. :func:`test_golden_uart_reference` / :func:`test_golden_i2c_conditions`
-   -- pure-model checks that the protocol reference waveforms (UART frame,
-   I2C START/STOP/data detector) behave as the firmware expects.
-
-Run with the rest of the suite: ``cd test && make`` (it is listed in
-``COCOTB_TEST_MODULES`` in the Makefile).
+2. test_golden_uart_reference / test_golden_i2c_conditions / test_golden_crcs
+   -- pure-Python checks of the protocol golden references (golden_model.py).
 """
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, ReadOnly
 
-from assembler import assemble, bootloader_words
+from diffcheck import run_and_compare
 from golden_model import (
-    MsfCoreModel,
     UartRxDecoder,
     I2cConditionDetector,
     uart_frame_bits,
     uart_decode_data_bits,
+    usb_crc16,
+    usb_crc5,
+    eth_fcs,
+    crc8_07,
 )
-
-
-def load_sram(dut, words, start_addr=128):
-    """Preload firmware words into SRAM (words 128..511)."""
-    for i, w in enumerate(words):
-        dut.user_project.u_sram.mem[start_addr + i].value = w
 
 
 # ---------------------------------------------------------------------------
@@ -67,86 +57,13 @@ done_loop:
 """
 
 
-def _dut_state(dut):
-    """Read the DUT's observable core state (the RTL side of the golden diff)."""
-    c = dut.user_project.u_ctrl
-    regs = [int(c.u_rf.rf[i].value) for i in range(8)]
-    return {
-        "pc": int(c.pc_p.value),
-        "regs": regs,
-        "z": int(c.z.value),
-        "n": int(c.n.value),
-        "cnt": int(c.cnt.value) & 0xFFFF,
-        "uio_out": int(dut.uio_out.value),
-        "uio_oe": int(dut.uio_oe.value),
-    }
-
-
 @cocotb.test()
 async def test_golden_lockstep(dut):
-    """Differential golden-model check: DUT vs MsfCoreModel, cycle-by-cycle."""
-    clock = Clock(dut.clk, 80, unit="ns")
-    cocotb.start_soon(clock.start())
-
-    words = assemble(_FW, base_addr=128)
-    load_sram(dut, words)
-
-    # Mirror the firmware + boot ROM into the golden model (ROM is in the
-    # DUT too, and PC 0 runs the bootloader which jumps to 128 on ui_in[0]=1).
-    model = MsfCoreModel()
-    model.load_sram(words)                    # SRAM words 128..
-    model.load_rom(bootloader_words())        # ROM words 0..127
-
-    # --- Reset the DUT (async reset) and the model to the same state ---
+    """Differential check: DUT vs the ISA model, every event, 300 cycles."""
+    cocotb.start_soon(Clock(dut.clk, 80, unit="ns").start())
     dut.ena.value = 1
-    dut.ui_in.value = 1          # direct SRAM boot path
-    dut.uio_in.value = 0
-    dut.rst_n.value = 0
-    for _ in range(5):
-        await RisingEdge(dut.clk)
-    dut.rst_n.value = 1
-    # Async reset: during the 5 low-rst_n cycles the DUT's pc/cnt are held at
-    # 0. When rst_n goes high, the *next* posedge of clk is the DUT's first
-    # "normal" cycle. So after the rst_n deassertion, the DUT is in the
-    # reset state (pc=0, flush=1, cnt=0).  Put the model in the same state.
-    model.reset()
-
-    # --- Lock-step ---
-    # Each iteration: set DUT inputs (write phase), advance the model and the
-    # DUT by one clock, then compare the settled functional state.
-    #
-    # We compare PC, register file, Z/N flags, and pad outputs.  The
-    # free-running cycle counter (cnt) is intentionally NOT compared: its
-    # absolute phase depends on when the async reset deasserts relative to
-    # clock edges, which is a testbench artifact, not a design property.
-    N = 60
-    for cyc in range(N):
-        # RisingEdge enters the write phase; the DUT takes this clock edge.
-        await RisingEdge(dut.clk)
-        # Set DUT inputs for the *next* cycle (write phase).
-        dut.uio_in.value = 0
-        dut.ui_in.value = 1
-        # Advance the model to mirror the edge the DUT just took.
-        model.step(uio_in=0, ui_in=1)
-        # ReadOnly waits for non-blocking assignments to settle, then
-        # locks us into the read-only phase so we can safely read values.
-        await ReadOnly()
-
-        m = model.snapshot()
-        d = _dut_state(dut)
-
-        diffs = [f"{k}: golden={m[k]} dut={d[k]}"
-                 for k in ("pc", "z", "n", "uio_out", "uio_oe")
-                 if m[k] != d[k]]
-        diffs += [f"R{r}: golden={m['regs'][r]:#06x} dut={d['regs'][r]:#06x}"
-                  for r in range(8) if m["regs"][r] != d["regs"][r]]
-        if diffs:
-            raise AssertionError(
-                f"cycle {cyc}: golden model diverged from DUT -> "
-                + "; ".join(diffs)
-            )
-
-    dut._log.info(f"Golden lock-step PASSED ({N} cycles, all state matched)")
+    n, _, _ = await run_and_compare(dut, _FW, 300, tag="golden lockstep")
+    dut._log.info(f"Golden lock-step PASSED ({n} instructions, all state matched)")
 
 
 @cocotb.test()
@@ -180,3 +97,13 @@ async def test_golden_i2c_conditions(dut):
     # STOP: with SDA low and SCL high, releasing SDA (0->1) is a STOP.
     assert det.update(1, 1) == "STOP"
     dut._log.info(f"Golden I2C condition detector PASSED: {det.events}")
+
+
+@cocotb.test()
+async def test_golden_crcs(dut):
+    """CRC references match the published check values / known packets."""
+    assert eth_fcs(b"123456789") == 0xCBF43926
+    assert crc8_07(b"123456789") == 0xF4
+    assert usb_crc16(b"123456789") == 0xB4C8
+    # SETUP to address 0 / endpoint 0 is sent as 2D 00 10: CRC5 = 0x10 >> 3
+    assert usb_crc5(0) == 0x02

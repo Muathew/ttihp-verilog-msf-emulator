@@ -1,16 +1,15 @@
 # Makefile
 # See https://docs.cocotb.org/en/stable/quickstart.html for more info
-# STATUS: full cocotb setup -- 7 msfcore sources + test_core (9 tests, green).
-# INTEGRATION (Linux/macOS): `. .\setup-env.ps1` then `cd test; make -B` (venv first).
-# INTEGRATION (Windows): Git-for-Windows `sh` fork limits break `make`; use
-# `python run_tests.py` (no make/sh; cocotb_tools runner, iverilog).
-# GATES/SIM/VVP sections unchanged (IHP PDK, glue-level sim support).
+# msfcore cocotb suite. Linux/macOS: `cd test && make` (RTL) or
+# `make GATES=yes` (gate level, after the GDS action). Windows: use
+# `python run_tests.py --all` (same modules, no make/sh needed).
+# Keep PROJECT_SOURCES in sync with info.yaml (run_tests.py reads info.yaml).
 # defaults
 SIM ?= icarus
 FST ?= -fst # Use more efficient FST format
 TOPLEVEL_LANG ?= verilog
 SRC_DIR = $(PWD)/../src
-PROJECT_SOURCES = project.v tt_um_msf_ctrl.v tt_um_msf_regfile.v tt_um_msf_alu.v tt_um_msf_sram.v tt_um_msf_bootrom.v tt_um_msf_pio.v
+PROJECT_SOURCES = project.v tt_um_msf_ctrl.v tt_um_msf_regfile.v tt_um_msf_alu.v tt_um_msf_sram.v tt_um_msf_bootrom.v tt_um_msf_pio.v tt_um_msf_serdes.v tt_um_msf_crc.v
 
 ifneq ($(GATES),yes)
 
@@ -37,6 +36,7 @@ endif
 
 # Allow sharing configuration between design and testbench via `include`:
 COMPILE_ARGS 		+= -I$(SRC_DIR)
+COMPILE_ARGS 		+= -g2012
 
 # Include the testbench sources:
 VERILOG_SOURCES += $(PWD)/tb.v
@@ -45,7 +45,7 @@ TOPLEVEL = tb
 # List test modules to run, separated by commas and without the .py suffix:
 # GL mode uses only top-level-port tests (no internal hierarchy in netlist).
 ifneq ($(GATES),yes)
-COCOTB_TEST_MODULES = test_core,test_crv_formal,test_extensions,test_protocols,test_reprogrammable,test_golden_model
+COCOTB_TEST_MODULES = test_core,test_regressions,test_isa_v2,test_peripherals,test_threads,test_boot,test_random_diff,test_protocols,test_extensions,test_firmware,test_reprogrammable,test_crv_invariants,test_golden_model
 else
 COCOTB_TEST_MODULES = test_gl_smoke
 endif

@@ -177,8 +177,7 @@ async def test_call_and_ret(dut):
         OE_SET 255
         LDR   R1, #10
         PIN_W R1
-        CALL
-        JMP   my_func
+        CALL  my_func         ; v2: R7 <- return address, jump
         PIN_W R2
     end:
         JMP   end

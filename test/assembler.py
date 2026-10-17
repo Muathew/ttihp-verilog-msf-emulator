@@ -1,176 +1,362 @@
 # SPDX-License-Identifier: Apache-2.0
-# msfcore micro-assembler (16-bit ISA, isa.md v1.0) + bootloader ROM emitter.
+"""msfcore assembler / disassembler for ISA v2.0 (docs/sam/isa.md).
 
+    assemble(text, max_words=512, base_addr=0) -> [16-bit words]
+    disassemble(word, addr=None)                -> str
+    bootloader_words()                          -> boot ROM image (test/bootloader.s)
+    crc8(data)                                  -> CRC-8/0x07 (boot protocol)
+
+Syntax
+    label:  MNEMONIC operands      ; comment
+    Registers R0..R7. Immediates: 12, 0x1F, 0b101, 'A', labels, .equ names
+    and expressions (+ - * << >> & | ~, lo(x), hi(x)). A leading '#' is optional.
+Directives
+    .org ADDR        move the location counter forward (gap filled with NOP)
+    .word V[, V...]  raw words
+    .equ NAME, V     constant (also: NAME = V); `defines=` passed to
+                     assemble() take precedence (tests use this to scale
+                     timing constants)
+    .include "FILE"  textual include, searched in the including file's
+                     directory and firmware/
+Pseudo-ops
+    LDI rd, V        LDR rd,#lo(V) ; LDH rd,#hi(V)   (always 2 words)
+    LD ra, [rb] / ST [ra], rb are accepted as well as LD ra, rb / ST ra, rb
 """
-Micro-assembler for the msfcore 16-bit ISA (see docs/sam/isa.md v1.0).
-
-Encoding (16-bit words, b15..b11 = opcode):
-  R: b10..b8=rd, b7..b5=rs, b4..b2=rt, b1..b0=0
-  I: b10..b8=rd, b7..b0=imm8
-  B: b10..b2=rel9 (signed), b1..b0=0
-  A: b10..b0=imm11
-
-Also provides:
-  bootloader_words()    -> list of 16-bit words for bootloader ROM
-  crc8(data)            -> CRC-8 (poly 0x07, init 0x00, no reflection)
-"""
+import ast
+import operator
+import os
+import re
 
 OP = {
-    # Data ops (R/I formats)
-    "LDR": 0b00000, "ADDS": 0b00001, "SUBS": 0b00010, "AND": 0b00011,
-    "OR": 0b00100, "XOR": 0b00101, "SHL": 0b00110, "SHR": 0b00111,
-    "MOV": 0b01000, "JMP": 0b01001, "JZ": 0b01010, "JNZ": 0b01011,
-    "JP": 0b01100, "JN": 0b01101, "NOP": 0b01110,
-    # Pin I/O
-    "PIN_W": 0b10000, "PIN_R": 0b10001, "OE_SET": 0b10010,
-    "OE_CLR": 0b10011, "CNT_R": 0b10100, "INCR": 0b10101,
-    "DECR": 0b10110, "IN_RD": 0b10111,
-    # Subroutine / events / shift
-    "CALL": 0b11000, "RET": 0b11001, "WAIT_EDGE": 0b11010,
-    "WAIT_CMP": 0b11011, "SHIFT_OUT": 0b11100, "SHIFT_IN": 0b11101,
-    "MEM_W": 0b11110,
+    "LDR": 0x00, "ADDS": 0x01, "SUBS": 0x02, "AND": 0x03, "OR": 0x04, "XOR": 0x05,
+    "SHL": 0x06, "SHR": 0x07, "MOV": 0x08, "JMP": 0x09, "JZ": 0x0A, "JNZ": 0x0B,
+    "JP": 0x0C, "JN": 0x0D, "NOP": 0x0E, "EXT": 0x0F, "PIN_W": 0x10, "PIN_R": 0x11,
+    "SETM": 0x12, "CLRM": 0x13, "CNT_R": 0x14, "INCR": 0x15, "DECR": 0x16,
+    "IN_RD": 0x17, "CALL": 0x18, "RET": 0x19, "WAIT_EDGE": 0x1A, "WAIT_CMP": 0x1B,
+    "SHIFT_OUT": 0x1C, "SHIFT_IN": 0x1D, "MEM_W": 0x1E, "LDH": 0x1F,
 }
+OPNAME = {v: k for k, v in OP.items()}
 
-REGS = {f"R{i}": i for i in range(8)}
+# SETM / CLRM aliases: mnemonic -> (opcode, selector)
+MASK_OPS = {
+    "OE_SET": (0x12, 0), "PIN_SET": (0x12, 1), "PIN_TGL": (0x12, 2),
+    "UO_SET": (0x12, 3), "UO_TGL": (0x12, 4), "OE_TGL": (0x12, 5),
+    "OE_CLR": (0x13, 0), "PIN_CLR": (0x13, 1), "PIN_WI": (0x13, 2),
+    "UO_CLR": (0x13, 3), "UO_WI": (0x13, 4), "OE_WI": (0x13, 5),
+}
+MASK_NAME = {v: k for k, v in MASK_OPS.items()}
+
+# EXT group: mnemonic -> (sub, operand pattern) ; 'a' = ra (b10..8), 'b' = rb (b7..5)
+EXT = {
+    "SR_LD": (0, "b"), "SR_RD": (1, "a"), "XFER": (2, ""), "SER_CFG": (3, "b"),
+    "OUT_W": (4, "b"), "MEM_A": (5, "b"), "LD": (6, "ab"), "ST": (7, "ab"),
+    "SWAP": (8, "ab"), "JR": (9, "b"), "TMO": (10, "b"), "STAT": (11, "a"),
+    "TX_CFG": (12, "b"), "TX_DIV": (13, "b"), "TX_PUSH": (14, "b"), "TX_WAIT": (15, ""),
+    "RX_CFG": (16, "b"), "RX_DIV": (17, "b"), "RX_POP": (18, "a"), "CRC_CFG": (19, "b"),
+    "CRC_W": (20, "b"), "CRC_RDL": (21, "a"), "CRC_RDH": (22, "a"), "CRC_SETL": (23, "b"),
+    "CRC_SETH": (24, "b"), "CRC_POLL": (25, "b"), "CRC_POLH": (26, "b"),
+    "TSTART": (27, "b"), "TSTOP": (28, ""), "TID": (29, "a"),
+}
+EXT_NAME = {v[0]: (k, v[1]) for k, v in EXT.items()}
+
+WAIT_COND = {"any": 0, "rise": 1, "rising": 1, "fall": 2, "falling": 2,
+             "low": 4, "high": 5}
+
+R_OPS = ("ADDS", "SUBS", "AND", "OR", "XOR")
+REG_I_OPS = ("PIN_W", "PIN_R", "CNT_R", "INCR", "DECR", "IN_RD", "SHIFT_OUT",
+             "WAIT_CMP", "MEM_W")
+BRANCHES = ("JZ", "JNZ", "JP", "JN")
+
+
+class AsmError(ValueError):
+    pass
+
+
+_BINOPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+           ast.LShift: operator.lshift, ast.RShift: operator.rshift,
+           ast.BitAnd: operator.and_, ast.BitOr: operator.or_, ast.BitXor: operator.xor}
 
 
 def _reg(tok):
-    t = tok.strip().upper()
-    if t not in REGS:
-        raise ValueError(f"invalid register: {tok!r}")
-    return REGS[t]
+    t = tok.strip().strip("[]").strip().upper()
+    if not re.fullmatch(r"R[0-7]", t):
+        raise AsmError(f"invalid register: {tok!r}")
+    return int(t[1])
 
 
-def _imm(tok, bits=8):
-    t = tok.strip().lstrip("#")
-    v = int(t, 0)
-    if v < 0 or v >= (1 << bits):
-        raise ValueError(f"immediate {t!r} out of range for {bits} bits")
+def _split(args):
+    return [a.strip() for a in args.split(",")] if args.strip() else []
+
+
+def _eval(expr, syms):
+    e = expr.strip().lstrip("#").strip()
+    e = re.sub(r"'(\\?.)'", lambda m: str(ord(m.group(1)[-1])), e)
+    try:
+        tree = ast.parse(e, mode="eval")
+    except SyntaxError:
+        raise AsmError(f"bad expression {expr!r}")
+
+    def ev(n):
+        if isinstance(n, ast.Expression):
+            return ev(n.body)
+        if isinstance(n, ast.Constant) and isinstance(n.value, int):
+            return n.value
+        if isinstance(n, ast.Name):
+            if n.id in syms:
+                return syms[n.id]
+            raise KeyError(n.id)
+        if isinstance(n, ast.UnaryOp):
+            v = ev(n.operand)
+            return {ast.USub: -v, ast.UAdd: v, ast.Invert: ~v}[type(n.op)]
+        if isinstance(n, ast.BinOp):
+            fn = _BINOPS.get(type(n.op))
+            if fn is None:
+                raise AsmError(f"operator not allowed in {expr!r}")
+            return fn(ev(n.left), ev(n.right))
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and len(n.args) == 1:
+            v = ev(n.args[0])
+            if n.func.id == "lo":
+                return v & 0xFF
+            if n.func.id == "hi":
+                return (v >> 8) & 0xFF
+        raise AsmError(f"unsupported expression {expr!r}")
+
+    return ev(tree)
+
+
+def _imm(expr, syms, bits, signed=False):
+    v = _eval(expr, syms)
+    lo, hi = (-(1 << (bits - 1)), (1 << (bits - 1)) - 1) if signed else (0, (1 << bits) - 1)
+    if not lo <= v <= hi:
+        raise AsmError(f"value {v} of {expr!r} out of range for {bits} bits")
     return v
 
 
-def _word(op, rd=0, rs=0, rt=0, imm=0, rel=0, abs11=0):
-    w = (op & 0x1F) << 11
-    if op in (0b00001, 0b00010, 0b00011, 0b00100, 0b00101,
-              0b00110, 0b00111, 0b01000):
-        w |= (rd & 0x7) << 8 | (rs & 0x7) << 5 | (rt & 0x7) << 2
-    elif op in (0b01010, 0b01011, 0b01100, 0b01101):
-        w |= ((rel & 0x1FF) << 2)
-    elif op == 0b01001:
-        w |= (abs11 & 0x7FF)
-    else:  # I-format
-        w |= (rd & 0x7) << 8 | (imm & 0xFF)
-    return w
+def _size(mn):
+    return 2 if mn == "LDI" else 1
 
 
-def assemble(text, max_words=512, base_addr=0):
-    """Assemble an msfcore assembly string into a list of 16-bit machine words."""
-    # Pass 1: strip comments, collect labels and instructions with word addresses
-    labels = {}
-    instructions = []  # list of (pc, mnemonic, args, line_num)
-
-    for line_num, raw in enumerate(text.splitlines(), start=1):
+def _parse_lines(text):
+    """Yield (line_no, label_list, mnemonic, args) with comments stripped."""
+    for ln, raw in enumerate(text.splitlines(), start=1):
         line = raw.split(";", 1)[0].strip()
         if not line:
             continue
-
-        # Handle multiple labels on a line or inline labels
-        while ":" in line:
-            prefix, remainder = line.split(":", 1)
-            prefix = prefix.strip()
-            # If prefix contains whitespace, it's not a sole label token
-            if " " in prefix or "\t" in prefix:
+        labels = []
+        while True:
+            m = re.match(r"^([A-Za-z_.][\w.]*)\s*:(.*)$", line)
+            if not m:
                 break
-            labels[prefix] = base_addr + len(instructions)
-            line = remainder.strip()
-            if not line:
+            labels.append(m.group(1))
+            line = m.group(2).strip()
+        if not line:
+            yield ln, labels, None, ""
+            continue
+        m = re.match(r"^([A-Za-z_][\w]*)\s*=\s*(.+)$", line)
+        if m:
+            yield ln, labels, ".EQU", f"{m.group(1)}, {m.group(2)}"
+            continue
+        parts = line.split(None, 1)
+        yield ln, labels, parts[0].upper(), parts[1].strip() if len(parts) > 1 else ""
+
+
+FIRMWARE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "firmware")
+
+
+def _expand_includes(text, dirs, depth=0):
+    if depth > 8:
+        raise AsmError(".include nested too deeply")
+    out = []
+    for raw in text.splitlines():
+        m = re.match(r'^\s*\.include\s+"([^"]+)"', raw, flags=re.I)
+        if not m:
+            out.append(raw)
+            continue
+        for d in dirs:
+            path = os.path.join(d, m.group(1))
+            if os.path.exists(path):
+                with open(path) as f:
+                    out.append(_expand_includes(f.read(), [os.path.dirname(path)] + dirs, depth + 1))
                 break
-
-        if line:
-            parts = line.split(None, 1)
-            mn = parts[0].upper()
-            args = parts[1].strip() if len(parts) > 1 else ""
-            instructions.append((base_addr + len(instructions), mn, args, line_num))
-
-    # Pass 2: encode instructions
-    words = []
-    for pc, mn, args, line_num in instructions:
-        if mn not in OP:
-            raise ValueError(f"line {line_num}: unknown mnemonic {mn!r}")
-        op = OP[mn]
-
-        if mn == "MOV":
-            # MOV rd, rs
-            parts = [x.strip() for x in args.split(",")]
-            if len(parts) != 2:
-                raise ValueError(f"line {line_num}: MOV requires rd, rs; got {args!r}")
-            words.append(_word(op, rd=_reg(parts[0]), rs=_reg(parts[1]), rt=0))
-
-        elif mn in ("ADDS", "SUBS", "AND", "OR", "XOR"):
-            parts = [x.strip() for x in args.split(",")]
-            if len(parts) == 3:
-                rd, rs, rt = _reg(parts[0]), _reg(parts[1]), _reg(parts[2])
-            elif len(parts) == 2:
-                rd, rs, rt = _reg(parts[0]), _reg(parts[0]), _reg(parts[1])
-            else:
-                raise ValueError(f"line {line_num}: {mn} requires 2 or 3 args; got {args!r}")
-            words.append(_word(op, rd=rd, rs=rs, rt=rt))
-
-        elif mn in ("SHL", "SHR"):
-            parts = [x.strip() for x in args.split(",")]
-            if len(parts) == 3:
-                rd, rs = _reg(parts[0]), _reg(parts[1])
-                rt = _imm(parts[2], 3)
-            elif len(parts) == 2:
-                rd, rs = _reg(parts[0]), _reg(parts[0])
-                rt = _imm(parts[1], 3)
-            else:
-                raise ValueError(f"line {line_num}: {mn} requires 2 or 3 args; got {args!r}")
-            words.append(_word(op, rd=rd, rs=rs, rt=rt))
-
-        elif mn == "LDR":
-            parts = [x.strip() for x in args.split(",")]
-            if len(parts) != 2:
-                raise ValueError(f"line {line_num}: LDR requires rd, #imm8; got {args!r}")
-            words.append(_word(op, rd=_reg(parts[0]), imm=_imm(parts[1], 8)))
-
-        elif mn in ("JZ", "JNZ", "JP", "JN"):
-            tgt = args.strip().lstrip("+-")
-            if tgt in labels:
-                target_pc = labels[tgt]
-            else:
-                target_pc = int(tgt, 0)
-            rel = target_pc - (pc + 1)
-            if rel < -256 or rel > 255:
-                raise ValueError(f"line {line_num}: branch offset {rel} out of 9-bit range (-256..255)")
-            words.append(_word(op, rel=rel))
-
-        elif mn == "JMP":
-            t = args.strip()
-            if t in labels:
-                v = labels[t]
-            else:
-                v = int(t, 0)
-            if v < 0 or v >= 2048:
-                raise ValueError(f"line {line_num}: JMP target {v} out of imm11 range (0..2047)")
-            words.append(_word(op, abs11=v))
-
-        elif mn in ("PIN_W", "PIN_R", "CNT_R", "INCR", "DECR", "IN_RD",
-                    "SHIFT_OUT", "WAIT_CMP", "MEM_W"):
-            words.append(_word(op, rd=_reg(args)))
-
-        elif mn in ("OE_SET", "OE_CLR", "WAIT_EDGE"):
-            words.append(_word(op, imm=_imm(args, 8)))
-
-        elif mn in ("NOP", "CALL", "RET", "SHIFT_IN"):
-            words.append(_word(op))
-
         else:
-            raise ValueError(f"line {line_num}: unhandled mnemonic {mn!r}")
+            raise AsmError(f"include file {m.group(1)!r} not found in {dirs}")
+    return "\n".join(out)
+
+
+def assemble_file(path, base_addr=128, defines=None, max_words=512):
+    with open(path) as f:
+        return assemble(f.read(), max_words, base_addr, defines,
+                        include_dirs=[os.path.dirname(os.path.abspath(path))])
+
+
+def assemble(text, max_words=512, base_addr=0, defines=None, include_dirs=None):
+    """Assemble msfcore source into a list of 16-bit words starting at base_addr."""
+    text = _expand_includes(text, (include_dirs or []) + [FIRMWARE_DIR])
+    defines = dict(defines or {})
+    syms = dict(defines)
+    # pass 1: addresses
+    lines = list(_parse_lines(text))
+    pc = base_addr
+    for ln, labels, mn, args in lines:
+        for lab in labels:
+            if lab in syms:
+                raise AsmError(f"line {ln}: duplicate label {lab!r}")
+            syms[lab] = pc
+        if mn is None:
+            continue
+        if mn == ".EQU":
+            name, val = [a.strip() for a in args.split(",", 1)]
+            if name not in defines:
+                syms[name] = _eval(val, syms)
+        elif mn == ".ORG":
+            new = _eval(args, syms)
+            if new < pc:
+                raise AsmError(f"line {ln}: .org {new} is behind the location counter {pc}")
+            pc = new
+        elif mn == ".WORD":
+            pc += len(_split(args))
+        else:
+            pc += _size(mn)
+
+    # pass 2: encode
+    words = []
+    pc = base_addr
+    for ln, labels, mn, args in lines:
+        if mn is None or mn == ".EQU":
+            continue
+        try:
+            if mn == ".ORG":
+                new = _eval(args, syms)
+                words += [0x7000] * (new - pc)
+                pc = new
+                continue
+            if mn == ".WORD":
+                for a in _split(args):
+                    v = _eval(a, syms)
+                    if not -0x8000 <= v <= 0xFFFF:
+                        raise AsmError(f".word value {v} out of 16-bit range")
+                    words.append(v & 0xFFFF)
+                    pc += 1
+                continue
+            enc = _encode(mn, args, syms, pc)
+        except KeyError as e:
+            raise AsmError(f"line {ln}: undefined symbol {e.args[0]!r}")
+        except AsmError as e:
+            raise AsmError(f"line {ln}: {e}")
+        words += enc
+        pc += len(enc)
 
     if len(words) > max_words:
-        raise ValueError(f"program too long: {len(words)} > {max_words}")
+        raise AsmError(f"program too long: {len(words)} > {max_words}")
     return words
+
+
+def _encode(mn, args, syms, pc):
+    a = _split(args)
+
+    def need(n):
+        if len(a) != n:
+            raise AsmError(f"{mn} expects {n} operand(s), got {args!r}")
+
+    if mn == "LDI":
+        need(2)
+        rd = _reg(a[0])
+        v = _eval(a[1], syms) & 0xFFFF
+        return [(0x00 << 11) | rd << 8 | (v & 0xFF), (0x1F << 11) | rd << 8 | (v >> 8)]
+    if mn in MASK_OPS:
+        need(1)
+        op, sel = MASK_OPS[mn]
+        return [op << 11 | sel << 8 | _imm(a[0], syms, 8)]
+    if mn in EXT:
+        sub, pat = EXT[mn]
+        need(len(pat))
+        ra = _reg(a[pat.index("a")]) if "a" in pat else 0
+        rb = _reg(a[pat.index("b")]) if "b" in pat else 0
+        return [0x0F << 11 | ra << 8 | rb << 5 | sub]
+    if mn not in OP:
+        raise AsmError(f"unknown mnemonic {mn!r}")
+    op = OP[mn]
+    if mn in R_OPS:
+        if len(a) == 2:
+            a = [a[0], a[0], a[1]]
+        need(3)
+        return [op << 11 | _reg(a[0]) << 8 | _reg(a[1]) << 5 | _reg(a[2]) << 2]
+    if mn in ("SHL", "SHR"):
+        if len(a) == 2:
+            a = [a[0], a[0], a[1]]
+        need(3)
+        return [op << 11 | _reg(a[0]) << 8 | _reg(a[1]) << 5 | _imm(a[2], syms, 3) << 2]
+    if mn == "MOV":
+        need(2)
+        return [op << 11 | _reg(a[0]) << 8 | _reg(a[1]) << 5]
+    if mn in ("LDR", "LDH"):
+        need(2)
+        return [op << 11 | _reg(a[0]) << 8 | _imm(a[1], syms, 8)]
+    if mn in BRANCHES:
+        need(1)
+        rel = _eval(a[0], syms) - (pc + 1)
+        if not -256 <= rel <= 255:
+            raise AsmError(f"branch offset {rel} out of range (-256..255)")
+        return [op << 11 | (rel & 0x1FF) << 2]
+    if mn in ("JMP", "CALL"):
+        need(1)
+        return [op << 11 | _imm(a[0], syms, 11)]
+    if mn in REG_I_OPS:
+        need(1)
+        return [op << 11 | _reg(a[0]) << 8]
+    if mn == "WAIT_EDGE":
+        if len(a) == 1:
+            return [op << 11 | _imm(a[0], syms, 8)]
+        if len(a) not in (2, 3):
+            raise AsmError("WAIT_EDGE pin[, any|rise|fall|low|high[, uio|ui]]")
+        pin = _imm(a[0], syms, 3)
+        cond = WAIT_COND.get(a[1].lower())
+        if cond is None:
+            raise AsmError(f"bad WAIT_EDGE condition {a[1]!r}")
+        bank = 0
+        if len(a) == 3:
+            if a[2].lower() not in ("uio", "ui"):
+                raise AsmError(f"bad WAIT_EDGE bank {a[2]!r}")
+            bank = a[2].lower() == "ui"
+        return [op << 11 | cond << 4 | bank << 3 | pin]
+    if mn in ("NOP", "RET", "SHIFT_IN"):
+        need(0)
+        return [op << 11]
+    raise AsmError(f"unhandled mnemonic {mn!r}")
+
+
+def disassemble(w, addr=None):
+    """One-line disassembly of a 16-bit word (for trace / error messages)."""
+    op = (w >> 11) & 0x1F
+    a, b, c, imm8 = (w >> 8) & 7, (w >> 5) & 7, (w >> 2) & 7, w & 0xFF
+    mn = OPNAME[op]
+    if op in (0x01, 0x02, 0x03, 0x04, 0x05):
+        return f"{mn} R{a}, R{b}, R{c}"
+    if op in (0x06, 0x07):
+        return f"{mn} R{a}, R{b}, #{c}"
+    if op == 0x08:
+        return f"MOV R{a}, R{b}"
+    if op in (0x00, 0x1F):
+        return f"{mn} R{a}, #{imm8:#04x}"
+    if op in (0x09, 0x18):
+        return f"{mn} {w & 0x1FF}"
+    if 0x0A <= op <= 0x0D:
+        rel = (w >> 2) & 0x1FF
+        rel = rel - 512 if rel & 0x100 else rel
+        return f"{mn} {addr + 1 + rel}" if addr is not None else f"{mn} {rel:+d}"
+    if op in (0x12, 0x13):
+        return f"{MASK_NAME.get((op, a), 'NOP')} {imm8:#04x}"
+    if op == 0x0F:
+        if (w & 0x1F) not in EXT_NAME:
+            return "EXT-NOP"
+        name, pat = EXT_NAME[w & 0x1F]
+        ops = [f"R{a}" if p == "a" else f"R{b}" for p in pat]
+        return f"{name} {', '.join(ops)}".strip()
+    if op == 0x1A:
+        return f"WAIT_EDGE {imm8:#04x}"
+    if OPNAME[op] in REG_I_OPS:
+        return f"{mn} R{a}"
+    return mn
 
 
 def crc8(data, poly=0x07, init=0x00):
@@ -184,24 +370,21 @@ def crc8(data, poly=0x07, init=0x00):
 
 
 def bootloader_words():
-    import os
-    bootloader_path = os.path.join(os.path.dirname(__file__), "bootloader.s")
-    with open(bootloader_path, "r") as f:
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bootloader.s")
+    with open(path) as f:
         return assemble(f.read(), max_words=128)
 
 
 if __name__ == "__main__":
-    import os
     words = bootloader_words()
-    assert len(words) <= 128, f"bootloader too long: {len(words)}/128"
-    out = os.path.join(os.path.dirname(__file__), "..", "src",
+    out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src",
                        "tt_um_msf_bootrom_data.v")
-    with open(out, "w") as f:
-        f.write("// Auto-generated by test/assembler.py -- do not edit.\n")
+    with open(out, "w", newline="\n") as f:
+        f.write("// Auto-generated by test/assembler.py from test/bootloader.s -- do not edit.\n")
         f.write("// Fills `rom[]` of tt_um_msf_bootrom (128 x 16).\n")
         f.write("initial begin\n")
         for i in range(128):
-            w = words[i] if i < len(words) else 0
+            w = words[i] if i < len(words) else 0x7000
             f.write(f"  rom[{i}] = 16'h{w:04x};\n")
         f.write("end\n")
-    print(f"bootloader: {len(words)} words -> {out}")
+    print(f"bootloader: {len(words)}/128 words -> {os.path.normpath(out)}")

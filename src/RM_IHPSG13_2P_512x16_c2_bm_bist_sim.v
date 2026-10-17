@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-// Behavioral model of RM_IHPSG13_2P_512x16_c2_bm_bist for gate-level sim.
-// Port A: synchronous read (1-cycle latency when A_DLY=1).
-// Port B: synchronous write.
-// BIST ports are ignored.
+// Behavioural model of RM_IHPSG13_2P_512x16_c2_bm_bist for gate-level sim.
+// Mirrors the IHP SRAM_2P_behavioral_bm_bist core (ihp-sg13g2/libs.ref/
+// sg13g2_sram/verilog): per port, a write happens when MEN&WEN, a read when
+// MEN&REN, reads are registered (data valid the cycle after the edge) and
+// DOUT HOLDS its value when the port is not reading. Bit masks honoured,
+// BIST ports ignored, A_DLY/B_DLY must be tied high (as in the real macro).
 
 `ifndef SYNTHESIS
 module RM_IHPSG13_2P_512x16_c2_bm_bist (
@@ -43,33 +45,32 @@ module RM_IHPSG13_2P_512x16_c2_bm_bist (
     input  [15:0] B_BIST_BM
 );
   reg [15:0] mem [0:511];
-  reg [15:0] a_dout_r;
+  reg [15:0] a_dout_r = 16'h0;
+  reg [15:0] b_dout_r = 16'h0;
 
-  // Zero-init for simulation: real SRAM is X at power-up, but the CPU
-  // would fetch X instructions and propagate X to the outputs.  Zeroing
-  // makes the design deterministic (CPU executes NOPs from SRAM).
+  // Real SRAM powers up random; zero it so GL sim is deterministic.
   integer init_i;
   initial
     for (init_i = 0; init_i < 512; init_i = init_i + 1)
       mem[init_i] = 16'h0;
 
-  // Port A: synchronous read (registered, 1-cycle latency)
   always @(posedge A_CLK) begin
-    if (A_MEN && A_REN)
+    if (A_MEN && A_WEN) begin
+      mem[A_ADDR] <= (mem[A_ADDR] & ~A_BM) | (A_DIN & A_BM);
+      if (A_REN) a_dout_r <= (mem[A_ADDR] & ~A_BM) | (A_DIN & A_BM);
+    end else if (A_MEN && A_REN)
       a_dout_r <= mem[A_ADDR];
-    else
-      a_dout_r <= 16'h0;
   end
-  assign A_DOUT = a_dout_r;
 
-  // Port B: synchronous write
   always @(posedge B_CLK) begin
-    if (B_MEN && B_WEN)
-      mem[B_ADDR] <= B_DIN;
+    if (B_MEN && B_WEN) begin
+      mem[B_ADDR] <= (mem[B_ADDR] & ~B_BM) | (B_DIN & B_BM);
+      if (B_REN) b_dout_r <= (mem[B_ADDR] & ~B_BM) | (B_DIN & B_BM);
+    end else if (B_MEN && B_REN)
+      b_dout_r <= mem[B_ADDR];
   end
 
-  // Port B read (unused in this design, but provide for completeness)
-  assign B_DOUT = mem[B_ADDR];
-
+  assign A_DOUT = a_dout_r;
+  assign B_DOUT = b_dout_r;
 endmodule
 `endif

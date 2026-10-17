@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-// msfcore ALU + Z/N flags.
-// op[3:0]: 0=ADD 1=SUB 2=AND 3=OR 4=XOR 5=SHL 6=SHR 7=INCR 8=DECR 9=MOV
-// Z/N set only for ops {0,1,7,8}; cleared otherwise (MATCH THE ISA - other ops must NOT touch).
-// STATUS: pure combinational leaf; never compiled (sim not built).
-// KNOWN QUIRK: SHL/SHR use b[2:0] (3-bit shift); shift amount >=8 gives 0 -- spec'd.
-// BUDGET: ~300 cells (16-bit adder/sub + logic + shift).
-// INTEGRATION: driven once-per-cycle from tt_um_msf_ctrl (alu_a/alu_b muxed from regfile).
-// NEXT: unit test with random vectors vs a Python reference model.
+// msfcore ALU (combinational). op[3:0]: 0 ADD 1 SUB 2 AND 3 OR 4 XOR 5 SHL
+// 6 SHR 7 INCR 8 DECR 9 MOV (pass a). SHL/SHR shift by b[2:0] (0..7).
+// z/n are computed for ADD/SUB/INCR/DECR only (0 otherwise); tt_um_msf_ctrl
+// writes them to the flags only for ADDS/SUBS/INCR/DECR (isa.md section 1).
 `default_nettype none
 
 module tt_um_msf_alu (

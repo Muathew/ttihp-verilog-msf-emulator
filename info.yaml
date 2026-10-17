@@ -3,12 +3,12 @@ project:
   title:        "Protocol Emulator"      # Project title
   author:       "Sam"      # Your name
   discord:      ""      # Your discord username, for communication and automatically assigning you a Tapeout role (optional)
-  description:  "A tiny programmable protocol emulator CPU: bit-bangs UART/SPI/I2C (and more) in firmware over 8 bidirectional pins"      # One line description of what your project does
-  language:     "SystemVerilog" # other examples include SystemVerilog, Amaranth, VHDL, etc
-  clock_hz:     12000000  # Clock frequency in Hz (12 MHz target)
+  description:  "Reprogrammable protocol-emulator CPU: 2 deterministic hardware threads, line-code SERDES and CRC unit; UART/SPI/I2C/USB-LS/10BASE-T in firmware"      # One line description of what your project does
+  language:     "Verilog" # other examples include SystemVerilog, Amaranth, VHDL, etc
+  clock_hz:     12000000  # 12 MHz (USB low speed = 8 cycles/bit); run at 20 MHz for 10BASE-T
 
-  # How many tiles your design occupies? A single tile is about 167x108 uM.
-  tiles: "6x4"          # Valid values: 1x1, 1x2, 2x2, 3x2, 4x2, 6x2 or 8x2  (12 tiles ~ 24K cells)
+  # How many tiles your design occupies? (IHP tile ~202 x 155 um)
+  tiles: "6x4"          # competition allocation: 24 tiles
 
   # Your top module name must start with "tt_um_". Make it unique by including your github username:
   top_module:  "tt_um_msf"
@@ -25,40 +25,43 @@ project:
     - "tt_um_msf_pio.v"
     - "tt_um_msf_regfile.v"
     - "tt_um_msf_sram.v"
+    - "tt_um_msf_serdes.v"
+    - "tt_um_msf_crc.v"
     #- "RM_IHPSG13_2P_512x16_c2_bm_bist.v"
 
 # The pinout of your project. Leave unused pins blank. DO NOT delete or add any pins.
 # This section is for the datasheet/website. Use descriptive names (e.g., RX, TX, MOSI, SCL, SEG_A, etc.).
 pinout:
-  # Inputs
-  ui[0]: ""
-  ui[1]: ""
-  ui[2]: ""
-  ui[3]: ""
-  ui[4]: ""
-  ui[5]: ""
-  ui[6]: ""
-  ui[7]: ""
+  # Inputs (all firmware-readable via IN_RD / WAIT_EDGE ..., ui)
+  ui[0]: "BOOT_DIRECT (1 = run SRAM firmware at reset)"
+  ui[1]: "BOOT_PARALLEL (loader byte source: 0 UART, 1 parallel)"
+  ui[2]: "IN2 / parallel boot data bit 2"
+  ui[3]: "IN3 / parallel boot data bit 3"
+  ui[4]: "IN4 / parallel boot data bit 4"
+  ui[5]: "IN5 / parallel boot data bit 5"
+  ui[6]: "IN6 / parallel boot data bit 6"
+  ui[7]: "IN7 / parallel boot data bit 7"
 
-  # Outputs
-  uo[0]: ""
-  uo[1]: ""
-  uo[2]: ""
-  uo[3]: ""
-  uo[4]: ""
-  uo[5]: ""
-  uo[6]: ""
-  uo[7]: ""
+  # Outputs (UO register: OUT_W / UO_SET / UO_CLR / UO_TGL / UO_WI)
+  uo[0]: "STATUS0 (boot: waiting for frame)"
+  uo[1]: "STATUS1 (boot: last frame OK)"
+  uo[2]: "STATUS2 (boot: last frame CRC error)"
+  uo[3]: "STATUS3 (boot: starting firmware)"
+  uo[4]: "OUT4"
+  uo[5]: "OUT5"
+  uo[6]: "OUT6"
+  uo[7]: "STATUS7 (boot: parallel byte ack)"
 
-  # Bidirectional pins
-  uio[0]: "UART_TX"
-  uio[1]: "UART_RX"
-  uio[2]: "SPI_SCK"
-  uio[3]: "SPI_MOSI"
-  uio[4]: "SPI_MISO"
-  uio[5]: "I2C_SDA"
-  uio[6]: "I2C_SCL"
-  uio[7]: "GPIO"
+  # Bidirectional pins: generic emulator GPIO, firmware-defined. Defaults used
+  # by the boot ROM and firmware/*.s:
+  uio[0]: "GPIO0 / UART TX (boot ACK) / USB D-"
+  uio[1]: "GPIO1 / UART RX (boot) / parallel strobe / USB D+"
+  uio[2]: "GPIO2 / SPI SCK / ETH TD+"
+  uio[3]: "GPIO3 / SPI MOSI / ETH TD-"
+  uio[4]: "GPIO4 / SPI MISO"
+  uio[5]: "GPIO5 / SPI CS / I2C SDA"
+  uio[6]: "GPIO6 / I2C SCL"
+  uio[7]: "GPIO7 / SR shift pin (default)"
 
 # Do not change!
 yaml_version: 6

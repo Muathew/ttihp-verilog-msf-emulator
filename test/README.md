@@ -1,47 +1,26 @@
-# Sample testbench for a Tiny Tapeout project
+# msfcore test suite
 
-This is a sample testbench for a Tiny Tapeout project. It uses [cocotb](https://docs.cocotb.org/en/stable/) to drive the DUT and check the outputs.
-See below to get started or for more information, check the [website](https://tinytapeout.com/hdl/testing/).
+cocotb + Icarus Verilog. `tb.v` instantiates `tt_um_msf`; tests drive the pins
+and (in RTL simulation) read internal state through `dut.user_project.*`.
 
-## Setting up
-
-1. Edit [Makefile](Makefile) and modify `PROJECT_SOURCES` to point to your Verilog files.
-2. Edit [tb.v](tb.v) and replace `tt_um_example` with your module name.
-
-## How to run
-
-To run the RTL simulation:
+## Running
 
 ```sh
-make -B
+make                      # Linux/macOS: all RTL modules (see COCOTB_TEST_MODULES)
+make GATES=yes            # gate level, with gate_level_netlist.v from the GDS action
+python run_tests.py --all # Windows / no make: same modules, sources from ../info.yaml
+python run_tests.py -m test_firmware -t fw_usb_ls_tx_packet   # one test
+MSF_SEEDS=200 python run_tests.py -m test_random_diff         # more random programs
 ```
 
-To run gatelevel simulation, first harden your project and copy `../runs/wokwi/results/final/verilog/gl/{your_module_name}.v` to `gate_level_netlist.v`.
+## Files
 
-Then run:
-
-```sh
-make -B GATES=yes
-```
-
-If you wish to save the waveform in VCD format instead of FST format, edit tb.v to use `$dumpfile("tb.vcd");` and then run:
-
-```sh
-make -B FST=
-```
-
-This will generate `tb.vcd` instead of `tb.fst`.
-
-## How to view the waveform file
-
-Using GTKWave
-
-```sh
-gtkwave tb.fst tb.gtkw
-```
-
-Using Surfer
-
-```sh
-surfer tb.fst
-```
+| File | Role |
+|---|---|
+| `assembler.py` | assembler/disassembler (ISA v2), `python assembler.py` regenerates the boot ROM |
+| `bootloader.s` | boot ROM source (framed UART / parallel loader) |
+| `isa_model.py` | independent ISA-level reference model |
+| `diffcheck.py`, `rand_prog.py` | RTL-vs-model comparison, constrained-random program generator |
+| `golden_model.py` | protocol and CRC golden references |
+| `msf_tb.py`, `tools_path.py` | shared testbench helpers, host boot-frame builder import |
+| `test_*.py` | test modules — see `docs/golden-model.md` for what each covers |

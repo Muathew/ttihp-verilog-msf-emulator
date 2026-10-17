@@ -27,6 +27,7 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, RisingEdge, FallingEdge
 from assembler import assemble
+from tools_path import boot_frame
 
 
 def load_sram(dut, words, start_addr=128):
@@ -261,12 +262,11 @@ async def test_rom_bootloader_bypass(dut):
 # ==============================================================================
 @cocotb.test()
 async def test_uart_bootloader_over_the_wire(dut):
-    """Full UART bootloader: ROM boot -> UART RX -> MEM_W to SRAM -> JMP 128.
+    """Full UART bootloader: ROM boot -> framed UART load -> CRC ok -> run.
 
-    Power up with ui_in[0]=0 (ROM bootloader). Stream firmware words over
-    UART RX (pin 1). The bootloader assembles 16-bit words (low byte first),
-    writes them to SRAM via MEM_W (auto-increment 128..511), and jumps to
-    128 after a 0x0000 termination word. The loaded firmware executes.
+    Power up with ui_in[0]=0 (ROM bootloader). Send a boot-protocol v2
+    'W' frame (firmware words + CRC-8) and a 'G' frame over UART RX (pin 1);
+    the ROM writes the words to SRAM via MEM_W and jumps to 128.
     """
     clock = Clock(dut.clk, 80, unit="ns")
     cocotb.start_soon(clock.start())
@@ -282,15 +282,10 @@ async def test_uart_bootloader_over_the_wire(dut):
     fw_words = assemble(fw_asm, base_addr=128)
     dut._log.info(f"Streaming {len(fw_words)} firmware words over UART")
 
-    # Each 16-bit word is sent as two UART bytes: low byte first, then high byte
-    # After all words, send 0x0000 as termination
-    uart_bytes = []
-    for w in fw_words:
-        uart_bytes.append(w & 0xFF)        # low byte
-        uart_bytes.append((w >> 8) & 0xFF)  # high byte
-    # Termination marker (0x0000)
-    uart_bytes.append(0x00)
-    uart_bytes.append(0x00)
+    # Boot protocol v2 (tools/msf_boot.py): a 'W'rite frame then a 'G'o
+    # frame, each with CRC-8. Bytes are sent back to back, like a real
+    # USB-UART adapter.
+    uart_bytes = boot_frame(fw_words, addr=128, run=True)
 
     # Boot with ui_in[0] = 0 (ROM bootloader)
     dut.ena.value = 1
@@ -317,18 +312,13 @@ async def test_uart_bootloader_over_the_wire(dut):
             bit = (byte >> i) & 1
             dut.uio_in.value = bit << 1
             await ClockCycles(dut.clk, 104)
-        # Stop bit (1)
+        # Stop bit (1), next start bit follows immediately
         dut.uio_in.value = 2
         await ClockCycles(dut.clk, 104)
-        # Inter-byte gap: the bootloader's idle-poll needs the line to be genuinely
-        # idle (HIGH) before it can latch the next byte's start bit. RX processing
-        # of a byte takes ~800 cycles, so a 5000-cycle gap guarantees a large true
-        # idle window for the idle-poll to latch cleanly.
-        await ClockCycles(dut.clk, 5000)
         dut._log.info(f"  Transmitted byte {idx+1}/{len(uart_bytes)}: 0x{byte:02X}")
 
-    # Wait for bootloader to jump to 128 and firmware to execute
-    await ClockCycles(dut.clk, 150)
+    # Wait for the ACKs to go out and the firmware to start
+    await ClockCycles(dut.clk, 3000)
 
     val = int(dut.uio_out.value)
     dut._log.info(f"UART Bootloader: uio_out = 0x{val:02X}")

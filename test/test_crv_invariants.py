@@ -6,7 +6,9 @@ Techniques:
 1. Constrained-Random Verification (CRV):
    - Randomized payload streams across 50 iterations with deterministic seed logging.
    - Baud rate jitter tolerance: stresses bit-bang timing margin with injected ±1%, ±2%, ±3% clock jitter.
-2. Formal & Architectural Invariant Assertions:
+2. Architectural invariants checked by directed simulation (the formal
+   proofs are in formal/run_formal.py; test names keep their old
+   test_formal_* prefix for continuity):
    - Invariant 1: Cycle counter strictly monotonic (cnt[t+1] == (cnt[t] + 1) mod 65536).
    - Invariant 2: Hardware timeout guarantee (WAIT_* cannot deadlock; timeout resumes and sets Z=1).
    - Invariant 3: Deterministic pad latency (strictly 1-cycle output latency from PIN_W).
@@ -66,7 +68,8 @@ async def test_crv_random_payloads(dut):
     dut._log.info(f"Running CRV across {len(test_vectors)} randomized vectors...")
     for idx, byte_in in enumerate(test_vectors):
         dut.ui_in.value = byte_in
-        await ClockCycles(dut.clk, 12)
+        # worst case: 2 (input sync) + 7 (loop) + 1 (IN_RD->PIN_W) + 1 (pad reg)
+        await ClockCycles(dut.clk, 16)
         expected = ((byte_in ^ 0xA5) + 1) & 0xFF
         observed = int(dut.uio_out.value)
         assert observed == expected, f"Vector {idx}: input 0x{byte_in:02X} expected 0x{expected:02X}, got 0x{observed:02X}"
@@ -317,22 +320,23 @@ async def test_formal_timeout_deadlock_safety(dut):
     clock = Clock(dut.clk, 80, unit="ns")
     cocotb.start_soon(clock.start())
 
-    # Firmware: WAIT_EDGE on pin 7 with NO edge ever occurring.
-    # The core must un-stall upon timeout, set Z=1, and resume execution.
+    # Firmware: WAIT_EDGE on pin 7 with NO edge ever occurring. A short
+    # programmable timeout (TMO = 20 -> 21 stalled cycles) keeps the test fast;
+    # the branch sits directly after the WAIT (this was broken by bug B1).
     asm = """
         OE_SET    255
         LDR       R1, #0
         PIN_W     R1
-        WAIT_EDGE 7           ; Wait for edge that will never arrive
-        NOP                   ; NOP after stall restores pipeline PC tracking
-        ; Upon timeout, Z=1. Test with JZ:
-        JZ        timeout_ok
-        LDR       R2, #0xEE   ; Fail marker
+        LDR       R4, #20
+        TMO       R4
+        WAIT_EDGE 7           ; edge that never arrives
+        JZ        timeout_ok  ; Z=1 <=> released by timeout
+        LDR       R2, #0xEE   ; fail marker
         PIN_W     R2
     fail:
         JMP       fail
     timeout_ok:
-        LDR       R3, #0x99   ; Success marker
+        LDR       R3, #0x99   ; success marker
         PIN_W     R3
     done:
         JMP       done
@@ -341,13 +345,10 @@ async def test_formal_timeout_deadlock_safety(dut):
     load_sram(dut, words)
     await reset_core(dut, direct_boot=True)
 
-    # Core enters WAIT_EDGE
-    await ClockCycles(dut.clk, 15)
+    # Core enters WAIT_EDGE and must still be waiting before the timeout.
+    await ClockCycles(dut.clk, 20)
     assert dut.user_project.u_ctrl.stall.value == 1, "Core should be stalled in WAIT_EDGE"
-
-    # Fast-forward hardware timeout counter by forcing timeout to 1
-    dut.user_project.u_ctrl.timeout.value = 1
-    await ClockCycles(dut.clk, 10)
+    await ClockCycles(dut.clk, 30)
 
     assert dut.user_project.u_ctrl.stall.value == 0, "Core failed to un-stall upon timeout"
     assert int(dut.uio_out.value) == 0x99, f"Expected timeout success marker 0x99, got 0x{int(dut.uio_out.value):02X}"

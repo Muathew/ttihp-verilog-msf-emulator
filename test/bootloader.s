@@ -1,127 +1,147 @@
-; msfcore UART-RX bootloader (ROM-resident, IMEM words 0..127)
-; Power-up: ui_in[0] checked via IN_RD
-;   ui_in[0] = 1: direct SRAM boot (JMP 128)
-;   ui_in[0] = 0: UART RX bootloader (stream 16-bit words into SRAM)
-; Termination: 0xFFFF word ends the stream -> JMP 128
-; 115200 baud, 8N1, LSB-first, idle high
-; Pin 1 = RX (uio_in[1])
+; msfcore boot ROM v2 (IMEM words 0..127) -- assembled into
+; src/tt_um_msf_bootrom_data.v by `python test/assembler.py`.
 ;
-; REG MAP: R0=RX mask(2), R1=temp, R2=low byte, R3=counter,
-; R4=delay, R5=temp, R6=high byte, R7=assembled word
-; INTEGRATION: test/assembler.py -> src/tt_um_msf_bootrom_data.v
+; Reset with ui_in[0] = 1 : jump straight to firmware at 128 (same cycle as v1).
+; Reset with ui_in[0] = 0 : boot loader; ui_in[1] picks the byte source
+;     ui_in[1] = 0 : UART on uio[1] (RX engine), 115200 8N1 at a 12 MHz clock
+;     ui_in[1] = 1 : parallel -- byte on ui_in[7:0], strobe on uio[1],
+;                    two-phase level handshake: byte k is valid when the
+;                    strobe level == k mod 2 (first byte: strobe high); the
+;                    chip acknowledges by copying that level to uo_out[7].
+;                    Set the data at least one clock before the strobe.
+;
+; Frame  : A5 cmd addrL addrH lenL lenH (wordL wordH)*len crc8
+;          crc8 = CRC-8 (poly 0x07, init 0) over cmd .. last payload byte
+;          cmd 'W' writes len words at addr (0-127 data RAM, 128-511 code)
+;          cmd 'G' (len 0) jumps to addr after the ACK
+; Reply  : ACK 0x06 / NAK 0x15 on UART TX = uio[0] (115200 8N1)
+; uo_out : bit0 waiting for a frame, bit1 last frame OK, bit2 last frame
+;          rejected (CRC), bit3 starting firmware, bit7 parallel byte ack
+;
+; CRC check by residue: every byte (including the received crc8) goes
+; through the CRC unit; a CRC with init 0 and no final xor leaves 0.
+;
+; Registers: R0 word count, R1 byte, R2/R5 scratch, R3 cmd, R4 address,
+;            R6 byte-routine address, R7 return address (CALL).
 
-; --- Boot select ---
-; ui_in[0] = 0: UART RX bootloader (stream firmware into SRAM)
-; ui_in[0] = 1: direct SRAM boot (jump to 128)
-IN_RD    R1
-LDR      R2, #1
-AND      R3, R1, R2      ; R3 = ui_in[0]
-ADDS     R3, R3, R0       ; Z=1 if ui_in[0]=0
-JZ       uart_boot        ; ui_in[0]=0 (Z=1) -> UART bootloader
-JMP      128              ; ui_in[0]=1 (Z=0) -> direct SRAM boot
+.equ TXCFG, 0x3980          ; uio0, NRZ, LSB-first, 10-bit words, idle 1, on
+.equ RXCFG, 0x3781          ; uio1, NRZ, LSB-first, 8-bit, async char, on
+.equ ACKW,  0x020C          ; start 0 | 0x06 << 1 | stop 1 << 9
+.equ NAKW,  0x022A          ; start 0 | 0x15 << 1 | stop 1 << 9
 
-; --- UART RX Bootloader ---
-uart_boot:
-LDR      R0, #2
-LDR      R7, #0
+; ---- boot select (identical to v1: direct boot reaches 128 at cycle 8) ----
+        IN_RD    R1
+        LDR      R2, #1
+        AND      R3, R1, R2
+        ADDS     R3, R3, R0         ; Z=1 iff ui_in[0] == 0 (R0 = 0 after reset)
+        JZ       loader
+        JMP      128
 
-rx_word:
-; --- Receive low byte into R2 ---
-LDR      R2, #0
+loader:
+        LDR      R2, #0
+        TMO      R2                 ; blocking ops never time out here
+        LDR      R2, #104           ; 12 MHz / 115200
+        TX_DIV   R2
+        RX_DIV   R2
+        LDI      R2, TXCFG
+        TX_CFG   R2
+        OE_SET   1
+        LDR      R6, #par_get1
+        LDR      R2, #2
+        AND      R3, R1, R2
+        SUBS     R3, R3, R2         ; Z=1 iff ui_in[1] == 1
+        JZ       frame
+        LDR      R6, #uart_get
+        LDI      R2, RXCFG
+        RX_CFG   R2
 
-; Re-synchronize: poll until the RX line is idle HIGH, so the WAIT_EDGE
-; below latches this byte's start-bit falling edge (not a mid-byte edge).
-poll_idle_lo:
-PIN_R    R5
-AND      R5, R5, R0
-SUBS     R5, R5, R0      ; Z=1 if pin1 == 2 (HIGH)
-JNZ      poll_idle_lo    ; keep polling while LOW
+frame:
+        UO_SET   0x01               ; waiting
+        CALL     getb
+        LDR      R2, #0xA5
+        SUBS     R2, R1, R2
+        JNZ      frame              ; hunt for the sync byte
+        UO_CLR   0x07
+        CRC_RDL  R2                 ; let the sync byte's CRC finish ...
+        LDR      R2, #0             ; ... then reset CRC-8/0x07, init 0
+        CRC_SETL R2
+        CRC_SETH R2
+        CRC_POLL R2
+        LDH      R2, #0x07          ; R2 = 0x0700 (left-aligned poly)
+        CRC_POLH R2
+        LDR      R2, #7
+        CRC_CFG  R2                 ; normal, 8 bits per CRC_W
 
-WAIT_EDGE 1
-LDR      R4, #50
-dly_15_lo:
-DECR     R4
-JNZ      dly_15_lo
+        CALL     getb               ; cmd
+        MOV      R3, R1
+        CALL     getb               ; addr
+        MOV      R4, R1
+        CALL     getb
+        SWAP     R1, R1
+        OR       R4, R4, R1
+        CALL     getb               ; len
+        MOV      R0, R1
+        CALL     getb
+        SWAP     R1, R1
+        OR       R0, R0, R1
+        MEM_A    R4
+        INCR     R0
+wloop:
+        DECR     R0
+        JZ       check
+        CALL     getb               ; word, little endian
+        MOV      R5, R1
+        CALL     getb
+        SWAP     R1, R1
+        OR       R5, R5, R1
+        MEM_W    R5
+        JMP      wloop
 
-; Sample-first (matches the working echo test): read the bit now, then
-; delay to the next bit center. Delaying first would shift every sample by
-; one bit (sampling bit 1 instead of bit 0).
-LDR      R3, #8
-rx_bit_lo:
-PIN_R    R5
-AND      R5, R5, R0
-SHR      R5, R5, #1
-SHL      R5, R5, #7
-SHR      R2, R2, #1
-OR       R2, R2, R5
-LDR      R4, #31
-dly_bit_lo:
-DECR     R4
-JNZ      dly_bit_lo
-DECR     R3
-JNZ      rx_bit_lo
+check:
+        CALL     getb               ; crc8 (also fed: residue must be 0)
+        CRC_RDL  R2                 ; wait for the CRC unit
+        CRC_RDH  R2
+        INCR     R2
+        DECR     R2                 ; Z=1 iff residue == 0
+        JNZ      bad
+        LDI      R2, ACKW
+        TX_PUSH  R2
+        UO_SET   0x02
+        LDR      R2, #0x47          ; 'G'
+        SUBS     R2, R3, R2
+        JNZ      frame
+        TX_WAIT                     ; ACK fully on the wire
+        UO_SET   0x08
+        LDR      R2, #0
+        RX_CFG   R2                 ; give the pins back to the firmware
+        TX_CFG   R2
+        OE_CLR   1
+        JR       R4
 
-; Skip the stop bit
-LDR      R4, #30
-dly_stop_lo:
-DECR     R4
-JNZ      dly_stop_lo
+bad:
+        LDI      R2, NAKW
+        TX_PUSH  R2
+        UO_SET   0x04
+        JMP      frame
 
-; --- Receive high byte into R6 ---
-; Re-synchronize on idle before latching the high byte's start bit.
-LDR      R6, #0
-poll_idle_hi:
-PIN_R    R5
-AND      R5, R5, R0
-SUBS     R5, R5, R0      ; Z=1 if pin1 == 2 (HIGH)
-JNZ      poll_idle_hi    ; keep polling while LOW
-
-WAIT_EDGE 1
-LDR      R4, #50
-dly_15_hi:
-DECR     R4
-JNZ      dly_15_hi
-
-LDR      R3, #8
-rx_bit_hi:
-PIN_R    R5
-AND      R5, R5, R0
-SHR      R5, R5, #1
-SHL      R5, R5, #7
-SHR      R6, R6, #1
-OR       R6, R6, R5
-LDR      R4, #31
-dly_bit_hi:
-DECR     R4
-JNZ      dly_bit_hi
-DECR     R3
-JNZ      rx_bit_hi
-
-; Skip the stop bit
-LDR      R4, #30
-dly_stop_hi:
-DECR     R4
-JNZ      dly_stop_hi
-
-; Line idles HIGH after the stop bit, so WAIT_EDGE naturally waits for the
-; next word's start bit (next falling edge).
-; Check for termination: 0x0000 = end of stream marker.
-; word == 0 iff low byte (R2) == 0 AND high byte (R6) == 0.
-; (2*X == 0 mod 2^16 iff X == 0 for X in 0..255, so ADDS X,X is a clean zero test.)
-ADDS     R5, R2, R2      ; Z=1 if R2 == 0
-JNZ      not_done
-ADDS     R5, R6, R6      ; Z=1 if R6 == 0
-JNZ      not_done
-JMP      128             ; 0x0000 terminator -> hand off to firmware
-
-not_done:
-; Assemble 16-bit word: R7 = (R6 << 8) | R2
-; SHL only supports 3-bit shift (0-7), so use 8 single-bit shifts:
-LDR      R4, #8
-sh8:
-SHL      R6, R6, #1
-DECR     R4
-JNZ      sh8
-OR       R7, R6, R2
-MEM_W    R7              ; Store word into SRAM (auto-increment 128..511)
-JMP      rx_word
+; ---- byte sources: return the byte in R1 and feed it to the CRC ----
+getb:
+        JR       R6
+uart_get:
+        RX_POP   R1
+        CRC_W    R1
+        RET
+par_get1:                           ; even bytes: strobe high
+        WAIT_EDGE 1, high
+        IN_RD    R1
+        UO_SET   0x80               ; ack = 1
+        LDR      R6, #par_get0
+        CRC_W    R1
+        RET
+par_get0:                           ; odd bytes: strobe low
+        WAIT_EDGE 1, low
+        IN_RD    R1
+        UO_CLR   0x80               ; ack = 0
+        LDR      R6, #par_get1
+        CRC_W    R1
+        RET

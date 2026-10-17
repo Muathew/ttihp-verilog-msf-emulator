@@ -1,49 +1,47 @@
 // SPDX-License-Identifier: Apache-2.0
-// msfcore pin I/O: cycle-accurate output stage, OE set/clear, status byte,
-// serial (shift) pin on bit 7.
-// STATUS: fresh leaf block; never compiled. out_stage latches 1 cycle after
-// PIN_W executes (pad output), OE set/clear OR/AND per cycle, uo status byte
-// currently tied 0 (ua_w/ua_w_en from ctrl, M3 firmware will use it).
-// BUDGET: ~250 cells per isa.md section 7.5.
-// INTEGRATION: tt_um_msf.v drives the Tiny Tapeout uio_out/uio_oe/uio_in
-// pins from here; ctrl provides the latch controls (pin_w* oe_*).
-// NEXT: unit test - output 1-cycle latency + OE behavior (M2.6 gate).
+// msfcore pin I/O: the three output registers (OUT -> uio_out, OE -> uio_oe,
+// UO -> uo_out). The core computes the next value (set/clear/toggle/bit
+// writes) from the *_q feedback and asserts *_we; a write executed in cycle
+// N is on the pad from cycle N+1. The TX engine overrides the uio_out bits in
+// tx_mask with tx_val while it is enabled (OUT keeps its own value).
 `default_nettype none
 
 module tt_um_msf_pio (
-    input  wire        clk,
-    input  wire        rst_n,
-    input  wire [7:0]  pin_w,     // out_stage source
-    input  wire        pin_w_en,
-    input  wire [7:0]  oe_set,
-    input  wire [7:0]  oe_clr,
-    input  wire        oe_set_en,
-    input  wire        oe_clr_en,
-    input  wire [7:0]  uo_w,      // status byte source
-    input  wire        uo_w_en,
-    input  wire        serial_out, // from shift datapath (bit 7)
-    output wire [7:0]  uio_out,
-    output wire [7:0]  uio_oe,
-    output wire [7:0]  uo_out
+    input  wire       clk,
+    input  wire       rst_n,
+    input  wire       out_we,
+    input  wire [7:0] out_d,
+    input  wire       oe_we,
+    input  wire [7:0] oe_d,
+    input  wire       uo_we,
+    input  wire [7:0] uo_d,
+    input  wire [7:0] tx_mask,
+    input  wire [7:0] tx_val,
+    output wire [7:0] out_q,
+    output wire [7:0] oe_q,
+    output wire [7:0] uo_q,
+    output wire [7:0] uio_out,
+    output wire [7:0] uio_oe,
+    output wire [7:0] uo_out
 );
-  reg [7:0] out_stage;
-  reg [7:0] oe;
-  reg [7:0] uo;
+  reg [7:0] out_r, oe_r, uo_r;
 
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      out_stage <= 8'h00;
-      oe        <= 8'h00;
-      uo        <= 8'h00;
+      out_r <= 8'h00;
+      oe_r  <= 8'h00;
+      uo_r  <= 8'h00;
     end else begin
-      if (pin_w_en) out_stage <= pin_w;
-      if (oe_set_en) oe <= oe | oe_set;
-      if (oe_clr_en) oe <= oe & ~oe_clr;
-      if (uo_w_en)  uo  <= uo_w;
+      if (out_we) out_r <= out_d;
+      if (oe_we)  oe_r  <= oe_d;
+      if (uo_we)  uo_r  <= uo_d;
     end
   end
 
-  assign uio_out = {serial_out, out_stage[6:0]};
-  assign uio_oe  = oe;
-  assign uo_out  = uo;
+  assign out_q   = out_r;
+  assign oe_q    = oe_r;
+  assign uo_q    = uo_r;
+  assign uio_out = (out_r & ~tx_mask) | (tx_val & tx_mask);
+  assign uio_oe  = oe_r;
+  assign uo_out  = uo_r;
 endmodule

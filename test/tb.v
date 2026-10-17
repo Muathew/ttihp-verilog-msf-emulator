@@ -1,14 +1,8 @@
 `default_nettype none
 `timescale 1ns / 1ps
-// msfcore testbench (cocotb shim). STATUS: updated to instantiate tt_um_msf
-// (was the template tt_um_example); NO clock created here -- cocotb tests
-// drive clk/rst_n/inputs via the dut.* handles (cocotb start_soon/Clock).
-// INTEGRATION: TOPLEVEL = tb in test/Makefile; cocotb module test_core is
-// declared in the Makefile but NOT YET WRITTEN (test/test.py is the stale
-// template example asserting uo==ui+uio -- outdated, harmless if not run).
-// KNOWN BUGS: (1) Makefile references test_core.py which does not exist;
-// (2) this file dumps everything to tb.fst (fine for dev, drop for CAP).
-// NEXT: write test_core.py (blink smoke: 20-word program -> uio bit0).
+// msfcore testbench shim: instantiates tt_um_msf; the cocotb tests drive
+// clk/rst_n/ui_in/uio_in and read the outputs (and, in RTL sim, internal
+// signals) through dut.user_project.*. Waves go to tb.fst.
 /* This testbench just instantiates the module and makes some convenient wires
    that can be driven / tested by the cocotb test.py.
 */
