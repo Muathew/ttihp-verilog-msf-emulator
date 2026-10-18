@@ -4,9 +4,8 @@
 
 [`msf_bd.tcl`](../../fpga/vivado/msf_bd.tcl) is a Vivado IP Integrator
 block-design creation script generated for `msf_zynq_system` with Vivado
-2024.1. It instantiates the Zynq UltraScale+ PS, the `aup_zu3_io` RTL module,
-and reset/concatenation/constant IP, then validates and saves the block
-design.
+2024.1. It instantiates the Zynq UltraScale+ PS, the `aup_zu3_io` RTL module
+and a processor system reset, then validates and saves the block design.
 
 It is **not** a complete FPGA build script. It does not add the RTL source
 files or XDC, generate the HDL wrapper, set the project top, run synthesis or
@@ -38,11 +37,9 @@ project-directory-independent build flow.
 
 | Cell | IP/module | Role |
 |---|---|---|
-| `zynq_ultra_ps_e_0` | Zynq UltraScale+ PS, IP version 3.5 | Processing system; exposes 11 EMIO GPIO bits and the PL clock/reset |
-| `aup_zu3_io_0` | Module reference `aup_zu3_io` | Emulator core, board I/O wrapper, and PS/PMOD handoff |
+| `zynq_ultra_ps_e_0` | Zynq UltraScale+ PS, IP version 3.5 | Processing system; exposes 32 EMIO GPIO bits and the PL clock/reset |
+| `aup_zu3_io_0` | Module reference `aup_zu3_io` | Emulator core, board I/O wrapper, PS/PMOD handoff and step mode |
 | `proc_sys_reset_0` | Processor System Reset, IP version 5.0 | Generates the wrapper's active-low reset |
-| `xlconcat_0` | Concatenate, IP version 2.1 | Packs 8 status bits and 3 constant-low bits for PS EMIO GPIO input |
-| `xlconstant_0` | Constant, IP version 1.1 | Supplies the 3 low bits of EMIO GPIO input |
 
 There is **no AXI GPIO IP** in this block design. PS M_AXI GP0/GP1/GP2 are
 disabled. The control path is PS GPIO over EMIO.
@@ -54,33 +51,44 @@ disabled. The control path is PS GPIO over EMIO.
 | Source | Destination | Meaning |
 |---|---|---|
 | `zynq_ultra_ps_e_0/pl_clk0` | `proc_sys_reset_0/slowest_sync_clk` | 12 MHz clock for reset synchronization |
-| `zynq_ultra_ps_e_0/pl_clk0` | `aup_zu3_io_0/core_clk` | Emulator core clock |
-| `zynq_ultra_ps_e_0/pl_clk0` | `aup_zu3_io_0/ps_clk` | Wrapper's status synchronization clock |
+| `zynq_ultra_ps_e_0/pl_clk0` | `aup_zu3_io_0/core_clk` | Wrapper clock; the core runs on it through a `BUFGCE` |
 | `zynq_ultra_ps_e_0/pl_resetn0` | `proc_sys_reset_0/ext_reset_in` | Active-low reset input to reset controller |
 | `proc_sys_reset_0/peripheral_aresetn` | `aup_zu3_io_0/core_resetn` | Active-low wrapper/core reset |
-| `zynq_ultra_ps_e_0/emio_gpio_o` | `aup_zu3_io_0/ps_gpio_o` | PS EMIO GPIO output values `[10:0]` |
-| `zynq_ultra_ps_e_0/emio_gpio_t` | `aup_zu3_io_0/ps_gpio_t` | PS EMIO GPIO tri-state/direction values `[10:0]` |
-| `aup_zu3_io_0/ps_status_i[7:0]` | `xlconcat_0/In1[7:0]` | Core status sampled by the PS |
-| `xlconstant_0/dout[2:0]` | `xlconcat_0/In0[2:0]` | Constant-low padding |
-| `xlconcat_0/dout[10:0]` | `zynq_ultra_ps_e_0/emio_gpio_i[10:0]` | Status and padding returned to PS EMIO GPIO |
+| `zynq_ultra_ps_e_0/emio_gpio_o` | `aup_zu3_io_0/ps_gpio_o` | PS EMIO GPIO output values `[31:0]` |
+| `zynq_ultra_ps_e_0/emio_gpio_t` | `aup_zu3_io_0/ps_gpio_t` | PS EMIO GPIO tri-state/direction values `[31:0]` |
+| `aup_zu3_io_0/ps_gpio_i[31:0]` | `zynq_ultra_ps_e_0/emio_gpio_i[31:0]` | Core pins and step status returned to the PS |
 
-The concatenated input is `{ps_status_i[7:0], 3'b000}`: core status occupies
-EMIO input bits `[10:3]`, and bits `[2:0]` are tied low. `pl_clk0` is
-configured to 12 MHz directly in the PS configuration. There is no Clocking
-Wizard, AXI clock, or AXI reset connection in this block design.
+`pl_clk0` is configured to 12 MHz directly in the PS configuration. There is
+no Clocking Wizard, AXI clock, or AXI reset connection in this block design.
 
-The wrapper interprets the PS EMIO output bits as follows:
+The wrapper interprets the PS EMIO output bits as follows (only while the PS
+drives them, `ps_gpio_t` = 0):
 
-| EMIO bit(s) | Wrapper meaning |
+| EMIO output bit(s) | Wrapper meaning |
 |---|---|
 | `[7:0]` | Parallel boot data byte on core `ui_in[7:0]` while PS pin ownership is active |
 | `[8]` | Request PS ownership of the input and bidirectional interface |
 | `[9]` | PS reset-release request |
-| `[10]` | Parallel boot strobe, presented to core `uio_in[1]` when the PS owns the interface |
+| `[10]` | Parallel boot strobe, ORed into core `uio_in[1]` when the PS owns the interface |
+| `[11]` | Step mode: the core clock only runs on step requests |
+| `[12]` | Step request: each toggle runs exactly one core cycle |
+| `[20:13]` | Core `uio_in[7:0]` when the PS owns the interface |
 
-The wrapper uses the corresponding `ps_gpio_t` bits to ensure the PS is
-driving the ownership, reset-release, and strobe controls. Channel numbers
-belong to AXI GPIO and do not apply to this EMIO wiring.
+and returns on the EMIO inputs:
+
+| EMIO input bit(s) | Value |
+|---|---|
+| `[2:0]` | Tied low |
+| `[10:3]` | `uo_out[7:0]` |
+| `[11]` | Step acknowledge: equals the request bit once the cycle has run and `[27:3]` show its result |
+| `[19:12]` | `uio_out[7:0]` |
+| `[27:20]` | `uio_oe[7:0]` |
+| `[28]` | Core `rst_n` |
+| `[29]` | Step mode active |
+
+Output bits `[10:0]` and the `uo_out` position are unchanged from the 11-bit
+design. The C interface (`fpga/ps/common/msf_emio.h`) and
+[`fpga/ps/README.md`](../../fpga/ps/README.md) describe the same map.
 
 ## External board ports
 
@@ -113,24 +121,13 @@ are to add the board XDC, create and add the BD HDL wrapper, select the wrapper
 as the project top, then run synthesis, implementation, and bitstream
 generation. Those steps are not automated by `msf_bd.tcl`.
 
-## Loader software integration status
+## PS software integration status
 
-[`main.c`](../../fpga/ps/loader/src/main.c) currently uses the standalone
-`XGpio` driver and expects an `AXI_GPIO_0` device with two channels: channel 1
-as 11-bit control outputs and channel 2 as 8-bit status inputs. It generates
-the existing parallel boot protocol in software, sends `W` and `G` frames,
-checks CRC-8/0x07 frame results and alternating acknowledgement on status bit
-7, then releases PS pin ownership after the core reports that firmware is
-starting. The default firmware header is produced by
-[`generate_image.py`](../../fpga/ps/loader/generate_image.py); the C loader
-supports at most 384 words in a 512-word address space.
-
-The current `msf_bd.tcl` does not instantiate `AXI_GPIO_0` and does not expose
-its two-channel driver interface. It instead routes the PS's 11-bit EMIO GPIO
-directly to the wrapper. Therefore the current C loader cannot be used with
-the block design unchanged: the PS GPIO access in software and the block
-design wiring must be reconciled before claiming an end-to-end PS firmware
-load path.
+The PS software ([`fpga/ps`](../../fpga/ps/README.md)) uses the standalone
+`XGpioPs` driver on EMIO bank 3, which matches this block design: the loader
+and the protocol-test application need no AXI peripheral. Both run against
+the RTL in simulation (`python fpga/tests/run_ps_hil.py`) through the same
+32-bit EMIO interface.
 
 Vivado BD validation, synthesis/implementation, bitstream generation, XSA
 export, Vitis compilation, and hardware operation have not been demonstrated

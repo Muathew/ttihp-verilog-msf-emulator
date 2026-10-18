@@ -30,7 +30,8 @@ with CRC16, 10BASE-T transmit with FCS and link pulses, and a two-thread demo.
 * [Datasheet](docs/info.md) — pinout, boot protocol, how to test
 * [ISA v2.0](docs/sam/isa.md) — encodings, timing model, peripherals, threads
 * [Implementation plan](docs/sam/IMPLEMENTATION_PLAN.md) — review findings and phases
-* [FPGA porting plan](docs/muath/fpga-porting-plan.md) — AUP-ZU3 port status, current Vivado block design, and PS loader integration gap
+* [FPGA porting plan](docs/muath/fpga-porting-plan.md) — AUP-ZU3 port status and current Vivado block design
+* [FPGA PS software](fpga/ps/README.md) — Zynq loader and the C protocol tests (step mode over EMIO)
 * [Verification](docs/golden-model.md) — reference model, random differential testing, formal
 
 ## Repository layout
@@ -38,7 +39,7 @@ with CRC16, 10BASE-T transmit with FCS and link pulses, and a two-thread demo.
 | Path | Contents |
 |---|---|
 | `src/` | RTL (Verilog-2005): `project.v` top, `tt_um_msf_ctrl.v` core, `_serdes`, `_crc`, `_pio`, `_sram`, `_bootrom`, `_regfile`, `_alu` |
-| `fpga/` | AUP-ZU3 RTL, inferred BRAM, board constraints, Vivado block-design Tcl, and Zynq PS loader source |
+| `fpga/` | AUP-ZU3 RTL, inferred BRAM, board constraints, Vivado block-design Tcl, Zynq PS loader and C protocol tests |
 | `firmware/` | assembly programs + `msf.inc` constants |
 | `test/` | cocotb suite, assembler (`assembler.py`), ISA reference model (`isa_model.py`), boot ROM source (`bootloader.s`) |
 | `formal/` | formal properties runner (`run_formal.py`, yosys `sat`) |

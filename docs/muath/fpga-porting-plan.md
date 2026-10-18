@@ -50,29 +50,24 @@ or export a bitstream/XSA. See the
 running it. Obtain the matching AUP-ZU3 schematic/manual from the board vendor
 to check pin assignments and PS/DDR presets for the physical revision.
 
-## Zynq PS firmware loading
+## Zynq PS firmware loading and protocol tests
 
-The bare-metal C loader source uses the AXI GPIO standalone driver and expects
-AXI GPIO channel 1 as control outputs and channel 2 as status inputs:
+The PS reaches the core through 32 EMIO GPIO bits (bank 3, PS GPIO 78-109),
+driven with the standalone `XGpioPs` driver in `fpga/ps/common`. Bits
+`[10:0]` keep their original meaning (boot byte, PS ownership, reset release,
+parallel strobe) and `uo_out` is still returned on `[10:3]`. The wrapper also
+returns `uio_out`/`uio_oe`, lets the PS drive `uio_in`, and has a step mode in
+which the core clock (through a `BUFGCE`) advances one cycle per PS request.
+The full bit map is in [`fpga/ps/README.md`](../../fpga/ps/README.md).
 
-| AXI GPIO channel 1 | Function |
-|---|---|
-| bits `[7:0]` | Parallel boot byte on `ui_in[7:0]` |
-| bit `8` | PS ownership of `ui_in` and `uio` during loading |
-| bit `9` | Release core from reset |
-| bit `10` | Parallel-loader strobe on `uio[1]` |
-
-The loader source expects channel 2 to sample `uo_out[7:0]`, including the
-byte acknowledgement on bit 7 and frame/start status bits. It selects parallel mode
+The loader (`fpga/ps/loader/src/main.c`) selects parallel mode
 (`ui_in[1] = 1`, with direct boot disabled), holds reset while it configures
 GPIO, then sends the existing protocol: `A5`, a `W` frame containing
 little-endian firmware words, CRC-8/0x07, and a `G` frame. It waits for every
 alternating strobe acknowledgement and for the ROM's starting-firmware status
-before releasing PMOD ownership. No change to `test/bootloader.s` or the
-shared core is needed.
-
-The Vitis standalone application is in `fpga/ps/loader/src/main.c`. Generate
-its `firmware_image.h` from assembly with:
+before releasing PMOD ownership. Frames are streamed, so there is no frame
+buffer. No change to `test/bootloader.s` or the shared core is needed.
+Generate its `firmware_image.h` from assembly with:
 
 ```sh
 python3 fpga/ps/loader/generate_image.py firmware/thread_demo.s
@@ -80,15 +75,14 @@ python3 fpga/ps/loader/generate_image.py firmware/thread_demo.s
 
 The `--address` and `--output` options select another load address/header
 location. The image must fit the 512-word address space, with code at or above
-word 128 unless the application is intentionally loading data RAM. The
-current bare-metal frame buffer supports at most 384 words per image.
+word 128 unless the application is intentionally loading data RAM.
 
-**Integration gap:** the current `msf_bd.tcl` does not instantiate an AXI GPIO
-IP. It configures 11 PS EMIO GPIO bits and wires them directly to the wrapper,
-with the 8 status bits returned on EMIO input bits `[10:3]`. The C loader's
-`XGpio` device ID and two-channel AXI GPIO access therefore do not match this
-block design. Do not treat the loader as usable with the generated BD until
-the software interface and hardware wiring are reconciled.
+The protocol-test application (`fpga/ps/hil`) runs every firmware test of
+`test/test_firmware.py` on the FPGA core in step mode, with C ports of the
+cocotb protocol models (UART, SPI slave, I2C slave, USB low speed, 10BASE-T)
+acting as the other end of each bus. The same C runs against the RTL in
+simulation with `python fpga/tests/run_ps_hil.py`. Build steps and the test
+list are in [`fpga/ps/README.md`](../../fpga/ps/README.md).
 
 ## Porting and implementation procedure
 
@@ -134,9 +128,9 @@ the software interface and hardware wiring are reconciled.
    not accept an `.xpr` path via `-tclargs`.
 3. Review the generated BD against
    [the documented current connections](./vivado-tcl-script-intent.md).
-   The PS uses 11 EMIO GPIO bits; there is no AXI GPIO IP or HPM0 AXI master
-   path. `pl_clk0` is set to 12 MHz and is connected directly to both
-   `aup_zu3_io_0/core_clk` and `aup_zu3_io_0/ps_clk`.
+   The PS uses 32 EMIO GPIO bits; there is no AXI GPIO IP or HPM0 AXI master
+   path. `pl_clk0` is set to 12 MHz and is connected directly to
+   `aup_zu3_io_0/core_clk`.
 4. Manually create/add the BD HDL wrapper, set it as the project top, and run
    synthesis, implementation, and bitstream generation. The current Tcl does
    not automate these steps or export an XSA. Confirm the actual PL clock,
@@ -144,20 +138,22 @@ the software interface and hardware wiring are reconciled.
    mapping in Vivado reports.
 5. Confirm `PL_USER_PB[0]` polarity and PS/PL handoff behavior against the
    board revision, schematic, and physical hardware.
-6. To use the Vitis loader, first reconcile its expected AXI GPIO peripheral
-   with the BD's direct PS EMIO GPIO connection. Until then, generating an
-   XSA and building the C application does not establish a working firmware
-   loading path.
+6. Export the XSA and build the PS applications in Vitis as described in
+   [`fpga/ps/README.md`](../../fpga/ps/README.md). Run the protocol-test
+   application first: it exercises the loader path, step mode and every
+   firmware demo before anything is connected to PMOD JA.
 
 ### 4. Verify behavior and hardware
 
 1. Run `fpga/tests/run_sram_test.sh` to check the FPGA RAM's registered
    latency, writes, initialized contents, and disabled-port hold behavior.
    Run `fpga/tests/run_aup_zu3_io_test.sh` to check PS-vs-PMOD ownership,
-   synchronized status, and reset handoff.
-   Run `fpga/tests/run_ps_loader_compile_test.sh` to compile-check the
-   bare-metal application against the generated firmware header and the
-   expected AXI GPIO driver interface.
+   status, reset handoff and step mode (one core edge per request).
+   Run `fpga/tests/run_ps_loader_compile_test.sh` to compile-check both
+   bare-metal applications against the generated headers and stubs of the
+   `XGpioPs` driver (classic and SDT flows).
+   Run `python fpga/tests/run_ps_hil.py` to run the C protocol tests against
+   the RTL through the same EMIO interface the board uses.
 2. Run the existing RTL protocol/core tests against the FPGA source list.
    Require the same results as the ASIC baseline for boot, ISA, peripherals,
    threads, and firmware.
@@ -170,8 +166,9 @@ the software interface and hardware wiring are reconciled.
 
    This replaces only the source directory; the ASIC tests and sources remain
    unchanged.
-3. On the board, test reset, byte-level parallel ACK toggling, valid/invalid
-   frame handling, firmware execution, and PMOD ownership handoff.
+3. On the board, run the protocol-test application (reset, parallel ACK
+   toggling, valid/invalid frames, step mode and every firmware demo), then
+   the loader for PMOD ownership handoff.
 4. Test representative runtime peripherals through PMOD JA. Include
    electrical checks for the PMOD's 3.3 V logic and connected peripheral before
    driving pins.
@@ -203,7 +200,10 @@ without weakening the shared behavioral contract.
 * The supplied PDFs and XDC pin maps need to be checked against the physical
   board revision and the installed Vivado board-part files.
 * The direct 12 MHz `pl_clk0` configuration must be confirmed in Vivado timing
-  reports.
+  reports, including the paths through the core clock's `BUFGCE`.
+* Step mode is verified in simulation with a behavioural `BUFGCE`
+  (`fpga/tests/sim_models/BUFGCE.v`); confirm on the board that each step
+  request gives exactly one core cycle (every protocol test depends on it).
 * The pushbutton's electrical polarity and reset deassertion behavior must be
   verified on the board; the RTL exposes `BUTTON_ACTIVE_LOW` for revision
   differences.

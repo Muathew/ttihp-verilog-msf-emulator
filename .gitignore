@@ -17,6 +17,8 @@ src/a.out
 fpga/build/
 fpga/protocol_em
 fpga/g
+fpga/ps/loader/src/firmware_image.h
+fpga/ps/hil/src/msf_images.h
 
 
 # Private AI/planning artifacts (not part of the open-source submission)

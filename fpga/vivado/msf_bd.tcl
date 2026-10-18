@@ -139,8 +139,6 @@ if { $bCheckIPs == 1 } {
    set list_check_ips "\
 xilinx.com:ip:zynq_ultra_ps_e:3.5\
 xilinx.com:ip:proc_sys_reset:5.0\
-xilinx.com:ip:xlconcat:2.1\
-xilinx.com:ip:xlconstant:1.1\
 "
 
    set list_ips_missing ""
@@ -441,9 +439,9 @@ MIO#GPIO1 MIO#GPIO1 MIO#GPIO1 MIO#GPIO1 MIO#GPIO1 MIO#GPIO1 MIO#GPIO1 MIO#USB 0#
     CONFIG.PSU__GPIO1_MIO__PERIPHERAL__ENABLE {1} \
     CONFIG.PSU__GPIO2_MIO__IO {MIO 52 .. 77} \
     CONFIG.PSU__GPIO2_MIO__PERIPHERAL__ENABLE {1} \
-    CONFIG.PSU__GPIO_EMIO_WIDTH {11} \
+    CONFIG.PSU__GPIO_EMIO_WIDTH {32} \
     CONFIG.PSU__GPIO_EMIO__PERIPHERAL__ENABLE {1} \
-    CONFIG.PSU__GPIO_EMIO__PERIPHERAL__IO {11} \
+    CONFIG.PSU__GPIO_EMIO__PERIPHERAL__IO {32} \
     CONFIG.PSU__GT__LINK_SPEED {HBR} \
     CONFIG.PSU__GT__PRE_EMPH_LVL_4 {0} \
     CONFIG.PSU__GT__VLT_SWNG_LVL_4 {0} \
@@ -526,29 +524,16 @@ Port;FD4A0000;FD4AFFFF;1|FPD;DPDMA;FD4C0000;FD4CFFFF;1|FPD;DDR_XMPU5_CFG;FD05000
   # Create instance: proc_sys_reset_0, and set properties
   set proc_sys_reset_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 proc_sys_reset_0 ]
 
-  # Create instance: xlconcat_0, and set properties
-  set xlconcat_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:xlconcat:2.1 xlconcat_0 ]
-
-  # Create instance: xlconstant_0, and set properties
-  set xlconstant_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:xlconstant:1.1 xlconstant_0 ]
-  set_property -dict [list \
-    CONFIG.CONST_VAL {0} \
-    CONFIG.CONST_WIDTH {3} \
-  ] $xlconstant_0
-
-
   # Create port connections
   connect_bd_net -net Net [get_bd_ports JA_tri_io] [get_bd_pins aup_zu3_io_0/JA_tri_io]
   connect_bd_net -net PL_USER_PB_0_1 [get_bd_ports PL_USER_PB] [get_bd_pins aup_zu3_io_0/PL_USER_PB]
   connect_bd_net -net PL_USER_SW_0_1 [get_bd_ports PL_USER_SW] [get_bd_pins aup_zu3_io_0/PL_USER_SW]
   connect_bd_net -net aup_zu3_io_0_PL_USER_LED [get_bd_pins aup_zu3_io_0/PL_USER_LED] [get_bd_ports PL_USER_LED]
-  connect_bd_net -net aup_zu3_io_0_ps_status_i [get_bd_pins aup_zu3_io_0/ps_status_i] [get_bd_pins xlconcat_0/In1]
+  connect_bd_net -net aup_zu3_io_0_ps_gpio_i [get_bd_pins aup_zu3_io_0/ps_gpio_i] [get_bd_pins zynq_ultra_ps_e_0/emio_gpio_i]
   connect_bd_net -net proc_sys_reset_0_peripheral_aresetn [get_bd_pins proc_sys_reset_0/peripheral_aresetn] [get_bd_pins aup_zu3_io_0/core_resetn]
-  connect_bd_net -net xlconcat_0_dout [get_bd_pins xlconcat_0/dout] [get_bd_pins zynq_ultra_ps_e_0/emio_gpio_i]
-  connect_bd_net -net xlconstant_0_dout [get_bd_pins xlconstant_0/dout] [get_bd_pins xlconcat_0/In0]
   connect_bd_net -net zynq_ultra_ps_e_0_emio_gpio_o [get_bd_pins zynq_ultra_ps_e_0/emio_gpio_o] [get_bd_pins aup_zu3_io_0/ps_gpio_o]
   connect_bd_net -net zynq_ultra_ps_e_0_emio_gpio_t [get_bd_pins zynq_ultra_ps_e_0/emio_gpio_t] [get_bd_pins aup_zu3_io_0/ps_gpio_t]
-  connect_bd_net -net zynq_ultra_ps_e_0_pl_clk0 [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins proc_sys_reset_0/slowest_sync_clk] [get_bd_pins aup_zu3_io_0/core_clk] [get_bd_pins aup_zu3_io_0/ps_clk]
+  connect_bd_net -net zynq_ultra_ps_e_0_pl_clk0 [get_bd_pins zynq_ultra_ps_e_0/pl_clk0] [get_bd_pins proc_sys_reset_0/slowest_sync_clk] [get_bd_pins aup_zu3_io_0/core_clk]
   connect_bd_net -net zynq_ultra_ps_e_0_pl_resetn0 [get_bd_pins zynq_ultra_ps_e_0/pl_resetn0] [get_bd_pins proc_sys_reset_0/ext_reset_in]
 
   # Create address segments
