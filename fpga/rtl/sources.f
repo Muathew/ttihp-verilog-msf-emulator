@@ -1,0 +1,10 @@
+fpga/rtl/aup_zu3_io.v
+fpga/rtl/project.v
+fpga/rtl/tt_um_msf_alu.v
+fpga/rtl/tt_um_msf_bootrom.v
+fpga/rtl/tt_um_msf_crc.v
+fpga/rtl/tt_um_msf_ctrl.v
+fpga/rtl/tt_um_msf_pio.v
+fpga/rtl/tt_um_msf_regfile.v
+fpga/rtl/tt_um_msf_serdes.v
+fpga/rtl/tt_um_msf_sram.v
