@@ -55,7 +55,7 @@ The ASIC RTL and physical-design flow remain separate and unchanged.
 - AUP-ZU3 wrapper PS ownership, PMOD handoff, reset, status and step-mode
   simulation: passed.
 - PS C protocol tests against the RTL through the EMIO interface
-  (`run_ps_hil.py`): **13 passed, 0 failed**. Deliberately broken variants
+  (`run_ps_hil.py`): **14 passed, 0 failed**. Deliberately broken variants
   (two core edges per step, an SPI slave sampling on the wrong edge, wrong
   I2C read data) each fail, so the checks are live.
 - Bare-metal loader and protocol-test compile check against `XGpioPs`

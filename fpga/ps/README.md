@@ -69,6 +69,10 @@ On the board:
 
 The loader app is built the same way from `loader/src/main.c` plus the two
 `common` sources, after `python fpga/ps/loader/generate_image.py <file.s>`.
+A good first image is `loader/blink.s` (Muath's smoke test): LED0 toggles
+every 6,000,000 cycles, so it blinks at exactly 1 Hz on the 12 MHz
+`pl_clk0`, with nothing connected to PMOD JA. To re-run whatever is
+already in SRAM without reloading it, call `msf_restart()`.
 
 ## Tests
 
@@ -77,6 +81,7 @@ The loader app is built the same way from `loader/src/main.c` plus the two
 | `crc_check_values` | — | CRC-8/0x07, USB CRC16, Ethernet FCS check values (no hardware) |
 | `boot_parallel_go` | `test_boot.test_parallel_load_and_run` | W + G frames through the boot ROM; firmware runs |
 | `boot_bad_crc_then_retry` | `test_boot.test_uart_bad_crc_nak_then_retry` | junk bytes, corrupted frame NAKed (status bit 2), retry loads and runs |
+| `restart_direct_boot` | — | `msf_restart()` re-runs SRAM via direct boot (no ROM status bits) |
 | `uart_tx_drift_free` | `test_fw_uart_tx_drift_free` | 8N1 text on uio0; every edge on the 104-cycle grid |
 | `spi_all_modes_full_duplex` | `test_fw_spi_all_modes_full_duplex` | modes 0-3 against the SPI slave model; MISO bytes read back from data RAM |
 | `i2c_write_ack` / `i2c_address_nack` / `i2c_write_then_read_repeated_start` | the same names | I2C slave model: data, ACK/NACK, S/Sr/P events, read data from data RAM |

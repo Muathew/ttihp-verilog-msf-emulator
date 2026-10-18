@@ -8,6 +8,7 @@
 
 #include <string.h>
 
+#include "msf_emio.h"
 #include "msf_images.h"
 #include "msf_link.h"
 #include "msf_log.h"
@@ -154,6 +155,25 @@ static int test_boot_bad_crc_then_retry(void)
         p = msf_step(0);
     CHECK((p.out & 0xfeU) == 0x42U, "uio_out = %x after the retry, want 0x42",
           (unsigned)p.out);
+    return 0;
+}
+
+/* msf_restart(): re-runs what is in SRAM through direct boot, so the boot
+ * ROM status bits (set by a W + G load) are gone and the firmware runs again. */
+static int test_restart_direct_boot(void)
+{
+    msf_pins p;
+
+    TRY(msf_boot_enter(0));
+    TRY(msf_boot_write(img_boot_probe.addr, img_boot_probe.words, img_boot_probe.count));
+    TRY(msf_boot_go(img_boot_probe.addr));
+    TRY(msf_restart());
+    msf_emio_delay_us(5);
+    p = msf_sample();
+    CHECK((p.out & 0xfeU) == 0x42U && (p.oe & 0xfeU) == 0xfeU,
+          "uio_out = %x, oe = %x after restart, want 0x42 / 0xfe", (unsigned)p.out,
+          (unsigned)p.oe);
+    CHECK(p.uo == 0U, "uo_out = %x: the boot ROM ran instead of direct boot", (unsigned)p.uo);
     return 0;
 }
 
@@ -592,6 +612,7 @@ static const msf_test tests[] = {
     {"crc_check_values", test_crc_check_values},
     {"boot_parallel_go", test_boot_parallel_go},
     {"boot_bad_crc_then_retry", test_boot_bad_crc_then_retry},
+    {"restart_direct_boot", test_restart_direct_boot},
     {"uart_tx_drift_free", test_uart_tx_drift_free},
     {"spi_all_modes_full_duplex", test_spi_all_modes_full_duplex},
     {"i2c_write_ack", test_i2c_write_ack},

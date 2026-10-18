@@ -110,6 +110,19 @@ void msf_release_pins(void)
     put(out & ~(MSF_O_OWN | MSF_O_STB | UIO_MASK));
 }
 
+int msf_restart(void)
+{
+    int rc = msf_reset(MSF_BOOT_DIRECT, 0, 0);
+
+    if (rc == MSF_OK)
+        rc = msf_run();
+    if (rc == MSF_OK) {
+        msf_emio_delay_us(1);   /* boot select has read ui_in[0] = 1 */
+        msf_release_pins();
+    }
+    return rc;
+}
+
 /* ---- boot ROM, parallel byte source ------------------------------------ */
 
 static uint8_t crc8_update(uint8_t crc, uint8_t byte)

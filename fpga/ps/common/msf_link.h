@@ -41,6 +41,9 @@ msf_pins msf_step(uint8_t uio);         /* one core cycle with uio_in = uio */
 msf_pins msf_sample(void);              /* pins now (free run) */
 void     msf_set_ui(uint8_t ui);
 void     msf_release_pins(void);        /* ui_in <- switches, uio <-> PMOD JA */
+/* Re-run the firmware already in SRAM (direct boot to 128, free run) and
+ * hand the pins to the board. Nothing is reloaded. */
+int      msf_restart(void);
 
 /* Boot ROM, parallel byte source. Every call works in both modes. */
 int      msf_boot_enter(int step);      /* reset into the ROM, wait for "waiting" */
