@@ -23,4 +23,4 @@ MSF_SEEDS=200 python run_tests.py -m test_random_diff         # more random prog
 | `diffcheck.py`, `rand_prog.py` | RTL-vs-model comparison, constrained-random program generator |
 | `golden_model.py` | protocol and CRC golden references |
 | `msf_tb.py`, `tools_path.py` | shared testbench helpers, host boot-frame builder import |
-| `test_*.py` | test modules — see `docs/golden-model.md` for what each covers |
+| `test_*.py` | test modules — see `docs/verification.md` for what each covers |

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// msfcore control unit (ISA v2.0, docs/sam/isa.md): fetch / decode / execute
+// msfcore control unit (ISA v2.0, docs/isa.md): fetch / decode / execute
 // for two hardware threads, blocking-op (stall) engine, shift register,
 // data-RAM port, pin writes and the peripheral bus.
 //

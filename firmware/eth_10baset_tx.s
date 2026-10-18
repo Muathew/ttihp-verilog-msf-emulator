@@ -8,6 +8,12 @@
 ;            (100 ns positive pulse) every NLP_CHUNKS * NLP_CHUNK cycles
 ;            (16 ms by default). uo_out = DONE after the frame, then the
 ;            low bits of uo_out count link pulses.
+; Why 20 MHz: 10 Mbit/s Manchester is 20 M half-bits/s, so one cycle per
+; half-bit; 12 MHz cannot do it. The SERDES (TX_DIV = 1, double buffered)
+; makes the bits while the firmware works ahead: per 16-bit word (32 cycles)
+; LD + TX_PUSH + CRC_W + loop = ~8 cycles, and the CRC needs 16, so the line
+; never underruns. Transmit only: receiving 10BASE-T needs >= 4x
+; oversampling (80 MHz); no CSMA/CD, collision detect or auto-negotiation.
 .include "msf.inc"
 .equ NLP_CHUNK,  64000        ; 3.2 ms at 20 MHz (WAIT_CMP spans < 65536)
 .equ NLP_CHUNKS, 5            ; 5 x 3.2 ms = 16 ms between link pulses

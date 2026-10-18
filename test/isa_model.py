@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Independent ISA-level reference model of msfcore v2.0.
 
-Written from docs/sam/isa.md, NOT from the RTL: there is no fetch pipeline,
+Written from docs/isa.md, NOT from the RTL: there is no fetch pipeline,
 no flush flag and no pc-hold trick here -- only instruction semantics plus the
 documented cost rules:
 

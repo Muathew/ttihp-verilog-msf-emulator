@@ -40,7 +40,7 @@ generic building blocks that firmware composes into protocols.
   bit schedule `target += period; WAIT_CMP target; PIN_W bit` has zero
   accumulated drift.
 
-The full ISA is in `docs/sam/isa.md` (repository).
+The full ISA is in `docs/isa.md` (repository).
 
 ### Memory map and boot
 

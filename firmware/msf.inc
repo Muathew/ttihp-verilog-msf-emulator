@@ -1,4 +1,4 @@
-; msfcore v2 firmware constants (docs/sam/isa.md section 6).
+; msfcore v2 firmware constants (docs/isa.md section 6).
 ; Include with:  .include "msf.inc"
 
 ; ---- TX_CFG ----  pin in bits 2:0, word width (n-1) << 8

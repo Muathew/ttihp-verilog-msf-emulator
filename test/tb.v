@@ -25,7 +25,7 @@ module tb ();
   wire [7:0] uio_out;
   wire [7:0] uio_oe;
 
-  // msfcore: protocol emulator core (see docs/sam/isa.md)
+  // msfcore: protocol emulator core (see docs/isa.md)
   tt_um_msf user_project (
       .ui_in  (ui_in),
       .uo_out (uo_out),

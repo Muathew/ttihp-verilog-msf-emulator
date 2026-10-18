@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""msfcore assembler / disassembler for ISA v2.0 (docs/sam/isa.md).
+"""msfcore assembler / disassembler for ISA v2.0 (docs/isa.md).
 
     assemble(text, max_words=512, base_addr=0) -> [16-bit words]
     disassemble(word, addr=None)                -> str

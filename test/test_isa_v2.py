@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Directed tests for the ISA v2.0 additions (docs/sam/isa.md).
+"""Directed tests for the ISA v2.0 additions (docs/isa.md).
 
 Each test checks values derived by hand from the spec, independently of the
 reference model (test_random_diff.py covers the cross-check at scale).

@@ -58,7 +58,7 @@ access takes `--access-cycles` PL clocks (default 2).
 On the board:
 
 1. Build the bitstream from the block design and export the XSA (see
-   [the porting plan](../../docs/muath/fpga-porting-plan.md)).
+   [the FPGA port doc](../../docs/fpga.md)).
 2. `python fpga/ps/hil/gen_images.py` (writes `hil/src/msf_images.h`).
 3. In Vitis, create a standalone application for `psu_cortexa53_0` and add
    `hil/src/main.c`, `hil/msf_tests.c`, `hil/msf_proto.c`,

@@ -28,11 +28,13 @@ with CRC16, 10BASE-T transmit with FCS and link pulses, and a two-thread demo.
 ## Documentation
 
 * [Datasheet](docs/info.md) — pinout, boot protocol, how to test
-* [ISA v2.0](docs/sam/isa.md) — encodings, timing model, peripherals, threads
-* [Implementation plan](docs/sam/IMPLEMENTATION_PLAN.md) — review findings and phases
-* [FPGA porting plan](docs/muath/fpga-porting-plan.md) — AUP-ZU3 port status and current Vivado block design
-* [FPGA PS software](fpga/ps/README.md) — Zynq loader and the C protocol tests (step mode over EMIO)
-* [Verification](docs/golden-model.md) — reference model, random differential testing, formal
+* [ISA v2.0](docs/isa.md) — encodings, timing model, peripherals, threads
+* [Verification](docs/verification.md) — reference model, random differential testing, formal, FPGA
+* [FPGA port](docs/fpga.md) — AUP-ZU3 board mapping, block design, build, status
+* [FPGA PS software](fpga/ps/README.md) — Zynq loader and the C protocol tests
+* [Test suite](test/README.md) — running the cocotb tests
+* [History](docs/history.md) — decisions, plans and problems so far, as one log
+* [Competitor research](docs/research.md) — other competition entries and prior art, dated surveys
 
 ## Repository layout
 

@@ -1,10 +1,24 @@
 # Verification of msfcore
 
 Verification is layered so that no single source of truth checks itself:
-the ISA spec (`docs/sam/isa.md`) is implemented twice, independently, as RTL
+the ISA spec (`docs/isa.md`) is implemented twice, independently, as RTL
 and as a Python reference model; protocol behaviour is checked by decoders
 and slave models written from the protocol specs; and the pipeline invariants
 are proved with formal methods for *every* program.
+
+The v1 review bugs that the tests and mutation checks below refer to:
+
+| ID | Bug |
+|---|---|
+| B1 | the instruction after any `WAIT_*` executed twice |
+| B2 | `WAIT_EDGE` and `WAIT_CMP` release conditions were mixed |
+| B3 | ROM/SRAM fetch mux used the current address while the data was registered |
+| B4 | boot loader corrupted back-to-back UART bytes |
+| B5 | boot loader ignored the WAIT timeout (host starting late gave garbage) |
+| B6 | no input synchronisers |
+| B7 | boot loader terminator `0x0000` was a valid instruction; no CRC or ACK |
+| B8 | the old golden model mirrored the RTL, including B1 |
+| B9 | the gate-level SRAM model zeroed `DOUT` when idle; the IHP macro holds it |
 
 ## 1. Independent ISA reference model — `test/isa_model.py`
 
@@ -78,7 +92,15 @@ and each must make the proof fail:
 | `test_protocols`, `test_extensions`, `test_reprogrammable`, `test_crv_invariants` | the original v1 bit-bang demos and constrained-random invariants, kept as regression |
 | `test_golden_model` | lock-step RTL vs model on a fixed image; protocol/CRC reference self-checks |
 
-## 5. Pre-hardening check — `tools/synth_check.py`
+## 5. FPGA — `fpga/tests/`
+
+The same `test_firmware.py` checks run on the FPGA build: the Zynq PS steps
+the core one clock at a time and C ports of the protocol models act as the
+other end of each bus. In simulation the C runs against the RTL through the
+same EMIO interface (`python fpga/tests/run_ps_hil.py`, 14/14). Details in
+[`docs/fpga.md`](fpga.md) and [`fpga/ps/README.md`](../fpga/ps/README.md).
+
+## 6. Pre-hardening check — `tools/synth_check.py`
 
 Maps the RTL onto the IHP `sg13g2_stdcell` liberty (slow corner) with Yosys +
 ABC and reports cell count, area against the 24-tile budget and the longest
