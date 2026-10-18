@@ -5,6 +5,46 @@ competition and of related Tiny Tapeout prior art. Each survey is kept as a
 dated snapshot; add new ones as a new dated section at the end. Our own
 design decisions are in [history.md](history.md).
 
+## The brief
+
+From [the announcement](https://blog.janestreet.com/protocol-emulator-asic-competition/)
+(10 Sep 2026), the lines that decide what scores:
+
+* What they will fabricate: "the most novel designs". They are
+  "particularly interested in projects with unique functionality, as well
+  as those that demonstrate novel approaches to design and verification
+  methodologies". There is no other rubric.
+* What the chip is: "a tiny CPU with an instruction set designed for
+  reading pins, writing pins, counting cycles, and hitting timing precisely
+  enough that you can implement a real protocol in firmware rather than in
+  fixed logic".
+* What it is for: "a useful tool for hardware debugging and reverse
+  engineering, which is a good part of what we do".
+* What it is not: "The goal isn't to put a UART block, an SPI block, and an
+  I2C block on one die and call it done"; it must support "new protocols
+  after fabrication".
+* Prior art to beat: RP2040 PIO and TI Sitara PRU, "and consider what you'd
+  do differently".
+* Protocols: UART, SPI, I2C; stretch low-speed USB and 10 Mbit Ethernet;
+  also JTAG, SWD, PS/2, CAN. "Show us anything else your architecture
+  makes possible that we haven't thought of."
+* Verification: "formal methods, random constrained tests, AI-assisted
+  verification, and more ... verification will be an extremely important
+  aspect of the ASIC design flow going forwards". Hardcaml is what they use,
+  not a requirement.
+* FPGA: "If you have access to an FPGA, consider using it to test your RTL
+  before the ASIC flow."
+* Area: "The current maximum area is 6x4 tiles"; 8x4 is only a possibility
+  they will announce if it happens. Deadline 18 Jan 2027, open source,
+  teams recommended.
+
+What this means for us: the judges are building a debugging and
+reverse-engineering tool, and they weight verification method as heavily
+as function. Features that make the chip an instrument (emulate a device,
+watch a bus, stress a device's timing) and a well-documented verification
+flow (formal, random, FPGA, AI-assisted) count for more than raw protocol
+count.
+
 ## Survey of 24 Sep 2026
 
 
@@ -61,14 +101,19 @@ Claims below are as the entrants state them in their READMEs and datasheets
 | [yibeizzZZ/FoRG](https://github.com/yibeizzZZ/FoRG-protocol-emulator), [raphaelroshan](https://github.com/raphaelroshan/jane-street-asic-lab), [pveligeti2](https://github.com/pveligeti2/jane-street-asic) | small engines (32 or 16 instructions) or a fixed UART baseline; pveligeti2 plans RP2040 PIO binary compatibility | early | scope and verification depth | pveligeti2's plan to run unmodified RP2040 PIO programs: an assembler front end that translates `pioasm` would be a strong demo |
 | ProtocolGremlin, GP_PAE, mtanneer | as on 24 Sep | no pushes since 24 Sep (ProtocolGremlin) or 15 Sep (the other two) | IHP SRAM macro instead of flip-flop memory (ProtocolGremlin's is 92 % of its area); broader firmware | ProtocolGremlin's zero-area trace port for silicon debug; GP_PAE's parallel lanes; mtanneer's CI checks (lint, secret scanning, protected `main`) |
 
-Ideas worth taking, ranked by value for effort:
+Ideas worth taking, ranked by value for effort (revised against the full
+brief: it is a debugging and reverse-engineering tool):
 
 1. **SPI and I2C target firmware** (PRISM, TejasDasa, FIPE): firmware
-   only; closes the biggest coverage gap in the required protocols.
-2. **Timing-fault injection and protocol monitors** (FIPE): firmware plus
-   the existing C models; makes the chip a test instrument, a novelty angle.
+   only. Emulating a device, not just driving one, is the core of a
+   reverse-engineering tool and closes our gap in the required protocols.
+2. **Bus monitor, timing-fault injection and protocol checks** (FIPE):
+   firmware plus the existing C models. A passive sniffer on the RX engine,
+   edges shifted on purpose with `WAIT_CMP`, and flags when a device breaks
+   the protocol make the chip an instrument, which is what the brief says
+   it is for.
 3. **A claims-to-evidence validation table** (TejasDasa): documentation
-   only; strengthens the verification story the judges care about.
+   only; verification method is half of what the judges reward.
 4. **Thread mailbox or barrier** (TeslaCoilerOW, umerimran): small RTL
    change; lets the two threads hand data over, e.g. UART in, SPI out.
 5. **Trace and debug** (PRISM, ProtocolGremlin): our FPGA step mode already
@@ -85,8 +130,10 @@ What changed in the field:
 * **Green GDS with SRAM macros** is now shown by at least three entries
   (PRISM, Abagel-coder, TeslaCoilerOW). v2 has not been through the GDS
   action yet.
-* **8x4 tiles are being used** (PRISM, TeslaCoilerOW), although the
-  competition page still only says it is being worked on.
+* **8x4 tiles are being used** (PRISM, TeslaCoilerOW), but the rules say
+  "the current maximum area is 6x4 tiles". Unless 8x4 is approved, those
+  designs don't comply; PRISM's README calls 8x4 "the size allowed by the
+  Jane Street competition", which the page does not say. We fit 6x4.
 * **The bar for protocol coverage is PRISM's**: it receives 10BASE-T as well
   as transmitting it, and adds CAN, HDLC, SpaceWire and VGA, with a host CPU
   for the upper layers and a debugger for the state machine.
@@ -104,9 +151,9 @@ broad firmware coverage, including USB low-speed TX and RX with CRC16 and
 differential testing, formal proofs and mutation checks (PRISM's only
 formal files are the ALU and QSPI-controller proofs it inherits from TinyQV;
 PRISM itself is tested in simulation); two independent boot paths; and an
-FPGA port whose C tests step the real core cycle by cycle. Against PRISM we
-are behind on protocol breadth, Ethernet receive, area used and debug
-features.
+FPGA port whose C tests step the real core cycle by cycle, which the brief
+asks for by name. Against PRISM we are behind on protocol breadth, Ethernet
+receive and debug features, but within the current 6x4 limit.
 
 Updated recommendations:
 
@@ -114,11 +161,14 @@ Updated recommendations:
    already have that.
 2. Add SPI and I2C target firmware (the slave models in `test_firmware.py`
    show what the master side expects).
-3. Pick one novelty to lead the write-up with, for example deterministic
-   threads plus cycle-stepped FPGA verification, or firmware timing-margin
-   injection built on `WAIT_CMP` schedules.
-4. Watch for the 8x4 decision; the area headroom (24 % used) already allows
-   more threads or engines.
+3. Lead the write-up with the two things the brief rewards: the chip as a
+   debugging instrument (device emulation, bus monitoring, timing-fault
+   injection) and the verification method (independent model, random
+   differential testing, formal with mutation checks, cycle-stepped FPGA
+   tests in C, and the AI-assisted workflow used to build them, described
+   honestly). Answer "what you'd do differently" from PIO and PRU directly.
+4. Stay at 6x4 unless 8x4 is announced; the area headroom (24 % used)
+   already allows more threads or engines either way.
 
 ## Our approach compared with a RISC-V approach (18 Oct 2026)
 
@@ -137,7 +187,7 @@ RISC-V, in one of three forms:
 | Question | msfcore (custom ISA) | RISC-V |
 |---|---|---|
 | Exact timing | every instruction has a documented cycle cost; `WAIT_CMP` waits for an absolute cycle count, so bit schedules don't drift; blocking waits with timeouts | a pipelined core fetching from external flash or PSRAM has variable latency, so exact bit timing needs a separate engine (PRISM) or custom instructions plus a guaranteed-deterministic pipeline |
-| Fit to the brief | the brief asks for a CPU "whose ISA is designed for reading/writing pins, counting cycles, and hitting timing precisely": this is that | a standard ISA is the opposite of novel unless the novelty is elsewhere (PRISM puts it in the state machine) |
+| Fit to the brief | the brief describes "a tiny CPU with an instruction set designed for reading pins, writing pins, counting cycles, and hitting timing precisely": this is that | a standard ISA is the opposite of novel unless the novelty is elsewhere (PRISM puts it in the state machine) |
 | Area | 6,893 cells for the whole chip, two threads, SERDES and CRC included: 24 % of 6x4 | a 32-bit core with 16 x 32-bit registers is larger per core before any timing hardware; PRISM needs 8x4 tiles |
 | Program memory | 384 words of firmware plus 128 of data RAM on chip; a ROM boot loader; nothing external | RV32 code is larger; TinyQV runs from external memory, so the chip needs a flash or PSRAM PMOD |
 | Toolchain | our own assembler and model; no C compiler | GCC/LLVM, C, debuggers, simulators, libraries: the biggest RISC-V advantage |
@@ -145,9 +195,14 @@ RISC-V, in one of three forms:
 | Concurrency | two deterministic hardware threads | one hart, unless the design adds engines |
 | Cost to switch now | none | rewrite the core, firmware, boot path and verification three months before the 18 Jan deadline |
 
-**Conclusion:** keep the custom core. It is the brief's design, it is small,
-it runs from on-chip memory, and the timing is a property of the ISA, not
-of extra hardware. The real cost is the toolchain: firmware is assembly
+**Conclusion:** keep the custom core. It is the brief's design almost word
+for word, it is small, it runs from on-chip memory, and the timing is a
+property of the ISA, not of extra hardware. The full brief strengthens this:
+a standard ISA does nothing for "novel" or for "what you'd do differently"
+from PIO and PRU. One point goes the other way: for a debugging instrument,
+a host CPU that runs upper protocol layers and talks to the user is useful,
+which is a fair argument for PRISM's split; on the board the Zynq PS
+plays that role for us. The real cost is the toolchain: firmware is assembly
 only. Ways to narrow that gap without switching:
 
 * assembler macros and a small firmware library for common patterns
