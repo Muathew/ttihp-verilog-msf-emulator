@@ -33,7 +33,7 @@ start:  LDI      R1, BIT
         LDI      R1, (RX_EN | RX_CHAR | RX_LSB | (9 - 1) << 8 | RXP)
         RX_CFG   R1                ; 8 data bits + the stop bit
         LDR      R1, #0
-        TMO      R1                ; (no timeouts: both threads block on data)
+        TMO      R1                ; no timeouts; T1 inherits this at TSTART
         LDI      R1, 64 | 5 << FIFO_N
         FIFO_CFG R1                ; FIFO: SRAM 64..127, empty
         LDI      R1, spi

@@ -30,12 +30,15 @@
 .equ ST_RXAVAIL, 0x0004
 .equ ST_RXOVR,   0x0008
 .equ ST_CRCBUSY, 0x0010
-.equ ST_DUAL,    0x0020
-.equ ST_TID,     0x0040
+.equ ST_DUAL,    0x0020       ; T1 running
+.equ ST_TID,     0x0040       ; executing thread id, bit 0
 .equ ST_FAVAIL,  0x0080       ; FIFO not empty
 .equ ST_FFULL,   0x0100
 .equ ST_CAPRUN,  0x0200       ; capture engine recording
 .equ ST_CAPDONE, 0x0400       ; capture finished
+.equ ST_T2RUN,   0x0800       ; T2 running
+.equ ST_T3RUN,   0x1000       ; T3 running
+.equ ST_TID1,    0x2000       ; executing thread id, bit 1
 
 ; ---- FIFO_CFG ----  base in bits 9:0 (size-aligned block), size 2 << n
 .equ FIFO_N,     10           ; FIFO_CFG value = base | (n << FIFO_N)

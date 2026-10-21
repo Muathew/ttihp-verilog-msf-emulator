@@ -19,7 +19,7 @@ blink:  ADDS     R5, R5, R6
 
 echo_thread:
         LDR      R1, #0
-        TMO      R1                 ; (shared) blocking ops wait forever
+        TMO      R1                 ; T1's blocking ops wait forever (T0 keeps its own TMO)
         LDR      R1, #104
         TX_DIV   R1
         RX_DIV   R1

@@ -66,6 +66,17 @@ Each frame is answered with ACK `0x06` / NAK `0x15` on `uio[0]` (UART) and on
 `uo_out[3:0]` (bit0 waiting, bit1 OK, bit2 CRC error, bit3 starting firmware).
 `tools/msf_boot.py firmware.s --port COMx` assembles and loads a program.
 
+Keep `ui_in[2]` low during reset: high selects the debug view (below), which
+takes over `uo_out`, so the loader's status bits and the parallel loader's
+acknowledge would not be seen. In parallel mode that means the data bus
+must not leave bit 2 high while `rst_n` is low.
+
+The demos' timing constants are set for the clock in the table below. The
+design is signed off up to 50 MHz; at a faster clock, scale each program's
+timing defines (e.g. `BIT`). The boot ROM's UART loader is 115200 baud only
+at 12 MHz (its rate scales with the clock); the parallel loader works at
+any clock.
+
 ### Debug view
 
 Hold `ui_in[2]` high during reset and `uo_out` shows, instead of the
