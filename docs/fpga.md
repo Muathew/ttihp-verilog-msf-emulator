@@ -68,7 +68,7 @@ checking the part.
 
 | Check | Command | Status |
 |---|---|---|
-| cocotb regression on `fpga/rtl` | `run_tests.py` with `SRC` pointed at `fpga/rtl` | 103/103 (17 Oct suite) |
+| cocotb regression on `fpga/rtl` | `run_tests.py` with `SRC` pointed at `fpga/rtl` | 130/130 |
 | FPGA SRAM | `sh fpga/tests/run_sram_test.sh` | pass |
 | Wrapper: ownership, reset, status, step mode | `sh fpga/tests/run_aup_zu3_io_test.sh` | pass |
 | PS apps compile (Vitis stubs, classic and SDT drivers) | `sh fpga/tests/run_ps_loader_compile_test.sh` | pass |
