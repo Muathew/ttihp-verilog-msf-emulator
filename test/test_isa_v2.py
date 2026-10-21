@@ -54,10 +54,54 @@ async def test_pin_mask_ops(dut):
 
 
 @cocotb.test()
+async def test_two_banks(dut):
+    """1024 words (isa.md §1): data in bank 1, CALL / RET between banks,
+    straight-line code and a backward branch across the 511/512 boundary,
+    the MEM_W pointer wrapping from 1023 to 0, and the same costs as in
+    bank 0 (a taken JMP into the other bank is 2 cycles)."""
+    await boot_asm(dut, CLEAR + """
+        LDI  R1, 965              ; bank 1 data
+        LDI  R2, 0xBEEF
+        ST   R1, R2
+        LD   R3, R1
+        CALL far                  ; bank 1 code, returns to bank 0
+        LDI  R1, 1023
+        MEM_A R1
+        LDR  R2, #0x5A
+        MEM_W R2                  ; [1023]
+        MEM_W R2                  ; [0]: the pointer wraps
+        CNT_R R6
+        JMP  edge                 ; into bank 0 just below the boundary
+    back: CNT_R R7
+        SUBS R7, R7, R6           ; CNT_R, JMP (2), ... measured below
+    halt: JMP halt
+    .org 508
+    edge: LDR  R5, #0
+        LDR  R1, #3
+    lp: INCR R5                   ; 510
+        INCR R5                   ; 511
+        INCR R5                   ; 512: bank 1
+        DECR R1
+        JNZ  lp                   ; back across the boundary
+        JMP  back
+    .org 900
+    far: LDR  R4, #0x44
+        RET
+    """)
+    await ClockCycles(dut.clk, 120)
+    assert (reg(dut, 3), reg(dut, 4), reg(dut, 5)) == (0xBEEF, 0x44, 9)
+    assert sram(dut, 965) == 0xBEEF
+    assert (sram(dut, 1023), sram(dut, 0)) == (0x5A, 0x5A)
+    # CNT_R R6 (c), JMP (c+1, 2 cycles), edge: 2 LDR, 3 x (3 INCR, DECR,
+    # taken JNZ 2 / last not taken 1), JMP back (2), CNT_R R7
+    assert reg(dut, 7) == 1 + 2 + 2 + 3 * 6 - 1 + 2
+
+
+@cocotb.test()
 async def test_fifo_costs(dut):
     """FIFO_PUT costs 1 cycle like ST, FIFO_GET 2 like LD (isa.md §6.5)."""
     await run(dut, """
-        LDI  R1, 32 | 2 << 9      ; FIFO in SRAM 32..39, 8 words
+        LDI  R1, 32 | 2 << 10     ; FIFO in SRAM 32..39, 8 words
         FIFO_CFG R1
         LDR  R2, #0x11
         CNT_R R5
@@ -78,7 +122,7 @@ async def test_fifo_full_empty_drops(dut):
     STAT bits 7 (not empty) and 8 (full), FIFO_STAT = drops << 9 | count
     (reading it changes nothing; FIFO_CFG clears it)."""
     await run(dut, """
-        LDI  R1, 37 | 2 << 9      ; 8 words: block 32..39 (37's low bits ignored)
+        LDI  R1, 37 | 2 << 10     ; 8 words: block 32..39 (37's low bits ignored)
         FIFO_CFG R1
         LDR  R3, #0x77
         FIFO_GET R3               ; empty: Z = 1, R3 kept
@@ -154,16 +198,23 @@ async def test_ld_costs_two_cycles(dut):
 
 @cocotb.test()
 async def test_mem_a_and_wrap(dut):
-    """MEM_A sets the MEM_W pointer; it wraps 511 -> 0 (9 bits)."""
+    """MEM_A sets the MEM_W pointer; it runs on from 511 into bank 1 and
+    wraps 1023 -> 0 (10 bits)."""
     await run(dut, """
         LDI   R1, 511
         MEM_A R1
         LDR   R2, #0x11
         MEM_W R2          ; 511
         LDR   R2, #0x22
+        MEM_W R2          ; 512
+        LDI   R1, 1023
+        MEM_A R1
+        LDR   R2, #0x33
+        MEM_W R2          ; 1023
+        LDR   R2, #0x44
         MEM_W R2          ; 0
     """)
-    assert sram(dut, 511) == 0x11 and sram(dut, 0) == 0x22
+    assert [sram(dut, a) for a in (511, 512, 1023, 0)] == [0x11, 0x22, 0x33, 0x44]
 
 
 @cocotb.test()

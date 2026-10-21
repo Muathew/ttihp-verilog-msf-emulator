@@ -24,7 +24,7 @@ Where an early decision was later changed, the entry says so.
 | 2026-10-17 | Sam | v2 done: bug fixes, ISA v2, SERDES, CRC, two threads, boot ROM v2, formal, 103 tests |
 | 2026-10-18 | Muath, Sam | AUP-ZU3 FPGA port; PS-stepped core and C protocol tests (14/14); 1 Hz blink; competitor survey updated (research.md) |
 | 2026-10-19..21 | Sam | Instruments from the survey: SPI and I2C targets, UART / I2C / SPI bus monitors, UART-to-SPI bridge, timing-fault knobs, CI hardening table, mutation score (39/40), WS2812 and a PIO comparison; 130 tests |
-| 2026-10-21 | Sam | Branch `rtl-changes`: 50 MHz sign-off, a timeout per thread, a hardware FIFO between the threads, the debug view; 137 tests |
+| 2026-10-21 | Sam | Branch `rtl-changes`: 50 MHz sign-off, a timeout per thread, a hardware FIFO between the threads, the debug view, a second SRAM bank (1024 words); 140 tests |
 
 ## 1. Architecture decision (24 Sep)
 
@@ -262,6 +262,19 @@ engine, Manchester receive and a glitch filter, more threads.
   (`isa.md` §8). The select comes straight from the pins, not through the
   synchroniser: changing the view between single steps must not need a
   clock edge, and nothing but the output multiplexer sees it.
+* **Mutation, v2.1.** A fresh 40-mutant sample on the new RTL killed 37;
+  two survivors were equivalent, and the third showed that no test waited
+  on one pin while the others of its bank were high. A test that waits on
+  every pin of both banks in both threads that way kills it.
+* **Second SRAM bank.** Memory, not area, was the tightest resource (the
+  I2C monitor filled 380 of 384 words before the FIFO). A second copy of
+  the same macro, beside the first, doubles it: 1024 words, 896 for
+  firmware. The ISA had room: `JMP` / `CALL` already carry 11 address bits,
+  `JR`, `LD`, `ST`, `MEM_A` and `TSTART` take a full register, branches are
+  relative (the 9-bit offset is now sign-extended). Each macro reads only
+  when its bank is addressed, and the read data is chosen by a registered
+  bank bit, the same rule as the ROM / SRAM select. `FIFO_CFG`'s size field
+  moved up one bit to make room for a 10-bit base.
 
 ## Working conventions
 

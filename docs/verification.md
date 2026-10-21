@@ -46,7 +46,9 @@ schedule; `diffcheck.py` compares **every** issue and stall-release event
 each issue (both register files, flags, OUT/OE/UO, SR, each thread's TMO,
 the FIFO's count, drops and configuration). The programs push to, pop from
 and reconfigure the FIFO from both threads, often while it is full or
-empty, and either thread may set its own TMO. 80 programs per run
+empty, either thread may set its own TMO, and code and data sit in both
+SRAM banks: T1 runs across the 511/512 boundary, calls and returns cross
+banks, data goes to 0-127 and 960-1023. 80 programs per run
 (~45 000 instructions); a failure prints the seed (`MSF_SEED=<n>`) and a
 disassembly window.
 
@@ -88,10 +90,10 @@ and each must make the proof fail:
 
 | Module | Scope |
 |---|---|
-| `test_core`, `test_isa_v2` | every instruction, hand-derived expected values, exact cycle costs, input-sync latency; FIFO costs, full / empty / drops / status |
+| `test_core`, `test_isa_v2` | every instruction, hand-derived expected values, exact cycle costs, input-sync latency; FIFO costs, full / empty / drops / status; both SRAM banks (data, calls, code and branches across 511/512, the MEM_W pointer wrapping at 1023) |
 | `test_regressions` | one test per review bug B1-B5 (each failed on v1) |
 | `test_peripherals` | CRC check values (CRC-8/16/32/5), TX in every mode decoded from the pins, RX with +-2 % baud and +-1.5 % + jitter, RX at every divisor 4-40, TX->RX loopback |
-| `test_threads` | isolation, start/stop/restart, zero-cost branches, determinism of T0 vs any T1 load, events in the other thread's slot, a TMO per thread, the FIFO between threads |
+| `test_threads` | isolation, start/stop/restart, zero-cost branches, determinism of T0 vs any T1 load, events in the other thread's slot, a TMO per thread, the FIFO between threads, a wait on every pin of both banks in both threads with the other pins high |
 | `test_debug` | the debug view: every view against the program's values, off without the strap, and single-stepping a hand-driven clock while reading the PC and a register through the pins |
 | `test_boot` | framed UART and parallel loading, back-to-back bytes, late host, NAK + retry, data RAM, `G` anywhere |
 | `test_firmware` | the `firmware/` demos against independent decoders and slave models (SPI slave all modes, wired-AND I2C slave with stretching, USB NRZI/CRC16/EOP, 10BASE-T Manchester/FCS/TP_IDL/NLP) |
@@ -183,6 +185,17 @@ behaviour. Forty mutants are a sample, not every bit of the design.
 `--src <location>` re-runs only the sampled mutants at one location, which
 is how the sweep was checked against the survivor.
 
+On the `rtl-changes` branch the run was repeated on the v2.1 RTL (commit
+`65da42d`: timeout per thread, FIFO, debug view; a fresh sample of 40):
+**37 of 40 killed**. Two survivors cannot change behaviour (a bit of the
+constant 1 in the timeout decrement forced to the 0 it already is, and a
+data bit on the pin-write path when nothing is written). The third was a
+gap: in one thread's wait logic, `ui` pin 7 read inverted whenever `ui`
+pin 3 was high, and no test waited on one pin while the others of its
+bank were high. `test_wait_edge_every_pin_both_threads` (each thread waits
+on all 16 pins in turn with the other seven high) was added and kills it:
+38 of 40, the other two equivalent.
+
 ## 9. Claims and evidence
 
 | Claim | Evidence |
@@ -200,7 +213,7 @@ is how the sweep was checked against the survivor.
 | A host can halt, single-step and read the core's state through the pins | `test_debug.test_debug_single_step`: hand-driven clock, PC trace and register read between edges |
 | Timing faults can be injected by exact amounts | `test_faults`: each knob measured at the pins; a one-cycle step in the UART bit time moves a receiver from pass to fail exactly where its geometry predicts |
 | v2 fits the 6x4 tiles and meets timing at 25 MHz in all corners, and at 50 MHz | the GDS runs above: 23 % utilisation, no setup or hold violations, clean DRC, precheck passed; the 20 ns run on `rtl-changes`: 3.09 ns to spare (§7) |
-| The tests catch a broken design, not only pass a working one | 39 of 40 sampled single-bit mutants killed; the survivor flips a reserved bit nothing reads (§8) |
+| The tests catch a broken design, not only pass a working one | 39 of 40 sampled single-bit mutants killed on v2.0, 38 of 40 on v2.1; every survivor cannot change behaviour (§8) |
 
 What is **not** validated yet:
 

@@ -26,8 +26,8 @@ def main():
     from assembler import assemble_file
 
     words = assemble_file(str(args.source), base_addr=args.address)
-    if args.address < 0 or args.address + len(words) > 512:
-        parser.error("firmware image must fit within the 512-word address space")
+    if args.address < 0 or args.address + len(words) > 1024:
+        parser.error("firmware image must fit within the 1024-word address space")
     if len(words) > 384:
         parser.error("bare-metal loader supports at most 384 words per image")
 

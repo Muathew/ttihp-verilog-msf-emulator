@@ -24,7 +24,7 @@ architectural state at the *start* of the cycle (see snapshot()).
 """
 
 M16 = 0xFFFF
-M9 = 0x1FF
+M10 = 0x3FF                     # 10-bit PC and addresses (1024 words)
 
 # opcodes
 LDR, ADDS, SUBS, AND, OR, XOR, SHL, SHR, MOV, JMP, JZ, JNZ, JP, JN, NOP, EXT = range(16)
@@ -57,7 +57,7 @@ class IsaModel:
     def __init__(self, rom, sram=None, uio_pad=None, ui_pad=None):
         """rom: 128 words. sram: {addr: word}. *_pad(cycle) -> pad value."""
         self.rom = list(rom) + [0x7000] * (128 - len(rom))
-        self.mem = [0] * 512
+        self.mem = [0] * 1024
         for a, w in (sram or {}).items():
             self.mem[a] = w & M16
         self.uio_pad = uio_pad or (lambda c: 0)
@@ -122,7 +122,7 @@ class IsaModel:
     def faddr(self, n):
         """SRAM address of the FIFO's n-th word (the block is size-aligned)."""
         m = self.fsize() - 1
-        return (self.fbase & ~m & M9) | (n & m)
+        return (self.fbase & ~m & M10) | (n & m)
 
     def fetch(self, a):
         return self.rom[a] if a < 128 else self.mem[a]
@@ -242,7 +242,7 @@ class IsaModel:
         fa, fb, fc = (w >> 8) & 7, (w >> 5) & 7, (w >> 2) & 7
         imm8 = w & 0xFF
         R = t.regs
-        nxt = (a + 1) & M9
+        nxt = (a + 1) & M10
         redirect = False
         self._ovr = None
 
@@ -260,13 +260,13 @@ class IsaModel:
             if op in (ADDS, SUBS):
                 setzn(v)
         elif op == JMP:
-            nxt, redirect = w & M9, True
+            nxt, redirect = w & M10, True
         elif JZ <= op <= JN:
             take = {JZ: t.z, JNZ: not t.z, JP: not t.n, JN: t.n}[op]
             if take:
-                rel = (w >> 2) & M9
+                rel = (w >> 2) & 0x1FF
                 rel = rel - 512 if rel & 0x100 else rel
-                nxt, redirect = (a + 1 + rel) & M9, True
+                nxt, redirect = (a + 1 + rel) & M10, True
         elif op == NOP:
             pass
         elif op == PIN_W:
@@ -300,10 +300,10 @@ class IsaModel:
         elif op == IN_RD:
             R[fa] = self.ui(c)
         elif op == CALL:
-            R[7] = (a + 1) & M9
-            nxt, redirect = w & M9, True
+            R[7] = (a + 1) & M10
+            nxt, redirect = w & M10, True
         elif op == RET:
-            nxt, redirect = R[7] & M9, True
+            nxt, redirect = R[7] & M10, True
         elif op == WAIT_EDGE:
             bank, pin = (imm8 >> 3) & 1, imm8 & 7
             p = ((self.ui(c) if bank else self.uio(c)) >> pin) & 1
@@ -318,7 +318,7 @@ class IsaModel:
             self._sr_in(c)
         elif op == MEM_W:
             self.mem[self.waddr] = R[fa]
-            self.waddr = (self.waddr + 1) & M9
+            self.waddr = (self.waddr + 1) & M10
         elif op == LDH:
             R[fa] = (imm8 << 8) | (R[fa] & 0xFF)
         elif op == EXT:
@@ -357,16 +357,16 @@ class IsaModel:
         elif sub == X_OUTW:
             self.uo = R[rb] & 0xFF
         elif sub == X_MEMA:
-            self.waddr = R[rb] & M9
+            self.waddr = R[rb] & M10
         elif sub == X_LD:
-            self._block(t, c, kind="ld", rd=ra, data=self.mem[R[rb] & M9])
+            self._block(t, c, kind="ld", rd=ra, data=self.mem[R[rb] & M10])
         elif sub == X_ST:
-            self.mem[R[ra] & M9] = R[rb]
+            self.mem[R[ra] & M10] = R[rb]
         elif sub == X_SWAP:
             v = R[rb]
             R[ra] = ((v & 0xFF) << 8) | (v >> 8)
         elif sub == X_JR:
-            nxt, redirect = R[rb] & M9, True
+            nxt, redirect = R[rb] & M10, True
         elif sub == X_TMO:
             t.tmo = R[rb]
         elif sub == X_STAT:
@@ -383,7 +383,7 @@ class IsaModel:
                     self.fdrop = (self.fdrop + 1) & 0x7F
                     t.z = 1
             elif port == P_FCFG:
-                self.fbase, self.fn = R[rb] & M9, (R[rb] >> 9) & 7
+                self.fbase, self.fn = R[rb] & M10, (R[rb] >> 10) & 7
                 self.fwp = self.frp = self.fdrop = 0
         elif sub == X_PR:
             port = rb                       # PR ra, #port
@@ -427,7 +427,7 @@ class IsaModel:
             t1.z = t1.n = 0
             t1.blk = None
             t1.tmo = t.tmo                  # the starter's TMO
-            target = R[rb] & M9
+            target = R[rb] & M10
             if not self.dual:
                 # dual from c+1: T0 owns c+1 (issues there), T1 owns c+2
                 self.dual = True

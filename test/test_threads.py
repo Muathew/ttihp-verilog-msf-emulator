@@ -116,6 +116,34 @@ async def test_fifo_between_threads(dut):
     assert reg(dut, 4, 1) == 0, "FIFO should be empty with no drops"
 
 
+@cocotb.test()
+async def test_wait_edge_every_pin_both_threads(dut):
+    """Each thread waits for a rising edge on every uio and ui pin in turn
+    while the other seven pins of that bank are high: a wait must release
+    on its own pin's edge, never earlier (catches a pin read through the
+    wrong select, or one pin leaking into another)."""
+    waits = "\n".join(f"WAIT_EDGE {p}, rise, {bank}\nUO_WI {k + 1}"
+                      for k, (bank, p) in enumerate(
+                          [("uio", p) for p in range(8)] + [("ui", p) for p in range(8)]))
+    for thread in (0, 1):
+        body = "LDR R1, #0\nTMO R1\n" + waits + "\nhw: JMP hw\n"
+        asm = body if thread == 0 else ("LDR R1, #0\nTMO R1\nLDI R2, t1\nTSTART R2\n"
+                                        "h0: JMP h0\nt1: " + body)
+        await boot_asm(dut, CLEAR + asm, ui_in=1, uio_in=0)
+        await ClockCycles(dut.clk, 40)
+        for k in range(16):
+            bank, p = ("uio", k) if k < 8 else ("ui", k - 8)
+            others = 0xFF & ~(1 << p)
+            sig = dut.uio_in if bank == "uio" else dut.ui_in
+            sig.value = others
+            await ClockCycles(dut.clk, 30)
+            assert int(dut.uo_out.value) == k, f"T{thread}: wait {k} ({bank}{p}) released early"
+            sig.value = 0xFF
+            await ClockCycles(dut.clk, 12)
+            assert int(dut.uo_out.value) == k + 1, f"T{thread}: wait {k} ({bank}{p}) missed its edge"
+            sig.value = 0 if bank == "uio" else 1
+
+
 async def t0_toggle_times(dut, t1_body, cycles=600):
     """T0 toggles uio[0] with a WAIT-free loop; return the toggle cycles."""
     await boot_asm(dut, CLEAR + """

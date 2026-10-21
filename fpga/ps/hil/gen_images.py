@@ -56,7 +56,7 @@ def main():
     ]
     for name, src, defines in IMAGES:
         words = assemble_file(str(src), base_addr=BASE, defines=defines)
-        if BASE + len(words) > 512:
+        if BASE + len(words) > 1024:
             ap.error(f"{src.name}: {len(words)} words do not fit above {BASE}")
         body = ",\n".join(
             "    " + ", ".join(f"0x{w:04x}U" for w in words[i:i + 8])

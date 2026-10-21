@@ -60,7 +60,7 @@ async def test_debug_view_reads_state(dut):
             assert got == v, f"T{t} R{r}: {got:#06x} != {v:#06x}"
     expect = {
         0x20: h0 & 0xFF,
-        0x21: h0 >> 8,              # T0 issued last, single mode, nothing stalled
+        0x21: h0 >> 8,              # PC[9:8]; T0 issued last, single mode, nothing stalled
         0x22: (JMP | h0) & 0xFF, 0x23: (JMP | h0) >> 8,
         0x24: 0b0110,               # N1 Z1 N0 Z0
         0x27: 0x01, 0x28: 0x80,     # SR
@@ -73,6 +73,20 @@ async def test_debug_view_reads_state(dut):
     lo = await view(dut, 0x25)
     assert lo == int(ctrl(dut).cnt.value) & 0xFF, "CNT low byte"
     assert int(dut.uio_out.value) == 0x3C, "the debug view leaves uio alone"
+
+
+@cocotb.test()
+async def test_debug_view_pc_in_bank1(dut):
+    """The last issued PC's bits 9:8 (view 0x21) for code in SRAM bank 1."""
+    words = await boot_asm(dut, """
+        JMP  far
+    .org 950
+    far: JMP far
+    """, ui_in=STRAP | DIRECT)
+    await ClockCycles(dut.clk, 40)
+    assert (await view(dut, 0x21)) & 3 == 950 >> 8
+    assert await view(dut, 0x20) == 950 & 0xFF
+    assert len(words) == 950 - 128 + 1
 
 
 @cocotb.test()
@@ -114,7 +128,7 @@ async def test_debug_single_step(dut):
     pcs = []
     for _ in range(60):
         await edge()
-        pcs.append((await view(dut, 0x21) & 1) << 8 | await view(dut, 0x20))
+        pcs.append((await view(dut, 0x21) & 3) << 8 | await view(dut, 0x20))
     trace = [p for i, p in enumerate(pcs) if i == 0 or p != pcs[i - 1]]
     run = trace[trace.index(128):]
     loop = [129, 130, 131]

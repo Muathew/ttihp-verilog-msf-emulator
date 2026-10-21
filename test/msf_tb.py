@@ -21,7 +21,7 @@ def start_clock(dut, period_ns=CLK_NS):
 
 
 def load_words(dut, words, start=128):
-    """Back-door write into the SRAM model (any address 0..511)."""
+    """Back-door write into the SRAM model (any address 0..1023)."""
     for i, w in enumerate(words):
         dut.user_project.u_sram.mem[start + i].value = w & 0xFFFF
 

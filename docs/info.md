@@ -23,7 +23,7 @@ generic building blocks that firmware composes into protocols.
 | 2 hardware threads | barrel-interleaved (XMOS-style): when T1 runs, cycles alternate T0/T1; each thread has its own PC, registers, flags, timeout and stall state, and its timing does not depend on the other thread |
 | FIFO | a queue between the threads, kept in data RAM with its positions in hardware: one instruction to push (`FIFO_PUT`, 1 cycle) or pop (`FIFO_GET`, 2 cycles), words dropped by a full FIFO counted |
 | Blocking ops | `WAIT_EDGE` (any/rising/falling edge or level, on `uio` or `ui` pins), `WAIT_CMP` (cycle counter == register), `LD`, `TX_PUSH`, `TX_WAIT`, `RX_POP`, `CRC_W`, `CRC_RDL` stall the thread with a programmable timeout (Z=1 on timeout) |
-| Memory | 512 x 16 IHP two-port SRAM macro + 128-word boot ROM. Fetch: 0-127 ROM, 128-511 SRAM. Data (`LD`/`ST`/`MEM_W`): all 512 SRAM words, so 0-127 is free data RAM |
+| Memory | 1024 x 16 SRAM in two IHP two-port macros (512 words each) + 128-word boot ROM. Fetch: 0-127 ROM, 128-1023 SRAM. Data (`LD`/`ST`/`MEM_W`/FIFO): all 1024 SRAM words, so 0-127 is free data RAM |
 | Shift register | 16-bit SR, load/read, `SHIFT_OUT`/`SHIFT_IN`/`XFER` (full duplex) on configurable pins, MSB- or LSB-first |
 | SERDES TX | NRZ / NRZI / Manchester, bit stuffing, differential pin pair, 1-16 bit words, programmable symbol period, double buffered (gapless), release mode for exact idle/EOP timing |
 | SERDES RX | NRZ / NRZI, de-stuffing, edge resync, continuous or async-character (UART-style) start, overrun flag |
@@ -48,7 +48,7 @@ The full ISA is in `docs/isa.md` (repository).
 | Address | Fetch | Data |
 |---|---|---|
 | 0-127 | boot ROM | data RAM |
-| 128-511 | SRAM (firmware) | SRAM |
+| 128-1023 | SRAM (firmware; bank 1 from 512) | SRAM |
 
 At reset `ui_in[0]` selects: **1** = run firmware already in SRAM at 128;
 **0** = boot loader. `ui_in[1]` selects the loader's byte source: **0** = UART
@@ -112,10 +112,10 @@ single-step, stop at a PC and read every register.
    and high, SCK high and low.
 
 4. In simulation: `cd test && make` (or `python run_tests.py --all` on
-   Windows) runs 130 cocotb tests including a random differential check of
+   Windows) runs 140 cocotb tests including a random differential check of
    the RTL against an independent ISA model; `python formal/run_formal.py`
    runs the formal properties; `python tools/mutation.py` measures how many
-   seeded RTL faults the tests catch (39 of 40).
+   seeded RTL faults the tests catch (38 of 40; the two left cannot change behaviour).
 
 ## External hardware
 

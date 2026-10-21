@@ -10,8 +10,8 @@ int main(void)
 {
     int rc;
 
-    if (FIRMWARE_LOAD_ADDRESS + FIRMWARE_WORD_COUNT > 512U) {
-        msf_printf("Firmware image exceeds the 512-word address space.\r\n");
+    if (FIRMWARE_LOAD_ADDRESS + FIRMWARE_WORD_COUNT > 1024U) {
+        msf_printf("Firmware image exceeds the 1024-word address space.\r\n");
         return 1;
     }
     if (msf_link_init() != 0) {

@@ -28,7 +28,7 @@ cycle at a time. The core is held in reset until the PS releases it.
 |---|---|
 | `fpga/rtl/sources.f` | the FPGA source list |
 | `fpga/rtl/aup_zu3_io.v` | board wrapper: pin ownership, reset, step mode, EMIO |
-| `fpga/rtl/tt_um_msf_sram.v` | 512 x 16 inferred block RAM instead of the IHP macro (same ports, registered reads, read-data hold) |
+| `fpga/rtl/tt_um_msf_sram.v` | 1024 x 16 inferred block RAM instead of the two IHP macros (same ports, registered reads, read-data hold) |
 | `fpga/rtl/tt_um_msf_bootrom.v` | boot ROM with the 128 words pasted in (no `include`) |
 | `fpga/rtl/*` (others) | byte-identical copies of `src/` |
 | `fpga/board/constraints/msf_aup_zu3.xdc` | switch, button, LED and PMOD JA pins |

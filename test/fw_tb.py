@@ -36,7 +36,7 @@ async def fw_boot(dut, name, data=None, defines=None, uio_in=0):
         _bg.pop().cancel()
     start_clock(dut)
     words = assemble_file(os.path.join(FW, name), base_addr=128, defines=defines)
-    for a in range(512):
+    for a in range(1024):
         dut.user_project.u_sram.mem[a].value = 0
     load_words(dut, words, 128)
     for a, w in (data or {}).items():

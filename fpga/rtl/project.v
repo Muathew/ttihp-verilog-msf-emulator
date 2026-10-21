@@ -2,8 +2,8 @@
 // msfcore protocol emulator -- Tiny Tapeout top level (ISA v2.0).
 //
 //   ui_in / uio_in --2FF sync--> ctrl (2 hardware threads) --> pio --> uo_out / uio_out / uio_oe
-//   IMEM fetch: boot ROM (0-127) or SRAM port A (128-511), registered bank select
-//   SRAM port B: data RAM (LD / ST / MEM_W, all 512 words)
+//   IMEM fetch: boot ROM (0-127) or SRAM port A (128-1023), registered bank select
+//   SRAM port B: data (LD / ST / MEM_W / FIFO, all 1024 words)
 //   peripheral bus: serdes (TX/RX engines), crc (CRC unit)
 `default_nettype none
 
@@ -42,11 +42,11 @@ module tt_um_msf (
   wire [7:0] uo_fw, dbg_q;
   assign uo_out = dbg_mode ? dbg_q : uo_fw;
 
-  // ---- instruction memory: boot ROM (0-127) + SRAM (128-511) ----
-  wire [8:0]  imem_raddr;
+  // ---- instruction memory: boot ROM (0-127) + SRAM (128-1023) ----
+  wire [9:0]  imem_raddr;
   wire [15:0] rom_rd, sram_rd;
   wire        b_en, b_we;
-  wire [8:0]  b_addr;
+  wire [9:0]  b_addr;
   wire [15:0] b_wd, b_rd;
 
   tt_um_msf_bootrom u_rom (
@@ -66,7 +66,7 @@ module tt_um_msf (
   reg imem_sel_sram;
   always @(posedge clk or negedge rst_n)
     if (!rst_n) imem_sel_sram <= 1'b0;
-    else        imem_sel_sram <= (imem_raddr[8:7] != 2'b00);
+    else        imem_sel_sram <= (imem_raddr[9:7] != 3'b000);
   wire [15:0] imem_rd = imem_sel_sram ? sram_rd : rom_rd;
 
   // ---- core ----
@@ -125,12 +125,12 @@ module tt_um_msf (
   // F7 (B3): the word delivered to the core comes from the bank (ROM or
   // SRAM) of the address it was fetched with in the previous cycle.
   reg f_init = 1'b1;
-  reg [8:0] f_faddr;
+  reg [9:0] f_faddr;
   always @(posedge clk) begin
     f_init  <= 1'b0;
     f_faddr <= imem_raddr;
   end
   always @(*) assume(rst_n == !f_init);
-  always @(*) if (!f_init) assert(imem_rd == ((f_faddr[8:7] != 2'b00) ? sram_rd : rom_rd));
+  always @(*) if (!f_init) assert(imem_rd == ((f_faddr[9:7] != 3'b000) ? sram_rd : rom_rd));
 `endif
 endmodule

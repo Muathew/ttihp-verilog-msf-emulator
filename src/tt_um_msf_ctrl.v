@@ -26,12 +26,12 @@ module tt_um_msf_ctrl (
     input  wire [7:0]  uio_in,      // synchronised
     input  wire [7:0]  ui_in,       // synchronised
     // instruction fetch (registered memory)
-    output wire [8:0]  imem_raddr,
+    output wire [9:0]  imem_raddr,
     input  wire [15:0] imem_rd,
     // SRAM port B (data)
     output wire        b_en,
     output wire        b_we,
-    output wire [8:0]  b_addr,
+    output wire [9:0]  b_addr,
     output wire [15:0] b_wd,
     input  wire [15:0] b_rd,
     // pin registers (tt_um_msf_pio)
@@ -93,7 +93,7 @@ module tt_um_msf_ctrl (
   // ------------------------------------------------------------------
   reg        dual;            // T1 running: barrel-interleave T0/T1
   reg        tsel;            // dual mode: thread that owns this cycle
-  reg [8:0]  pc0, pc1;
+  reg [9:0]  pc0, pc1;
   reg        flush0, flush1;  // next decode slot of that thread is a bubble
   reg [1:0]  zf, nf;          // per-thread flags
 
@@ -131,11 +131,11 @@ module tt_um_msf_ctrl (
   reg [15:0] sr;              // shift register
   reg [2:0]  sr_po, sr_pi;    // SR output / input pin
   reg        sr_lsb;
-  reg [8:0]  waddr;           // MEM_W pointer
+  reg [9:0]  waddr;           // MEM_W pointer
 
   // FIFO (port 0): words in SRAM [base, base+size), pointers here. Size is
   // 2 << fn (2..256); the block is size-aligned (base's low bits ignored).
-  reg [8:0]  fbase;
+  reg [9:0]  fbase;
   reg [2:0]  fn;
   reg [8:0]  fwp, frp;        // free-running write / read counts
   reg [6:0]  fdrop;           // words a full FIFO dropped (modulo 128)
@@ -144,16 +144,17 @@ module tt_um_msf_ctrl (
   wire [8:0] fcount = fwp - frp;
   wire       fempty = (fcount == 9'd0);
   wire       ffull  = (fcount == fsize);
-  wire [8:0] faddr_w = (fbase & ~fmask) | (fwp & fmask);
-  wire [8:0] faddr_r = (fbase & ~fmask) | (frp & fmask);
+  wire [9:0] fblock  = fbase & ~{1'b0, fmask};
+  wire [9:0] faddr_w = fblock | {1'b0, fwp & fmask};
+  wire [9:0] faddr_r = fblock | {1'b0, frp & fmask};
 
   // ------------------------------------------------------------------
   // Decode
   // ------------------------------------------------------------------
   wire [15:0] ir    = fl_c ? 16'h7000 : imem_rd;      // bubble decodes as NOP
   wire        exec  = !st_c && !fl_c;                 // an instruction issues
-  wire [8:0]  pc_c  = cur ? pc1 : pc0;
-  wire [8:0]  apc1  = dual ? pc_c + 9'd1 : pc0;       // issuing address + 1
+  wire [9:0]  pc_c  = cur ? pc1 : pc0;
+  wire [9:0]  apc1  = dual ? pc_c + 10'd1 : pc0;      // issuing address + 1
 
   wire [4:0]  op    = ir[15:11];
   wire [2:0]  f_a   = ir[10:8];
@@ -328,7 +329,7 @@ module tt_um_msf_ctrl (
       OP_PINR: wbx_d = {8'h00, uio_in};
       OP_CNTR: wbx_d = cnt;
       OP_INRD: wbx_d = {8'h00, ui_in};
-      OP_CALL: wbx_d = {7'd0, apc1};
+      OP_CALL: wbx_d = {6'd0, apc1};
       OP_LDH:  wbx_d = {imm8, qa[7:0]};
       OP_EXT: begin
         case (sub)
@@ -364,12 +365,12 @@ module tt_um_msf_ctrl (
   wire br_take = (op == OP_JZ && zc) || (op == OP_JNZ && !zc) ||
                  (op == OP_JP && !nc) || (op == OP_JN && nc);
   wire redirect = exec && (op == OP_JMP || op == OP_CALL || op == OP_RET || x_jr || br_take);
-  reg [8:0] tgt;
+  reg [9:0] tgt;
   always @(*) begin
-    if (op == OP_JMP || op == OP_CALL) tgt = ir[8:0];
-    else if (op == OP_RET)             tgt = qa[8:0];
-    else if (x_jr)                     tgt = qb[8:0];
-    else                               tgt = apc1 + rel9;
+    if (op == OP_JMP || op == OP_CALL) tgt = ir[9:0];
+    else if (op == OP_RET)             tgt = qa[9:0];
+    else if (x_jr)                     tgt = qb[9:0];
+    else                               tgt = apc1 + {rel9[8], rel9};
   end
 
   wire do_tstart = exec && x_tstrt;
@@ -377,22 +378,22 @@ module tt_um_msf_ctrl (
 
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      pc0 <= 9'd0; pc1 <= 9'd0; flush0 <= 1'b1; flush1 <= 1'b0;
+      pc0 <= 10'd0; pc1 <= 10'd0; flush0 <= 1'b1; flush1 <= 1'b0;
       dual <= 1'b0; tsel <= 1'b0;
     end else if (!dual) begin
       // ---- single-thread mode: T0 owns every cycle ----
       if (st[0]) begin
-        if (rel) pc0 <= pc0 + 9'd1;            // release: mem[W+1] issues next
+        if (rel) pc0 <= pc0 + 10'd1;            // release: mem[W+1] issues next
       end else if (redirect) begin
         pc0 <= tgt; flush0 <= 1'b1;
       end else if (enter || do_tstart) begin
         flush0 <= 1'b0;                        // hold pc0 = W+1
       end else begin
-        pc0 <= pc0 + 9'd1; flush0 <= 1'b0;
+        pc0 <= pc0 + 10'd1; flush0 <= 1'b0;
       end
       if (do_tstart) begin
         dual <= 1'b1; tsel <= 1'b0;            // T0 issues next cycle, T1 after
-        pc1 <= qb[8:0]; flush1 <= 1'b0;
+        pc1 <= qb[9:0]; flush1 <= 1'b0;
       end
     end else begin
       // ---- dual-thread mode ----
@@ -401,23 +402,23 @@ module tt_um_msf_ctrl (
         if (!st[0]) begin
           if (flush0)        flush0 <= 1'b0;
           else if (redirect) pc0 <= tgt;
-          else               pc0 <= pc0 + 9'd1;
+          else               pc0 <= pc0 + 10'd1;
         end
       end else begin
         if (!st[1]) begin
           if (flush1)        flush1 <= 1'b0;
           else if (redirect) pc1 <= tgt;
-          else               pc1 <= pc1 + 9'd1;
+          else               pc1 <= pc1 + 10'd1;
         end
       end
       if (do_tstart) begin
-        pc1    <= qb[8:0];
+        pc1    <= qb[9:0];
         flush1 <= !cur;            // T1's word in flight is stale if T0 restarted it
       end
       if (do_tstop) begin
         dual <= 1'b0; tsel <= 1'b0;
         if (cur) begin
-          if (!st[0]) pc0 <= pc0 + 9'd1;       // back to fetch-ahead
+          if (!st[0]) pc0 <= pc0 + 10'd1;       // back to fetch-ahead
         end else begin
           flush0 <= 1'b1;                      // word in flight belongs to T1
         end
@@ -488,8 +489,8 @@ module tt_um_msf_ctrl (
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       cnt <= 16'd0; sr <= 16'd0; sr_po <= 3'd7; sr_pi <= 3'd7; sr_lsb <= 1'b0;
-      waddr <= 9'd128; tmo <= 32'hFFFF_FFFF;
-      fbase <= 9'd64; fn <= 3'd5; fwp <= 9'd0; frp <= 9'd0; fdrop <= 7'd0;
+      waddr <= 10'd128; tmo <= 32'hFFFF_FFFF;
+      fbase <= 10'd64; fn <= 3'd5; fwp <= 9'd0; frp <= 9'd0; fdrop <= 7'd0;
     end else begin
       cnt <= cnt + 16'd1;
       if (exec) begin
@@ -501,8 +502,8 @@ module tt_um_msf_ctrl (
         if (x_sercf) begin
           sr_po <= qb[2:0]; sr_pi <= qb[5:3]; sr_lsb <= qb[6];
         end
-        if (op == OP_MEMW) waddr <= waddr + 9'd1;
-        else if (x_mema)   waddr <= qb[8:0];
+        if (op == OP_MEMW) waddr <= waddr + 10'd1;
+        else if (x_mema)   waddr <= qb[9:0];
         if (x_tmo) tmo[16*cur +: 16] <= qb;
         if (x_tstrt) tmo[31:16] <= tmo_c;      // T1 starts with its starter's TMO
         if (x_put) begin
@@ -511,7 +512,7 @@ module tt_um_msf_ctrl (
         end
         if (x_get && !fempty) frp <= frp + 9'd1;
         if (x_fcfg) begin
-          fbase <= qb[8:0]; fn <= qb[11:9];
+          fbase <= qb[9:0]; fn <= qb[12:10];
           fwp <= 9'd0; frp <= 9'd0; fdrop <= 7'd0;
         end
       end
@@ -568,8 +569,8 @@ module tt_um_msf_ctrl (
   wire do_get  = exec && x_get && !fempty;
   assign b_en   = do_memw || do_st || do_ld || do_put || do_get;
   assign b_we   = do_memw || do_st || do_put;
-  assign b_addr = do_memw ? waddr : do_st ? qa[8:0] : do_put ? faddr_w :
-                  do_get ? faddr_r : qb[8:0];
+  assign b_addr = do_memw ? waddr : do_st ? qa[9:0] : do_put ? faddr_w :
+                  do_get ? faddr_r : qb[9:0];
   assign b_wd   = do_memw ? qa : qb;
 
   wire per_rel = rel && rel_ok && (sk_c == K_TXPUSH || sk_c == K_CRCW);
@@ -581,25 +582,25 @@ module tt_um_msf_ctrl (
   // ------------------------------------------------------------------
   // Debug / testbench visibility (only the debug view depends on these)
   // ------------------------------------------------------------------
-  wire [8:0] pc_p      = pc0;        // v1 name, T0 fetch pointer
+  wire [9:0] pc_p      = pc0;        // v1 name, T0 fetch pointer
   wire       stall     = st[0];
   wire       z         = zf[0];
   wire       n         = nf[0];
   wire       dbg_issue = exec;
   wire       dbg_thr   = cur;
-  wire [8:0] dbg_pc    = apc1 - 9'd1;
+  wire [9:0] dbg_pc    = apc1 - 10'd1;
   wire       dbg_rel   = rel;
 
   // ------------------------------------------------------------------
   // Debug view: one byte of state chosen by dbg_sel (isa.md §8). The last
   // issued instruction is held so the view can be read between clock steps.
   // ------------------------------------------------------------------
-  reg [8:0]  lpc;
+  reg [9:0]  lpc;
   reg [15:0] lir;
   reg        lthr;
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      lpc <= 9'd0; lir <= 16'h0; lthr <= 1'b0;
+      lpc <= 10'd0; lir <= 16'h0; lthr <= 1'b0;
     end else if (exec) begin
       lpc <= dbg_pc; lir <= ir; lthr <= cur;
     end
@@ -610,7 +611,7 @@ module tt_um_msf_ctrl (
     if (!dbg_sel[5]) dbg_q = dbg_sel[0] ? dbg_reg[15:8] : dbg_reg[7:0];
     else case (dbg_sel[4:0])
       5'h00: dbg_q = lpc[7:0];
-      5'h01: dbg_q = {3'd0, st[1], st[0], dual, lthr, lpc[8]};
+      5'h01: dbg_q = {2'd0, st[1], st[0], dual, lthr, lpc[9:8]};
       5'h02: dbg_q = lir[7:0];
       5'h03: dbg_q = lir[15:8];
       5'h04: dbg_q = {4'd0, nf[1], zf[1], nf[0], zf[0]};
@@ -638,7 +639,7 @@ module tt_um_msf_ctrl (
   always @(*) assume(rst_n == !f_init);          // reset in cycle 0 only
 
   // ---- ghost: where did the word being decoded come from? ----
-  reg [8:0] f_faddr;
+  reg [9:0] f_faddr;
   reg       f_fthr;
   always @(posedge clk) begin
     f_faddr <= imem_raddr;
@@ -646,16 +647,16 @@ module tt_um_msf_ctrl (
   end
 
   // ---- ghost: per-thread expected next issue address ----
-  reg [8:0] f_next0, f_next1;
+  reg [9:0] f_next0, f_next1;
   reg       f_has0, f_has1;
-  wire [8:0] f_succ = redirect ? tgt : dbg_pc + 9'd1;
+  wire [9:0] f_succ = redirect ? tgt : dbg_pc + 10'd1;
   always @(posedge clk) begin
     if (f_init) begin
       f_has0 <= 1'b0; f_has1 <= 1'b0;
     end else begin
       if (exec && !cur) begin f_next0 <= f_succ; f_has0 <= 1'b1; end
       if (exec &&  cur) begin f_next1 <= f_succ; f_has1 <= 1'b1; end
-      if (do_tstart)    begin f_next1 <= qb[8:0]; f_has1 <= 1'b1; end
+      if (do_tstart)    begin f_next1 <= qb[9:0]; f_has1 <= 1'b1; end
     end
   end
 

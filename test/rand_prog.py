@@ -4,8 +4,10 @@
 Programs are structured so they keep making progress: bounded DECR/JNZ loops,
 forward conditional skips, CALL/RET to leaf subroutines (R7 is reserved for
 CALL), JR through a computed address, WAITs bounded by a small TMO, data-RAM
-traffic confined to SRAM 0..127 (never code), FIFO pushes / pops / status
-reads and re-configurations (block kept inside 0..127), CRC bursts bracketed
+traffic confined to SRAM 0..127 and 960..1023 (never code), FIFO pushes /
+pops / status reads and re-configurations (block kept inside those regions),
+code in both SRAM banks (T1 at 500, across the 511/512 boundary; T0's
+subroutines at 505 or 700, so CALL / RET / JR cross banks), CRC bursts bracketed
 by blocking CRC_RDL so no CRC register is touched while the unit is busy. In
 dual mode T0 starts/stops/restarts T1, both threads hammer shared pins/SR/
 data RAM/FIFO, and each thread may set its own TMO.
@@ -29,6 +31,10 @@ class Gen:
 
     def L(self, s):
         self.lines.append(s)
+
+    def data_addr(self, n):
+        """Start of n data words: in 0..127 or 960..1023 (code never goes there)."""
+        return self.r.choice([0, 960]) + self.r.randrange(64 if n == 1 else 64 - n)
 
     def label(self, p="l"):
         self.lab += 1
@@ -68,12 +74,11 @@ class Gen:
             self.L(f"LDR {a}, #{r.randrange(128)}")
             self.L(f"SER_CFG {a}")
         elif k == 19:
-            addr = r.randrange(128)
-            self.L(f"LDR {a}, #{addr}")
+            self.L(f"LDI {a}, {self.data_addr(1)}")
             self.L(r.choice([f"LD {b}, {a}", f"ST {a}, {b}"]))
         elif k == 20:
             n = r.randrange(1, 4)
-            self.L(f"LDR {a}, #{r.randrange(128 - n)}")
+            self.L(f"LDI {a}, {self.data_addr(n)}")
             self.L(f"MEM_A {a}")
             for _ in range(n):
                 self.L(f"MEM_W {self.reg()}")
@@ -92,8 +97,9 @@ class Gen:
         elif k == 29:
             if r.random() < 0.8:
                 self.L(f"FIFO_STAT {a}")
-            else:                       # size 2..64, block inside data RAM 0..127
-                self.L(f"LDI {a}, {r.randrange(128) | r.randrange(6) << 9}")
+            else:                       # size 2..64, block inside a data region
+                base = self.data_addr(1)
+                self.L(f"LDI {a}, {base | r.randrange(6) << 10}")
                 self.L(f"FIFO_CFG {a}")
         else:
             self.L(f"ADDS {a}, {b}, {c}")
@@ -193,15 +199,11 @@ class Gen:
             self.L("LDI R6, t1_entry")
             self.L("TSTART R6")
         self.L("JMP start")
-        subs = self.subs
-        self.subs = None
-        for s in subs:
-            self.L(f"{s}:")
-            self.block(2, r.randrange(1, 4))
-            self.L("RET")
+        t0_subs = self.subs
         if self.dual:
             self.subs = []
             self.no_crc = True
+            self.L(".org 500")
             self.L("t1_entry:")
             if r.random() < 0.5:        # T1's own timeout (else the one T0 had)
                 b = self.reg()
@@ -219,6 +221,12 @@ class Gen:
                 self.L(f"{s}:")
                 self.block(2, r.randrange(1, 3))
                 self.L("RET")
+        self.subs, self.no_crc = None, False
+        self.L(f".org {700 if self.dual else 505}")
+        for s in t0_subs:
+            self.L(f"{s}:")
+            self.block(2, r.randrange(1, 4))
+            self.L("RET")
         return "\n".join(self.lines)
 
 

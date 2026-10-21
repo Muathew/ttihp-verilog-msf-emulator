@@ -7,7 +7,7 @@ Boot protocol v2 (see docs/info.md "Loading firmware"):
     A5  cmd  addrL addrH  lenL lenH  w0L w0H ... w(len-1)L w(len-1)H  crc8
 
     cmd 'W' (0x57) : write `len` words starting at `addr` (any SRAM address;
-                     0-127 = data RAM, 128-511 = code)
+                     0-127 = data RAM, 128-1023 = code)
     cmd 'G' (0x47) : jump to `addr` (len = 0)
     crc8           : CRC-8, poly 0x07, init 0, over cmd..last payload byte
 

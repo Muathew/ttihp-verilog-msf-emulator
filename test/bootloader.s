@@ -12,7 +12,7 @@
 ;
 ; Frame  : A5 cmd addrL addrH lenL lenH (wordL wordH)*len crc8
 ;          crc8 = CRC-8 (poly 0x07, init 0) over cmd .. last payload byte
-;          cmd 'W' writes len words at addr (0-127 data RAM, 128-511 code)
+;          cmd 'W' writes len words at addr (0-127 data RAM, 128-1023 code)
 ;          cmd 'G' (len 0) jumps to addr after the ACK
 ; Reply  : ACK 0x06 / NAK 0x15 on UART TX = uio[0] (115200 8N1)
 ; uo_out : bit0 waiting for a frame, bit1 last frame OK, bit2 last frame

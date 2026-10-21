@@ -18,8 +18,8 @@ ASIC competition.
   Framing stays in firmware, so the same hardware serves UART, USB and
   10BASE-T.
 * **CRC unit** — any CRC up to 32 bits (CRC-8, USB CRC5/16, Ethernet CRC-32).
-* **512 x 16 SRAM** (IHP two-port macro): 384 words of firmware + 128 words of
-  data RAM, 128-word boot ROM with a CRC-checked framed loader.
+* **1024 x 16 SRAM** (two IHP two-port macros): 896 words of firmware + 128
+  words of data RAM, 128-word boot ROM with a CRC-checked framed loader.
 
 Firmware in [`firmware/`](firmware): UART, SPI (modes 0-3, full duplex),
 I2C (ACK/NACK, repeated start, clock stretching), USB low-speed TX and RX

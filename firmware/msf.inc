@@ -34,8 +34,8 @@
 .equ ST_FAVAIL,  0x0080       ; FIFO not empty
 .equ ST_FFULL,   0x0100
 
-; ---- FIFO_CFG ----  base in bits 8:0 (size-aligned block), size 2 << n
-.equ FIFO_N,     9            ; FIFO_CFG value = base | (n << FIFO_N)
+; ---- FIFO_CFG ----  base in bits 9:0 (size-aligned block), size 2 << n
+.equ FIFO_N,     10           ; FIFO_CFG value = base | (n << FIFO_N)
 
 ; ---- conventional done marker on uo_out used by the demos ----
 .equ DONE,       0x55

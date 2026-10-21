@@ -1,9 +1,10 @@
 # ISA Spec — `msfcore` (Protocol Emulator Core) v2.1
 
 > v2.1 (2026-10-21, branch `rtl-changes`) adds a timeout register per thread,
-> the peripheral ports `PW`/`PR` with a FIFO between threads (§6.5) and the
-> debug view (§8). v2.0 programs run unchanged unless one thread relies on a
-> `TMO` the other thread set after `TSTART`.
+> the peripheral ports `PW`/`PR` with a FIFO between threads (§6.5), the
+> debug view (§8) and a second 512-word SRAM bank (10-bit PC and addresses).
+> v2.0 programs run unchanged unless one thread relies on a `TMO` the other
+> thread set after `TSTART`, or on an address wrapping at 512.
 > v2.0 (2026-10-16) supersedes v1.0. All v1 encodings keep their meaning **except
 > `CALL`** (v1: `R7 ← PC+2`, no jump; v2: `CALL imm11` jumps). v1 history is in git.
 > This document is the contract for the RTL (`src/`), the assembler
@@ -11,7 +12,7 @@
 
 ## 1. Machine model
 
-* 16-bit instructions, word addressed, 9-bit PC (0–511, wraps).
+* 16-bit instructions, word addressed, 10-bit PC (0–1023, wraps).
 * **Two hardware threads** T0 and T1 (§7). Each thread has its own PC, R0–R7
   (16-bit), flags `Z`/`N`, blocking-op state and `TMO`. After reset only T0 runs.
 * **Flags:** `ADDS`, `SUBS`, `INCR`, `DECR` set `Z` (result==0) and `N` (bit 15).
@@ -19,10 +20,11 @@
   leaves `N` alone. `FIFO_PUT` and `FIFO_GET` set `Z` = 1 when the FIFO was
   full / empty, else 0 (§6.5). Nothing else touches flags.
 * **Cycle counter `CNT`:** 16-bit, free running, reset to 0.
-* **Memory:** one 512×16 address space.
-  * Fetch: words 0–127 come from the **boot ROM**, 128–511 from the SRAM.
-  * Data (`LD`/`ST`/`MEM_W`/FIFO): always the SRAM, all 512 words. SRAM 0–127 is
-    therefore 128 words of data RAM that never collide with code; 128–511 is
+* **Memory:** one 1024×16 address space, held in two 512-word SRAM banks
+  (bank = address bit 9; crossing between them costs nothing).
+  * Fetch: words 0–127 come from the **boot ROM**, 128–1023 from the SRAM.
+  * Data (`LD`/`ST`/`MEM_W`/FIFO): always the SRAM, all 1024 words. SRAM 0–127 is
+    therefore 128 words of data RAM that never collide with code; 128–1023 is
     code (self-modifying writes are allowed but must be ≥ 2 instructions ahead
     of the write in single-thread mode, ≥ 1 slot in dual mode).
 * **Shift register `SR`** (16-bit) with configurable output/input pins (§4).
@@ -46,7 +48,7 @@
 | R | rd | rs | rt | 00 | |
 | I | rd | imm8 (b7..b0) | | | zero-extended |
 | B | rel9 (b10..b2), signed | | | 00 | target = addr+1+rel9 |
-| A | imm11 (b10..b0) | | | | target = imm11[8:0] |
+| A | imm11 (b10..b0) | | | | target = imm11[9:0] |
 | X | ra | rb | sub (b4..b0) | | EXT group, opcode `01111` |
 
 Reserved bits must be 0 (the assembler enforces this).
@@ -79,13 +81,13 @@ Reserved bits must be 0 (the assembler enforces this).
 | 10101 | `INCR rd` | I | rd ← rd+1; Z,N |
 | 10110 | `DECR rd` | I | rd ← rd−1; Z,N |
 | 10111 | `IN_RD rd` | I | rd ← {0, ui_in (synced)} |
-| 11000 | `CALL imm11` | A | R7 ← addr+1; PC ← imm11[8:0] |
-| 11001 | `RET` | — | PC ← R7[8:0] |
+| 11000 | `CALL imm11` | A | R7 ← addr+1; PC ← imm11[9:0] |
+| 11001 | `RET` | — | PC ← R7[9:0] |
 | 11010 | `WAIT_EDGE #c` | I | blocking, §5. c[2:0]=pin, c[3]=bank (0 uio, 1 ui), c[6:4]=cond: 0 any edge, 1 rising, 2 falling, 4 level 0, 5 level 1 (3,6,7 = any edge) |
 | 11011 | `WAIT_CMP rs` | I | blocking until CNT == rs (rs in b10..b8) |
 | 11100 | `SHIFT_OUT rs` | I | SR shifts out one bit to the SR output pin, shifts in rs[0] (§4) |
 | 11101 | `SHIFT_IN` | — | SR shifts in the SR input pin (§4) |
-| 11110 | `MEM_W rs` | I | SRAM[ptr] ← rs; ptr ← ptr+1 (9-bit wrap) |
+| 11110 | `MEM_W rs` | I | SRAM[ptr] ← rs; ptr ← ptr+1 (10-bit wrap) |
 | 11111 | `LDH rd,#imm8` | I | rd[15:8] ← imm8 (rd[7:0] kept) |
 
 ### 3.1 EXT group (opcode 01111, X format: `ra`=b10..8, `rb`=b7..5, `sub`=b4..0)
@@ -97,11 +99,11 @@ Reserved bits must be 0 (the assembler enforces this).
 | 2 | `XFER` | full-duplex SR shift: output bit out, input pin in (§4) |
 | 3 | `SER_CFG rb` | rb[2:0] SR out pin, rb[5:3] SR in pin, rb[6] LSB-first |
 | 4 | `OUT_W rb` | UO ← rb[7:0] |
-| 5 | `MEM_A rb` | MEM_W pointer ← rb[8:0] |
-| 6 | `LD ra,rb` | ra ← SRAM[rb[8:0]] — blocking, always 1 stall cycle/slot |
-| 7 | `ST ra,rb` | SRAM[ra[8:0]] ← rb |
+| 5 | `MEM_A rb` | MEM_W pointer ← rb[9:0] |
+| 6 | `LD ra,rb` | ra ← SRAM[rb[9:0]] — blocking, always 1 stall cycle/slot |
+| 7 | `ST ra,rb` | SRAM[ra[9:0]] ← rb |
 | 8 | `SWAP ra,rb` | ra ← {rb[7:0], rb[15:8]} |
-| 9 | `JR rb` | PC ← rb[8:0] |
+| 9 | `JR rb` | PC ← rb[9:0] |
 | 10 | `TMO rb` | the executing thread's blocking-op timeout ← rb (0 = never time out). Reset 0xFFFF |
 | 11 | `STAT ra` | ra ← status (§6.4) |
 | 12 | `TX_CFG rb` | §6.1 |
@@ -119,7 +121,7 @@ Reserved bits must be 0 (the assembler enforces this).
 | 24 | `CRC_SETH rb` | CRC[31:16] ← rb |
 | 25 | `CRC_POLL rb` | POLY[15:0] ← rb |
 | 26 | `CRC_POLH rb` | POLY[31:16] ← rb |
-| 27 | `TSTART rb` | (re)start T1 at rb[8:0] with cleared T1 state (§7) |
+| 27 | `TSTART rb` | (re)start T1 at rb[9:0] with cleared T1 state (§7) |
 | 28 | `TSTOP` | stop T1 (§7) |
 | 29 | `TID ra` | ra ← executing thread id (0/1) |
 | 30 | `PW #p,rb` | peripheral port *p* (0–7, in the ra field) ← rb (§6.5) |
@@ -233,7 +235,7 @@ ports: a write does nothing, a read gives 0.
 | Port | `PW` (write) | `PR` (read) |
 |---|---|---|
 | 0 | `FIFO_PUT rb`: push rb | `FIFO_GET ra`: pop into ra |
-| 1 | `FIFO_CFG rb`: rb[8:0] base, rb[11:9] *n*: size 2^(*n*+1) words (2–256); empties the FIFO, clears drops | `FIFO_STAT ra`: ra ← drops[6:0] << 9 \| count[8:0] (no side effect) |
+| 1 | `FIFO_CFG rb`: rb[9:0] base, rb[12:10] *n*: size 2^(*n*+1) words (2–256); empties the FIFO, clears drops | `FIFO_STAT ra`: ra ← drops[6:0] << 9 \| count[8:0] (no side effect) |
 
 The FIFO's words live in the SRAM, in the size-aligned block that contains
 `base` (base's low bits are ignored); the read and write positions are in
@@ -282,7 +284,7 @@ inspection need nothing more on the chip.
 | 0x00–0x0F | T0 register R(sel[3:1]), low byte if sel[0]=0, high if 1 |
 | 0x10–0x1F | T1 register, same layout |
 | 0x20 | PC of the last instruction issued, bits 7:0 |
-| 0x21 | bit0 that PC's bit 8 · bit1 its thread · bit2 dual mode · bit3 T0 stalled · bit4 T1 stalled |
+| 0x21 | bits 1:0 that PC's bits 9:8 · bit2 its thread · bit3 dual mode · bit4 T0 stalled · bit5 T1 stalled |
 | 0x22, 0x23 | that instruction's word, low / high byte |
 | 0x24 | bit0 Z(T0) · bit1 N(T0) · bit2 Z(T1) · bit3 N(T1) |
 | 0x25, 0x26 | `CNT` low / high byte |

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """msfcore assembler / disassembler for ISA v2.0 (docs/isa.md).
 
-    assemble(text, max_words=512, base_addr=0) -> [16-bit words]
+    assemble(text, max_words=None, base_addr=0) -> [16-bit words]
     disassemble(word, addr=None)                -> str
     bootloader_words()                          -> boot ROM image (test/bootloader.s)
     crc8(data)                                  -> CRC-8/0x07 (boot protocol)
@@ -192,14 +192,17 @@ def _expand_includes(text, dirs, depth=0):
     return "\n".join(out)
 
 
-def assemble_file(path, base_addr=128, defines=None, max_words=512):
+def assemble_file(path, base_addr=128, defines=None, max_words=None):
     with open(path) as f:
         return assemble(f.read(), max_words, base_addr, defines,
                         include_dirs=[os.path.dirname(os.path.abspath(path))])
 
 
-def assemble(text, max_words=512, base_addr=0, defines=None, include_dirs=None):
-    """Assemble msfcore source into a list of 16-bit words starting at base_addr."""
+def assemble(text, max_words=None, base_addr=0, defines=None, include_dirs=None):
+    """Assemble msfcore source into a list of 16-bit words starting at base_addr
+    (by default it must end within the 1024-word address space)."""
+    if max_words is None:
+        max_words = 1024 - base_addr
     text = _expand_includes(text, (include_dirs or []) + [FIRMWARE_DIR])
     defines = dict(defines or {})
     syms = dict(defines)
@@ -359,7 +362,7 @@ def disassemble(w, addr=None):
     if op in (0x00, 0x1F):
         return f"{mn} R{a}, #{imm8:#04x}"
     if op in (0x09, 0x18):
-        return f"{mn} {w & 0x1FF}"
+        return f"{mn} {w & 0x3FF}"
     if 0x0A <= op <= 0x0D:
         rel = (w >> 2) & 0x1FF
         rel = rel - 512 if rel & 0x100 else rel

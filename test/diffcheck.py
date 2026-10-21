@@ -53,7 +53,7 @@ async def run_and_compare(dut, src, cycles, uio=None, ui=None, data=None, probe=
     probe = probe or Probe(dut)
 
     mem = {}
-    for a in range(512):
+    for a in range(1024):
         mem[a] = data.get(a, 0) if a < 128 else (
             words[a - 128] if a - 128 < len(words) else 0x7000)
     for a, w in mem.items():
