@@ -345,6 +345,183 @@ async def test_rx_nrzi_destuff_resync_jitter(dut):
 
 
 @cocotb.test()
+async def test_filter_removes_short_pulses(dut):
+    """FILTER on uio2 with len 4, uio3 left alone: of pulses 1, 2, 3, 4, 5
+    and 8 cycles wide on both, uio3 shows all six rises and uio2 only those
+    of 4 cycles or more (isa.md §6.7)."""
+    await boot_asm(dut, f"""
+        LDI R1, 300
+        TMO R1                  ; a count ends after 300 quiet cycles
+        LDI R1, 0x04 | 4 << 8
+        FILTER R1
+        LDI R2, t1
+        TSTART R2               ; T1 counts uio3's rises, T0 uio2's
+        LDR R3, #0
+        UO_WI 1
+    c0: WAIT_EDGE 2, rise
+        JZ  d0
+        INCR R3
+        JMP c0
+    d0: UO_WI {DONE}
+    h0: JMP h0
+    t1: LDR R3, #0
+    c1: WAIT_EDGE 3, rise
+        JZ  h1
+        INCR R3
+        JMP c1
+    h1: JMP h1
+    """)
+    await wait_uo(dut, 0x01)
+    for w in (1, 2, 3, 4, 5, 8):
+        dut.uio_in.value = 0x0C
+        await ClockCycles(dut.clk, w)
+        dut.uio_in.value = 0
+        await ClockCycles(dut.clk, 40)
+    await wait_uo(dut, DONE, 2000)
+    assert (reg(dut, 3), reg(dut, 3, 1)) == (3, 6)
+
+
+@cocotb.test()
+async def test_filter_delay(dut):
+    """A filtered pin's change arrives exactly len cycles after the same
+    change on an unfiltered pin."""
+    for n in (4, 9):
+        await boot_asm(dut, f"""
+            LDI R1, 0x04 | {n} << 8
+            FILTER R1
+            LDR R1, #0
+            TMO R1
+            UO_WI 1
+            WAIT_EDGE 3, rise
+            CNT_R R5
+            WAIT_EDGE 2, rise
+            CNT_R R6
+            SUBS R6, R6, R5
+            UO_WI {DONE}
+        h:  JMP h
+        """)
+        await wait_uo(dut, 0x01)
+        await ClockCycles(dut.clk, 20)
+        dut.uio_in.value = 0x0C
+        await wait_uo(dut, DONE, 200)
+        dut.uio_in.value = 0
+        assert reg(dut, 6) == n
+
+
+def spiky_uart(data, bit=104, spike=3):
+    """Per-cycle levels of 8N1 frames with an inverted spike of `spike`
+    cycles at the centre of every bit, and in the idle line between frames."""
+    lv = []
+
+    def bit_(v):
+        seg = [v] * bit
+        for i in range(bit // 2 - spike // 2, bit // 2 - spike // 2 + spike):
+            seg[i] = 1 - v
+        lv.extend(seg)
+    for _ in range(2):
+        bit_(1)
+    for b in data:
+        bit_(0)
+        for i in range(8):
+            bit_((b >> i) & 1)
+        bit_(1)
+        bit_(1)
+    return lv + [1] * bit
+
+
+@cocotb.test()
+async def test_filter_uart_spikes(dut):
+    """UART RX at 104 cycles a bit with a 3-cycle spike at every bit centre
+    (where the RX engine samples) and in the idle line: without the filter
+    the bytes come out wrong, with FILTER on the RX pin (len 6) they are
+    right."""
+    data = [0x55, 0xA3, 0x00, 0xFF]
+    levels = spiky_uart(data)
+    for filt, ok in ((0, False), (0x02 | 6 << 8, True)):
+        fw = f"LDI R1, {filt}\nFILTER R1\n" + rx_fw(
+            rx_cfg(pin=1, char=True, width=8, lsb=True), 104, len(data))
+        await boot_asm(dut, fw, uio_in=2)
+        await wait_uo(dut, 0x01)
+        for v in levels:
+            dut.uio_in.value = v << 1
+            await ClockCycles(dut.clk, 1)
+        await ClockCycles(dut.clk, 200)
+        got = [sram(dut, i) for i in range(len(data))]
+        assert (got == data) == ok, f"filter {filt:#x}: {[hex(x) for x in got]}"
+
+
+@cocotb.test()
+async def test_rx_manchester_frames_jitter(dut):
+    """Manchester RX (mode 2, half-bit = RX_DIV = 8): two frames separated by
+    idle line, each starting with a 1 (its first half is the idle level),
+    at -2 %, 0 and +2 % rate with +-1 cycle of jitter on every edge. Both
+    frames decode, the second after the receiver re-locks."""
+    frames = [[0x55, 0xA7, 0x3C, 0x00, 0xFF], [0x81, 0x6E]]
+    words = frames[0] + frames[1]
+    for ppm, seed in ((0, 1), (20000, 2), (-20000, 3)):
+        await boot_asm(dut, rx_fw(rx_cfg(pin=5, mode=MANCH, width=8, lsb=True), 8,
+                                  len(words)), uio_in=0)
+        await wait_uo(dut, 0x01)
+        await ClockCycles(dut.clk, 30)
+        for f in frames:
+            levels = line_symbols(word_bits(f, 8, True), MANCH, 0)
+            await drive_levels(dut, 5, levels + [0] * 6, 8, ppm=ppm, jitter=1, seed=seed)
+        await wait_uo(dut, DONE, 5000)
+        got = [sram(dut, i) for i in range(len(words))]
+        assert got == words, f"ppm={ppm}: {[hex(x) for x in got]}"
+
+
+@cocotb.test()
+async def test_rx_manchester_loopback(dut):
+    """TX Manchester (pin 0) wired to RX Manchester (pin 3), same chip, the
+    same divider (6 cycles a half-bit: 1 Mbit/s at 12 MHz), back to back."""
+    rng = random.Random(9)
+    words = [0x55] + [rng.randrange(256) for _ in range(12)]
+    fw = f"""
+        LDR R1, #0
+        TMO R1
+        LDR R1, #6
+        TX_DIV R1
+        RX_DIV R1
+        LDI R1, {tx_cfg(pin=0, mode=MANCH, idle=0)}
+        TX_CFG R1
+        OE_SET 1
+        LDI R1, {rx_cfg(pin=3, mode=MANCH)}
+        RX_CFG R1
+        LDI R1, rx_thread
+        TSTART R1               ; T1 receives while T0 transmits
+        LDR R2, #0
+        LDR R6, #{len(words)}
+    tl: LD R3, R2
+        TX_PUSH R3
+        INCR R2
+        DECR R6
+        JNZ tl
+    halt: JMP halt
+    rx_thread:
+        LDR R2, #64
+        LDR R6, #{len(words)}
+    rl: RX_POP R3
+        ST R2, R3
+        INCR R2
+        DECR R6
+        JNZ rl
+        UO_WI {DONE}
+    t1h: JMP t1h
+    """
+    await boot_asm(dut, fw, extra={i: w for i, w in enumerate(words)})
+
+    async def wire():
+        while True:
+            await RisingEdge(dut.clk)
+            dut.uio_in.value = (int(dut.uio_out.value) & 1) << 3
+    cocotb.start_soon(wire())
+    await wait_uo(dut, DONE, 10000)
+    got = [sram(dut, 64 + i) for i in range(len(words))]
+    assert got == words, [hex(x) for x in got]
+
+
+@cocotb.test()
 async def test_tx_rx_loopback(dut):
     """TX (NRZI+stuff, pin 0) wired to RX (pin 3) by the testbench, same chip."""
     rng = random.Random(5)

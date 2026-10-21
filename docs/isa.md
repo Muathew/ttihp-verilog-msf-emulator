@@ -3,7 +3,8 @@
 > v2.1 (2026-10-21, branch `rtl-changes`) adds a timeout register per thread,
 > the peripheral ports `PW`/`PR` with a FIFO between threads (§6.5), the
 > debug view (§8), a second 512-word SRAM bank (10-bit PC and addresses) and
-> a capture engine that records the pins into SRAM (§6.6).
+> a capture engine that records the pins into SRAM (§6.6), Manchester
+> receive (§6.2) and an input glitch filter (§6.7).
 > v2.0 programs run unchanged unless one thread relies on a `TMO` the other
 > thread set after `TSTART`, or on an address wrapping at 512.
 > v2.0 (2026-10-16) supersedes v1.0. All v1 encodings keep their meaning **except
@@ -32,7 +33,8 @@
 * **Pins:** `uio` (8 bidirectional: `OUT`, `OE`, input), `uo_out` (8 outputs:
   `UO`), `ui_in` (8 inputs).
 * **Inputs are synchronised** (2 flip-flops): a pad change at cycle *t* is first
-  visible to instructions executing at cycle *t+2*.
+  visible to instructions executing at cycle *t+2* (*t+2+len* on a `uio` pin
+  the glitch filter is turned on for, §6.7).
 * **Outputs are registered:** a pin write executed in cycle *t* appears on the
   pad from cycle *t+1*.
 * **Reset:** PC(T0)=0 (boot ROM), T1 stopped, all registers 0, flags 0, `OUT`=
@@ -200,7 +202,7 @@ gapless stream. When it runs out of data the line keeps its last level.
 | Bits | Field |
 |---|---|
 | 2:0 | pin (uio index, synced) |
-| 5:4 | mode: 0 NRZ, 1 NRZI (no transition = 1) |
+| 5:4 | mode: 0 NRZ, 1 NRZI (no transition = 1), 2 Manchester (IEEE 802.3: low→high = 1; `RX_DIV` = half-bit) |
 | 6 | de-stuff: drop the bit after six consecutive 1s |
 | 7 | LSB-first |
 | 11:8 | word width − 1 |
@@ -211,6 +213,17 @@ gapless stream. When it runs out of data the line keeps its last level.
 Samples are taken at bit centres (period `RX_DIV`). One received word is buffered
 (`rx_avail`); a new word arriving while full sets `rx_overrun`. NRZI reference
 level starts at the line level seen when enabled.
+
+**Manchester** (mode 2) is self-clocking: a transition taken as a bit centre
+gives the bit (the level after it), then the line is ignored for 1.5
+half-bits (hiding the transition at the boundary between equal bits) and
+the next transition within the following half-bit is the next centre.
+Every centre may be up to half a half-bit early or late. With no
+transition in that window the frame has ended: a partial word is dropped
+and the next transition starts a frame, taken as a centre, so a frame must
+start with a bit whose first half is the idle level (e.g. a preamble of
+alternating bits, as Ethernet's). Start mode, de-stuffing and resync do
+not apply.
 
 ### 6.3 CRC unit
 32-bit `CRC` and `POLY`. `CRC_W` processes `len` (=`CRC_CFG[3:0]`+1) bits of rb,
@@ -241,6 +254,7 @@ ports: a write does nothing, a read gives 0.
 | 3 | `CAP_DIV rb` | `CAP_TPOS ra` |
 | 4 | `CAP_TRIG rb` | 0 |
 | 5 | `CAP_CTL rb` | 0 |
+| 6 | `FILTER rb` (§6.7) | 0 |
 
 The FIFO's words live in the SRAM, in the size-aligned block that contains
 `base` (base's low bits are ignored); the read and write positions are in
@@ -289,6 +303,17 @@ a logic analyser on the chip. Configured through ports 2–5:
 * `CAP_STAT`: bit15 recording, bit14 triggered, bit13 done, bit12 overflow,
   bits 9:0 the address the next word goes to (after done: the oldest
   word, once the buffer has wrapped). `CAP_TPOS`: the trigger word's address.
+
+### 6.7 Input glitch filter
+`FILTER rb` (port 6): rb[7:0] the `uio` pins to filter, rb[11:8] *len*
+(0 = 1). A filtered pin's level changes only once its synchronised input
+has held the new level for *len* cycles in a row: shorter pulses are
+removed, and every change it passes arrives *len* cycles late. Everything
+that reads `uio` (`PIN_R`, `WAIT_EDGE`, the SR input, the RX engine) sees
+the filtered pins; the capture engine records the pins as they are, so a
+logic analyser still shows the glitches. Reset: no pin filtered (the
+timing of §1 and §5 holds). Writing `FILTER` restarts the filters at the
+pins' present levels.
 
 ## 7. Threads
 

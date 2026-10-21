@@ -9,3 +9,4 @@ fpga/rtl/tt_um_msf_regfile.v
 fpga/rtl/tt_um_msf_serdes.v
 fpga/rtl/tt_um_msf_sram.v
 fpga/rtl/tt_um_msf_cap.v
+fpga/rtl/tt_um_msf_filt.v

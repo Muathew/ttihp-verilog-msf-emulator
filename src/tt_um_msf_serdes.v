@@ -137,6 +137,8 @@ module tt_um_msf_serdes (
   reg [15:0] rx_cfg, rx_div, rx_sr, rx_buf, rx_tmr;
   reg [4:0]  rx_cnt;
   reg        rx_av, rx_ovr, rx_run, rx_prev, rx_ref;
+  reg        rx_mw;                  // Manchester: past the blanking, a
+                                     // transition now is a bit centre
   reg [2:0]  rx_ones;
 
   wire        rx_pin  = uio_in[rx_cfg[2:0]];
@@ -144,6 +146,7 @@ module tt_um_msf_serdes (
   wire        rx_char = rx_cfg[12];
   wire        rx_rs   = rx_cfg[14];
   wire        rx_nrzi = (rx_cfg[5:4] == 2'd1);
+  wire        rx_man  = (rx_cfg[5:4] == 2'd2);   // half-bit = RX_DIV
   wire        rx_dst  = rx_cfg[6];
   wire        rx_lsb  = rx_cfg[7];
   wire [4:0]  rx_w    = {1'b0, rx_cfg[11:8]} + 5'd1;
@@ -155,9 +158,15 @@ module tt_um_msf_serdes (
   wire        rx_start = rx_char ? (rx_prev & ~rx_pin) : rx_edge;
   wire        rx_samp  = rx_run && (rx_tmr == 16'd0);
   wire        rx_b     = rx_nrzi ? ~(rx_pin ^ rx_ref) : rx_pin;
-  wire        rx_drop  = rx_dst && (rx_ones == 3'd6);
+  wire        rx_drop  = rx_dst && !rx_man && (rx_ones == 3'd6);
   wire [15:0] rx_srn   = rx_lsb ? {rx_b, rx_sr[15:1]} : {rx_sr[14:0], rx_b};
   wire        rx_done  = rx_samp && !rx_drop && (rx_cnt + 5'd1 == rx_w);
+  // Manchester: a transition is taken as a bit centre when the receiver is
+  // idle (the first of a frame) or past the 1.5 half-bit blanking after the
+  // last centre (which hides the boundary transitions); the bit is the level
+  // after it (IEEE 802.3: low->high = 1, as the TX engine sends it)
+  wire        m_acc    = rx_man && rx_edge && (!rx_run || rx_mw);
+  wire        m_done   = m_acc && (rx_cnt + 5'd1 == rx_w);
   wire [16:0] rx_mask  = (17'd1 << rx_w) - 17'd1;
   wire [15:0] rx_wordn = rx_lsb ? (rx_srn >> (5'd16 - rx_w)) : (rx_srn & rx_mask[15:0]);
 
@@ -166,18 +175,40 @@ module tt_um_msf_serdes (
       rx_cfg <= 16'h0; rx_div <= 16'd1; rx_sr <= 16'h0; rx_buf <= 16'h0;
       rx_tmr <= 16'h0; rx_cnt <= 5'd0; rx_av <= 1'b0; rx_ovr <= 1'b0;
       rx_run <= 1'b0; rx_prev <= 1'b0; rx_ref <= 1'b0; rx_ones <= 3'd0;
+      rx_mw <= 1'b0;
     end else begin
       rx_prev <= rx_pin;
       if (per_we && per_sub == X_RXCFG) begin
         rx_cfg  <= per_wd;
         rx_run  <= 1'b0; rx_cnt <= 5'd0; rx_av <= 1'b0; rx_ovr <= 1'b0;
-        rx_ones <= 3'd0; rx_tmr <= 16'h0;
+        rx_ones <= 3'd0; rx_tmr <= 16'h0; rx_mw <= 1'b0;
         rx_ref  <= uio_in[per_wd[2:0]];
         rx_prev <= uio_in[per_wd[2:0]];
       end else begin
         if (per_we && per_sub == X_RXDIV) rx_div <= per_wd;
         if (rx_pop) rx_av <= 1'b0;
-        if (rx_en) begin
+        if (rx_en && rx_man) begin
+          if (m_acc) begin
+            rx_run <= 1'b1; rx_mw <= 1'b0;
+            rx_tmr <= rx_div + rx_hm1;       // 1.5 half-bits of blanking
+            rx_sr  <= rx_srn;
+            if (m_done) begin
+              rx_buf <= rx_wordn;
+              rx_av  <= 1'b1;
+              rx_ovr <= rx_ovr | (rx_av & ~rx_pop);
+              rx_cnt <= 5'd0;
+            end else begin
+              rx_cnt <= (rx_run ? rx_cnt : 5'd0) + 5'd1;
+            end
+          end else if (rx_run) begin
+            if (rx_tmr != 16'd0) rx_tmr <= rx_tmr - 16'd1;
+            else if (!rx_mw) begin
+              rx_mw <= 1'b1; rx_tmr <= rx_dm1; // the window: one half-bit
+            end else begin
+              rx_run <= 1'b0; rx_cnt <= 5'd0;  // no centre: the frame ended
+            end
+          end
+        end else if (rx_en) begin
           if (!rx_run) begin
             if (rx_start) begin
               rx_run <= 1'b1;

@@ -26,10 +26,10 @@ generic building blocks that firmware composes into protocols.
 | Memory | 1024 x 16 SRAM in two IHP two-port macros (512 words each) + 128-word boot ROM. Fetch: 0-127 ROM, 128-1023 SRAM. Data (`LD`/`ST`/`MEM_W`/FIFO): all 1024 SRAM words, so 0-127 is free data RAM |
 | Shift register | 16-bit SR, load/read, `SHIFT_OUT`/`SHIFT_IN`/`XFER` (full duplex) on configurable pins, MSB- or LSB-first |
 | SERDES TX | NRZ / NRZI / Manchester, bit stuffing, differential pin pair, 1-16 bit words, programmable symbol period, double buffered (gapless), release mode for exact idle/EOP timing |
-| SERDES RX | NRZ / NRZI, de-stuffing, edge resync, continuous or async-character (UART-style) start, overrun flag |
+| SERDES RX | NRZ / NRZI / Manchester, de-stuffing, edge resync, continuous or async-character (UART-style) start, overrun flag |
 | CRC unit | any CRC up to 32 bits, normal or reflected, 1-16 bits per write, bit-serial in the background (CRC-8, CRC-5/16 USB, CRC-32 Ethernet ...) |
 | Capture engine | a logic analyser: records 8 pins into an SRAM ring buffer every *n* cycles (two samples a word, or a word per change with its time), level or edge trigger with pre-trigger history, using only data-RAM cycles the core leaves free |
-| Pins | `uio[7:0]` with per-bit set/clear/toggle/write of OUT and OE (open drain = OE), `uo_out[7:0]` written by firmware, `ui_in[7:0]` readable; all inputs pass a 2-flip-flop synchroniser |
+| Pins | `uio[7:0]` with per-bit set/clear/toggle/write of OUT and OE (open drain = OE), `uo_out[7:0]` written by firmware, `ui_in[7:0]` readable; all inputs pass a 2-flip-flop synchroniser; an optional glitch filter per `uio` pin removes pulses shorter than 1-15 cycles |
 
 ### Timing model (what makes bit-banging exact)
 
@@ -114,7 +114,7 @@ single-step, stop at a PC and read every register.
    and high, SCK high and low.
 
 4. In simulation: `cd test && make` (or `python run_tests.py --all` on
-   Windows) runs 148 cocotb tests including a random differential check of
+   Windows) runs 153 cocotb tests including a random differential check of
    the RTL against an independent ISA model; `python formal/run_formal.py`
    runs the formal properties; `python tools/mutation.py` measures how many
    seeded RTL faults the tests catch (38 of 40; the two left cannot change behaviour).

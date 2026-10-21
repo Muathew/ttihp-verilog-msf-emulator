@@ -29,6 +29,8 @@ module tt_um_msf (
     uio_sync <= uio_s1;
   end
 
+  wire [7:0] uio_f;                  // uio after the glitch filter
+
   // ---- debug view (isa.md §8) ----
   // ui_in[2] high while rst_n is low selects debug mode until the next reset:
   // uo_out then shows the byte of internal state chosen by ui_in[7:2]
@@ -93,7 +95,7 @@ module tt_um_msf (
 
   tt_um_msf_ctrl u_ctrl (
       .clk(clk), .rst_n(rst_n),
-      .uio_in(uio_sync), .ui_in(ui_sync),
+      .uio_in(uio_f), .ui_in(ui_sync),
       .imem_raddr(imem_raddr), .imem_rd(imem_rd),
       .b_en(b_en), .b_we(b_we), .b_addr(b_addr), .b_wd(b_wd), .b_rd(b_rd),
       .out_q(out_q), .oe_q(oe_q), .uo_q(uo_q),
@@ -117,6 +119,14 @@ module tt_um_msf (
       .stat(cap_stat), .tpos(cap_tpos)
   );
 
+  // ---- input glitch filter (isa.md §6.7): opt-in per uio pin; the core
+  //      and the SERDES see its output, the capture engine the raw pins ----
+  tt_um_msf_filt u_filt (
+      .clk(clk), .rst_n(rst_n), .raw(uio_sync),
+      .pw_we(pw_we), .pw_port(pw_port), .pw_data(pw_data),
+      .pins(uio_f)
+  );
+
   // ---- pins ----
   tt_um_msf_pio u_pio (
       .clk(clk), .rst_n(rst_n),
@@ -131,7 +141,7 @@ module tt_um_msf (
   tt_um_msf_serdes u_serdes (
       .clk(clk), .rst_n(rst_n),
       .per_we(per_we), .per_sub(per_sub), .per_wd(per_wd), .rx_pop(rx_pop),
-      .uio_in(uio_sync),
+      .uio_in(uio_f),
       .tx_full(tx_full), .tx_busy(tx_busy), .tx_mask(tx_mask), .tx_val(tx_val),
       .rx_avail(rx_avail), .rx_overrun(rx_overrun), .rx_word(rx_word)
   );

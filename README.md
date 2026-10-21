@@ -14,7 +14,8 @@ ASIC competition.
   absolute cycle-counter waits (`WAIT_CMP`) for drift-free bit schedules,
   edge/level waits with programmable timeouts.
 * **Line-code SERDES** — NRZ / NRZI / Manchester, bit stuffing, differential
-  pairs, gapless double buffering; RX with de-stuffing and edge resync.
+  pairs, gapless double buffering; RX with de-stuffing, edge resync and
+  Manchester decoding.
   Framing stays in firmware, so the same hardware serves UART, USB and
   10BASE-T.
 * **CRC unit** — any CRC up to 32 bits (CRC-8, USB CRC5/16, Ethernet CRC-32).

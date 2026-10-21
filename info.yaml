@@ -28,6 +28,7 @@ project:
     - "tt_um_msf_serdes.v"
     - "tt_um_msf_crc.v"
     - "tt_um_msf_cap.v"
+    - "tt_um_msf_filt.v"
     #- "RM_IHPSG13_2P_512x16_c2_bm_bist.v"
 
 # The pinout of your project. Leave unused pins blank. DO NOT delete or add any pins.

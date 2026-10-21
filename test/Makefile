@@ -9,7 +9,7 @@ SIM ?= icarus
 FST ?= -fst # Use more efficient FST format
 TOPLEVEL_LANG ?= verilog
 SRC_DIR = $(PWD)/../src
-PROJECT_SOURCES = project.v tt_um_msf_ctrl.v tt_um_msf_regfile.v tt_um_msf_alu.v tt_um_msf_sram.v tt_um_msf_bootrom.v tt_um_msf_pio.v tt_um_msf_serdes.v tt_um_msf_crc.v tt_um_msf_cap.v
+PROJECT_SOURCES = project.v tt_um_msf_ctrl.v tt_um_msf_regfile.v tt_um_msf_alu.v tt_um_msf_sram.v tt_um_msf_bootrom.v tt_um_msf_pio.v tt_um_msf_serdes.v tt_um_msf_crc.v tt_um_msf_cap.v tt_um_msf_filt.v
 
 ifneq ($(GATES),yes)
 

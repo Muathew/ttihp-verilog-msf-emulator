@@ -37,7 +37,7 @@ PIN_W, PIN_R, SETM, CLRM, CNT_R, INCR, DECR, IN_RD, CALL, RET, WAIT_EDGE, WAIT_C
  X_CRCW, X_CRCRDL, X_CRCRDH, X_CRCSETL, X_CRCSETH, X_POLL, X_POLH, X_TSTART, X_TSTOP,
  X_TID, X_PW, X_PR) = range(32)
 P_FIFO, P_FCFG = 0, 1           # peripheral ports
-P_CAPTURE = {2, 3, 4, 5}        # capture engine: checked by test_capture.py
+P_CAPTURE = {2, 3, 4, 5, 6}     # capture engine, glitch filter: not modelled
 
 BLOCKING_EXT = {X_LD, X_TXPUSH, X_TXWAIT, X_RXPOP, X_CRCW, X_CRCRDL}
 UNMODELLED_EXT = {X_TXCFG, X_TXDIV, X_TXPUSH, X_TXWAIT, X_RXCFG, X_RXDIV, X_RXPOP}

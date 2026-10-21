@@ -25,6 +25,7 @@ Pseudo-ops
     FIFO_GET ra = PR ra, #0    FIFO_STAT ra = PR ra, #1
     CAP_BUF / CAP_DIV / CAP_TRIG / CAP_CTL rb = PW #2..#5, rb
     CAP_STAT ra = PR ra, #2    CAP_TPOS ra = PR ra, #3
+    FILTER rb   = PW #6, rb
 """
 import ast
 import operator
@@ -69,7 +70,8 @@ X_PW, X_PR = 30, 31
 PORT_OPS = {"FIFO_PUT": (X_PW, 0), "FIFO_CFG": (X_PW, 1),
             "FIFO_GET": (X_PR, 0), "FIFO_STAT": (X_PR, 1),
             "CAP_BUF": (X_PW, 2), "CAP_DIV": (X_PW, 3), "CAP_TRIG": (X_PW, 4),
-            "CAP_CTL": (X_PW, 5), "CAP_STAT": (X_PR, 2), "CAP_TPOS": (X_PR, 3)}
+            "CAP_CTL": (X_PW, 5), "CAP_STAT": (X_PR, 2), "CAP_TPOS": (X_PR, 3),
+            "FILTER": (X_PW, 6)}
 PORT_NAME = {v: k for k, v in PORT_OPS.items()}
 
 WAIT_COND = {"any": 0, "rise": 1, "rising": 1, "fall": 2, "falling": 2,

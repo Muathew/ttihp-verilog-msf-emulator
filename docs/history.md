@@ -24,7 +24,7 @@ Where an early decision was later changed, the entry says so.
 | 2026-10-17 | Sam | v2 done: bug fixes, ISA v2, SERDES, CRC, two threads, boot ROM v2, formal, 103 tests |
 | 2026-10-18 | Muath, Sam | AUP-ZU3 FPGA port; PS-stepped core and C protocol tests (14/14); 1 Hz blink; competitor survey updated (research.md) |
 | 2026-10-19..21 | Sam | Instruments from the survey: SPI and I2C targets, UART / I2C / SPI bus monitors, UART-to-SPI bridge, timing-fault knobs, CI hardening table, mutation score (39/40), WS2812 and a PIO comparison; 130 tests |
-| 2026-10-21 | Sam | Branch `rtl-changes`: 50 MHz sign-off, a timeout per thread, a hardware FIFO between the threads, the debug view, a second SRAM bank (1024 words), a capture engine (logic analyser); 148 tests |
+| 2026-10-21 | Sam | Branch `rtl-changes`: 50 MHz sign-off, a timeout per thread, a hardware FIFO between the threads, the debug view, a second SRAM bank (1024 words), a capture engine (logic analyser), Manchester receive, a glitch filter; 153 tests |
 
 ## 1. Architecture decision (24 Sep)
 
@@ -274,7 +274,12 @@ engine, Manchester receive and a glitch filter, more threads.
   relative (the 9-bit offset is now sign-extended). Each macro reads only
   when its bank is addressed, and the read data is chosen by a registered
   bank bit, the same rule as the ROM / SRAM select. `FIFO_CFG`'s size field
-  moved up one bit to make room for a 10-bit base.
+  moved up one bit to make room for a 10-bit base. The first layout (the
+  second macro at x = 300 µm) hardened, met timing and passed DRC, but
+  failed the precheck pin check: the power stripes over a macro only span
+  its height, and one ground piece over the new macro stood alone instead
+  of joining a full-height stripe. Placing it exactly seven stripe pitches
+  (7 × 38.87 µm) from the first macro lines it up with the grid the same way.
 * **Capture engine.** The useful form of PRISM's "FIFOs with DMA": a
   logic analyser that records 8 pins into an SRAM ring buffer, two samples
   a word or a word per change, with a level or edge trigger and history
@@ -282,6 +287,15 @@ engine, Manchester receive and a glitch filter, more threads.
   on it, so it writes only in cycles the core leaves the data port free,
   through a two-word queue, and reports a lost word instead of stalling
   anyone. `logic_analyzer.s` arms it and sends the buffer to the host.
+* **Manchester receive.** The TX engine sent Manchester; RX now decodes it
+  (mode 2), locking on bit-centre transitions with a 1.5 half-bit blanking
+  that hides boundary transitions, so every centre may wander by half a
+  half-bit. 10BASE-T receive stays out (it needs oversampling well above
+  our clock, an analog receiver and more memory than a frame); slower
+  Manchester links are now covered.
+* **Glitch filter.** Opt-in per `uio` pin, so every response time derived
+  earlier still holds when it is off: a pin changes only after holding
+  its new level 1-15 cycles. The capture engine keeps the raw pins.
 
 ## Working conventions
 

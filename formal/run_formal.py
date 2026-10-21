@@ -32,7 +32,7 @@ SRC = os.path.join(HERE, "..", "src")
 CTRL_FILES = ["tt_um_msf_ctrl.v", "tt_um_msf_regfile.v", "tt_um_msf_alu.v"]
 TOP_FILES = ["project.v", "tt_um_msf_ctrl.v", "tt_um_msf_regfile.v", "tt_um_msf_alu.v",
              "tt_um_msf_bootrom.v", "tt_um_msf_pio.v", "tt_um_msf_sram.v",
-             "tt_um_msf_serdes.v", "tt_um_msf_crc.v", "tt_um_msf_cap.v", "sram_stub.v"]
+             "tt_um_msf_serdes.v", "tt_um_msf_crc.v", "tt_um_msf_cap.v", "tt_um_msf_filt.v", "sram_stub.v"]
 
 # (name, file, old, new): re-introduce a review bug
 MUTANTS = [
