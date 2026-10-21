@@ -14,7 +14,7 @@ PS software (loader, protocol tests, EMIO bit map, how to build in Vitis):
 |---|---|---|
 | `PL_USER_SW[7:0]` | `ui_in[7:0]` | inputs while the PS doesn't own the pins |
 | `PL_USER_LED[7:0]` | `uo_out[7:0]` | status / firmware output |
-| `PL_USER_PB[0]` | reset | manual reset, active low (`BUTTON_ACTIVE_LOW` in the wrapper) |
+| `PL_USER_PB[0]` | reset | manual reset while pressed; the board's buttons are active high (reference manual: "All GPIO inputs and outputs are active high"; `BUTTON_ACTIVE_LOW` = 0 in the wrapper) |
 | PMOD JA `[7:0]` | `uio[7:0]` | protocol pins (3.3 V), high-Z while the PS owns the pins |
 | PS EMIO GPIO bank 3 (32 bits) | everything above | loading, single-step, pin read-back |
 
@@ -83,8 +83,7 @@ fresh project at a short ASCII-only path, `-jobs 1`.
 
 Not yet done (needs Vivado, Vitis and the board): synthesis and timing,
 Vitis build against the real drivers, and every on-board check. Confirm
-first that each step request gives exactly one core edge, and the button
-polarity on the board revision.
+first that each step request gives exactly one core edge.
 
 ## Open items
 

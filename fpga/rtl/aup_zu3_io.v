@@ -18,7 +18,9 @@
 `default_nettype none
 
 module aup_zu3_io #(
-    parameter BUTTON_ACTIVE_LOW = 1
+    // AUP-ZU3 reference manual: "All GPIO inputs and outputs are active
+    // high" -- a pushbutton reads 1 while pressed, 0 at rest
+    parameter BUTTON_ACTIVE_LOW = 0
 ) (
     input  wire        core_clk,     // pl_clk0, free running
     input  wire        core_resetn,

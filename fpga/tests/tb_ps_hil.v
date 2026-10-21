@@ -11,7 +11,7 @@ module tb_ps_hil ();
   reg  [31:0] ps_gpio_t = 32'hffffffff;
   wire [31:0] ps_gpio_i;
   reg  [7:0]  PL_USER_SW = 8'h00;
-  reg  [3:0]  PL_USER_PB = 4'hf;     // not pressed (active low)
+  reg  [3:0]  PL_USER_PB = 4'h0;     // not pressed (the board's buttons are active high)
   wire [7:0]  PL_USER_LED;
   tri0 [7:0]  JA_tri_io;             // nothing plugged into PMOD JA
 
