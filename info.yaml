@@ -3,7 +3,7 @@ project:
   title:        "Protocol Emulator"      # Project title
   author:       "Sam"      # Your name
   discord:      ""      # Your discord username, for communication and automatically assigning you a Tapeout role (optional)
-  description:  "Reprogrammable protocol-emulator CPU: 2 deterministic hardware threads, line-code SERDES and CRC unit; UART/SPI/I2C/USB-LS/10BASE-T in firmware"      # One line description of what your project does
+  description:  "Reprogrammable protocol-emulator CPU: 2 deterministic hardware threads, line-code SERDES and CRC unit; UART/SPI/I2C/USB-LS/10BASE-T, device emulation and bus monitors in firmware"      # One line description of what your project does
   language:     "Verilog" # other examples include SystemVerilog, Amaranth, VHDL, etc
   clock_hz:     12000000  # 12 MHz (USB low speed = 8 cycles/bit); run at 20 MHz for 10BASE-T
 
@@ -54,14 +54,14 @@ pinout:
 
   # Bidirectional pins: generic emulator GPIO, firmware-defined. Defaults used
   # by the boot ROM and firmware/*.s:
-  uio[0]: "GPIO0 / UART TX (boot ACK) / USB D-"
+  uio[0]: "GPIO0 / UART TX (boot ACK, monitor reports) / USB D-"
   uio[1]: "GPIO1 / UART RX (boot) / parallel strobe / USB D+"
   uio[2]: "GPIO2 / SPI SCK / ETH TD+"
   uio[3]: "GPIO3 / SPI MOSI / ETH TD-"
   uio[4]: "GPIO4 / SPI MISO"
   uio[5]: "GPIO5 / SPI CS / I2C SDA"
   uio[6]: "GPIO6 / I2C SCL"
-  uio[7]: "GPIO7 / SR shift pin (default)"
+  uio[7]: "GPIO7 / SR shift pin (default) / SPI monitor MISO"
 
 # Do not change!
 yaml_version: 6

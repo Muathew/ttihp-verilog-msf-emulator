@@ -128,6 +128,30 @@ brief: it is a debugging and reverse-engineering tool):
 6. **Manchester receive for 10BASE-T** (PRISM): RTL change in the RX
    engine; the stretch goal we only half meet.
 
+The rest of the table, as of 21 Oct:
+
+* *Also taken:* two readers on one wire (pivotvlsi): `mon_uart.s` decodes
+  each frame with the RX engine while thread 0 times the same frame; a
+  results table per hardening run (Abagel-coder): `verification.md` §7;
+  WS2812 (PRISM, FIPE): `ws2812.s`; what is not validated (TejasDasa):
+  `verification.md` §9. A published GDS viewer (TeslaCoilerOW) was already
+  there (linked from the README).
+* *Not taken: RTL changes,* held back so the green GDS stands: the tracer
+  and debugger (5), Manchester receive (6), FIFOs with DMA, a trap on an
+  illegal instruction, a flag when two threads drive one pin, a barrier,
+  per-pin ownership by thread, an input glitch filter, hardware reflex
+  responses, more engines.
+* *Not taken: tooling:* one ISA file that generates the assembler, model
+  and decode (Abagel-coder); a `pioasm` translator (pveligeti2); compiling
+  protocols from a higher-level description (PRISM); a PRBS mode, which
+  the CRC unit could provide from firmware by shifting in zeros; lint in
+  CI and a protected `main` (mtanneer).
+* *Still missing against the brief:* firmware for JTAG, SWD, PS/2 and CAN,
+  which the brief names and PRISM and FIPE show. Ours are only the v1
+  waveform-playback demos in `test_extensions.py`, generated in Python
+  and checked loosely. Firmware only; JTAG and SWD are the debug ports a
+  reverse-engineering tool most needs.
+
 What changed in the field:
 
 * **Parallelism is the common bet.** Most serious entries run 4–5 engines

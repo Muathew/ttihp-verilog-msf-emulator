@@ -35,8 +35,11 @@ cycle at a time. The core is held in reset until the PS releases it.
 | `fpga/vivado/msf_bd.tcl` | Vivado 2024.1 block design |
 
 `fpga/rtl` is a copy: **a core fix in `src/` must be copied there too.**
-Check with `cmp src/tt_um_msf_ctrl.v fpga/rtl/tt_um_msf_ctrl.v` (and the
-other shared files) before an FPGA build.
+Check with `git diff --no-index --ignore-cr-at-eol --stat src fpga/rtl`
+before an FPGA build: of the files on both sides, only `tt_um_msf_sram.v`
+and `tt_um_msf_bootrom.v` may differ (the rest of the list exists on one
+side only). `cmp` is no use on a Windows checkout, where line endings can
+differ.
 
 ## Block design
 
@@ -65,16 +68,23 @@ checking the part.
 
 | Check | Command | Status |
 |---|---|---|
-| cocotb regression on `fpga/rtl` | `run_tests.py` with `SRC` pointed at `fpga/rtl` | 103/103 |
+| cocotb regression on `fpga/rtl` | `run_tests.py` with `SRC` pointed at `fpga/rtl` | 103/103 (17 Oct suite) |
 | FPGA SRAM | `sh fpga/tests/run_sram_test.sh` | pass |
 | Wrapper: ownership, reset, status, step mode | `sh fpga/tests/run_aup_zu3_io_test.sh` | pass |
 | PS apps compile (Vitis stubs, classic and SDT drivers) | `sh fpga/tests/run_ps_loader_compile_test.sh` | pass |
 | PS C protocol tests against the RTL | `python fpga/tests/run_ps_hil.py` | 14/14 |
 
-Not yet done (needs Vivado, Vitis and the board): block-design validation,
-synthesis and timing, Vitis build against the real drivers, and every
-on-board check. Confirm first that each step request gives exactly one core
-edge, and the button polarity on the board revision.
+First Vivado run (19 Oct, Vivado 2024.1): `msf_bd.tcl` created the block
+design, it validated, and its HDL wrapper generated. Out-of-context
+synthesis of the processor system reset then crashed inside Vivado
+(`TclStackFree: incorrect freePtr`), a tool fault rather than a design
+error. Things to try: one thread (`set_param general.maxThreads 1`), a
+fresh project at a short ASCII-only path, `-jobs 1`.
+
+Not yet done (needs Vivado, Vitis and the board): synthesis and timing,
+Vitis build against the real drivers, and every on-board check. Confirm
+first that each step request gives exactly one core edge, and the button
+polarity on the board revision.
 
 ## Open items
 

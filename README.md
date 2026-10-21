@@ -23,13 +23,19 @@ ASIC competition.
 
 Firmware in [`firmware/`](firmware): UART, SPI (modes 0-3, full duplex),
 I2C (ACK/NACK, repeated start, clock stretching), USB low-speed TX and RX
-with CRC16, 10BASE-T transmit with FCS and link pulses, and a two-thread demo.
+with CRC16, 10BASE-T transmit with FCS and link pulses, WS2812 LEDs, and a
+two-thread demo. As a debugging instrument the chip can also play an SPI or
+I2C device, monitor a UART, I2C or SPI bus and report timing faults with
+their lengths, bridge a UART to SPI, and break a device's timing by exact
+amounts ([instruments](docs/instruments.md)).
 
 ## Documentation
 
 * [Datasheet](docs/info.md) — pinout, boot protocol, how to test
 * [ISA v2.0](docs/isa.md) — encodings, timing model, peripherals, threads
-* [Verification](docs/verification.md) — reference model, random differential testing, formal, FPGA
+* [Instruments](docs/instruments.md) — device targets, bus monitors, UART-to-SPI bridge, timing-fault injection, comparison with the RP2040's PIO
+* [Verification](docs/verification.md) — reference model, random differential testing, formal, FPGA, CI hardening runs, mutation score, claims and evidence
+* [GDS viewer](https://muathew.github.io/ttihp-verilog-msf-emulator/) — 3D view of the hardened layout
 * [FPGA port](docs/fpga.md) — AUP-ZU3 board mapping, block design, build, status
 * [FPGA PS software](fpga/ps/README.md) — Zynq loader and the C protocol tests
 * [Test suite](test/README.md) — running the cocotb tests
@@ -42,10 +48,10 @@ with CRC16, 10BASE-T transmit with FCS and link pulses, and a two-thread demo.
 |---|---|
 | `src/` | RTL (Verilog-2005): `project.v` top, `tt_um_msf_ctrl.v` core, `_serdes`, `_crc`, `_pio`, `_sram`, `_bootrom`, `_regfile`, `_alu` |
 | `fpga/` | AUP-ZU3 RTL, inferred BRAM, board constraints, Vivado block-design Tcl, Zynq PS loader and C protocol tests |
-| `firmware/` | assembly programs + `msf.inc` constants |
+| `firmware/` | assembly programs, `msf.inc` constants, `ring.inc` / `report.inc` (thread queue and event reporter) |
 | `test/` | cocotb suite, assembler (`assembler.py`), ISA reference model (`isa_model.py`), boot ROM source (`bootloader.s`) |
 | `formal/` | formal properties runner (`run_formal.py`, yosys `sat`) |
-| `tools/` | `msf_boot.py` host loader, `synth_check.py` area/timing pre-check |
+| `tools/` | `msf_boot.py` host loader, `synth_check.py` area/timing pre-check, `gds_metrics.py` CI hardening table, `mutation.py` mutation score |
 
 ## Running
 
@@ -53,6 +59,7 @@ with CRC16, 10BASE-T transmit with FCS and link pulses, and a two-thread demo.
 pip install -r test/requirements.txt        # cocotb; plus Icarus Verilog
 cd test && make                              # RTL suite (Windows: python run_tests.py --all)
 python formal/run_formal.py --yosys yowasp-yosys   # pip install yowasp-yosys
+python tools/mutation.py                     # mutation score (about 20 minutes)
 python test/assembler.py                     # regenerate the boot ROM after editing bootloader.s
 python tools/msf_boot.py firmware/uart_tx.s --port COM5   # load onto silicon
 ```

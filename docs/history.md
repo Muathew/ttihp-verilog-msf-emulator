@@ -22,8 +22,7 @@ Where an early decision was later changed, the entry says so.
 | 2026-10-14 | Sam | 10BASE-T transmit at 20 MHz as a real test (v1: waveform playback) |
 | 2026-10-16 | Sam | Full review of v1: 9 bugs and the gaps below; v2 plan written |
 | 2026-10-17 | Sam | v2 done: bug fixes, ISA v2, SERDES, CRC, two threads, boot ROM v2, formal, 103 tests |
-| 2026-10-18 | Muath, Sam | AUP-ZU3 FPGA port; PS-stepped core and C protocol tests (14/14); 1 Hz blink; competitor survey updated (research.md) |
-| 2026-10-19..21 | Sam | Instruments from the survey: SPI and I2C targets, UART / I2C / SPI bus monitors, UART-to-SPI bridge, timing-fault knobs, CI hardening table, mutation score (39/40), WS2812 and a PIO comparison; 130 tests |
+| 2026-10-18 | Muath, Sam | AUP-ZU3 FPGA port; PS-stepped core and C protocol tests (14/14); 1 Hz blink; competitor survey updated (research.md) || 2026-10-19..21 | Sam | Instruments from the survey: SPI and I2C targets, UART / I2C / SPI bus monitors, UART-to-SPI bridge, timing-fault knobs, CI hardening table, mutation score (39/40), WS2812 and a PIO comparison; 130 tests |
 
 ## 1. Architecture decision (24 Sep)
 
@@ -184,6 +183,8 @@ which the block design didn't have; the same day it moved to PS EMIO GPIO,
 the wrapper gained a step mode, and the cocotb firmware tests were ported to
 C for the PS (14/14 against the RTL). Muath's 1 Hz blink became the first
 board check; a full RTL run measured its period at exactly 6,000,000 cycles.
+On 19 Oct the block design validated in Vivado for the first time, but
+synthesis crashed inside Vivado itself (a tool fault, not a design error).
 Current state: [fpga.md](fpga.md).
 
 ## 8. Instruments (19 – 21 Oct)

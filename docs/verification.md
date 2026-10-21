@@ -189,3 +189,20 @@ is how the sweep was checked against the survivor.
 | Timing faults can be injected by exact amounts | `test_faults`: each knob measured at the pins; a one-cycle step in the UART bit time moves a receiver from pass to fail exactly where its geometry predicts |
 | v2 fits the 6x4 tiles and meets timing at 25 MHz in all corners | the GDS runs above: 23 % utilisation, no setup or hold violations, clean DRC, precheck passed (§7) |
 | The tests catch a broken design, not only pass a working one | 39 of 40 sampled single-bit mutants killed; the survivor flips a reserved bit nothing reads (§8) |
+
+What is **not** validated yet:
+
+* Nothing has run on silicon or on the FPGA board: the C tests (§5) have
+  run against the RTL in simulation only.
+* The other end of every bus is a model written by us from the protocol
+  specs, not a real device: no USB host, Ethernet link partner, EEPROM or
+  logic analyser has been connected.
+* Electrical behaviour is not modelled: pad drive, rise times with real
+  pull-ups, USB and 10BASE-T signal levels.
+* The hardened netlist is only smoke-tested (`test_gl_smoke`: it
+  elaborates, its outputs carry no X, reset recovers); its function is
+  checked on the RTL.
+* The formal proofs are bounded (depth 16 from reset) and cover the
+  control pipeline; the SERDES and CRC datapaths are checked in simulation
+  only.
+* The mutation score comes from a sample of 40 single-bit faults.

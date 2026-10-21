@@ -23,4 +23,5 @@ MSF_SEEDS=200 python run_tests.py -m test_random_diff         # more random prog
 | `diffcheck.py`, `rand_prog.py` | RTL-vs-model comparison, constrained-random program generator |
 | `golden_model.py` | protocol and CRC golden references |
 | `msf_tb.py`, `tools_path.py` | shared testbench helpers, host boot-frame builder import |
+| `fw_tb.py` | firmware-level helpers: boot a `firmware/*.s` file, step the chip one clock at a time against Python device models, decode the monitors' reports |
 | `test_*.py` | test modules — see `docs/verification.md` for what each covers |
