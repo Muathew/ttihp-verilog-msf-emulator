@@ -25,7 +25,10 @@
   "//": "https://tinytapeout.com/faq/#how-can-i-map-an-additional-external-clock-to-one-of-the-gpios",
   "CLOCK_PORT": "clk",
   "//": "SRAM macro integration: two instances, one per 512-word bank, side by",
-  "//": "side on the left (each 219.8 x 402.6 um rotated; a 38 um channel between)",
+  "//": "side on the left (each 219.8 x 402.6 um rotated). sram1 sits exactly 7",
+  "//": "stripe pitches (7 x 38.87 um) right of sram0, so the stripes over it line",
+  "//": "up with the power grid as sram0's do; at x = 300 a short VGND segment",
+  "//": "over it failed the precheck pin check (power port not near the edges).",
   "MACROS": {
     "RM_IHPSG13_2P_512x16_c2_bm_bist": {
       "instances": {
@@ -38,7 +41,7 @@
         },
         "u_sram.sram1": {
           "location": [
-            300,
+            314.09,
             160
           ],
           "orientation": "R90"
