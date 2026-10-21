@@ -4,10 +4,11 @@ The brief asks for a tool to debug and reverse-engineer digital protocols.
 This page covers the firmware that makes msfcore one: **targets** (the chip
 plays a device), **monitors** (it listens to a bus and flags timing
 faults), a **bridge** (a host drives SPI through the UART, one thread per
-side) and **timing-fault knobs** (the controllers break a device's timing
-by exact amounts). None of it needs protocol hardware: it is firmware on
-the core's level waits, cycle counter, shift register and SERDES, loaded at
-run time. Every claim below is checked at the pins in simulation by the
+side), **timing-fault knobs** (the controllers break a device's timing
+by exact amounts) and a **logic analyser** (the capture engine records 8
+pins with a trigger). None of it is protocol hardware: it is firmware on
+the core's level waits, cycle counter, shift register, SERDES and capture
+engine, loaded at run time. Every claim below is checked at the pins in simulation by the
 test named next to it; the timing figures are core clock cycles (83 ns at
 12 MHz).
 
@@ -171,7 +172,32 @@ two chips (one runs a controller with its knobs set, the other a monitor),
 or one chip against the device under test with the demo board's RP2040
 reading the reports.
 
-## 5. Compared with the RP2040's PIO
+## 5. Logic analyser — `firmware/logic_analyzer.s` (`test_capture.py`)
+
+The capture engine (`isa.md` §6.6) records 8 pins into an SRAM ring
+buffer while the core goes on with anything else; the firmware arms it,
+waits for the trigger and the words after it, and sends the buffer to the
+host, oldest first, with the cycle count just before arming, so every
+sample's time is known exactly.
+
+* **Sample mode:** every *div* cycles (1 to 65535), two samples a word: at
+  12 MHz and *div* 1, 12 Msamples/s, 1 024 samples in a 512-word buffer.
+* **Change mode:** a word per change with the samples since the last one,
+  so a quiet bus fills the buffer slowly: one word per 255 samples while
+  nothing moves.
+* **Trigger:** a pattern on any of the 8 pins, as a level or an edge, with
+  history before it and a chosen number of words after.
+* It never changes the core's timing (`test_cap_never_changes_core_timing`:
+  a data-RAM-heavy loop takes the same number of cycles recording or not,
+  and the capture is intact), and it says when a long burst of the core's
+  own data-RAM use cost it a word (`test_cap_overflow_flag`).
+
+The tests check every recorded word against a model of the rules in the
+spec: both modes, every *div* tried, level and edge triggers, the ring
+with pre-trigger history, `ui` as the source, and the firmware's UART
+dump decoded back into the samples driven.
+
+## 6. Compared with the RP2040's PIO
 
 The RP2040 is on the Tiny Tapeout demo board, and its PIO blocks are the
 best-known programmable I/O. Three examples from the Raspberry Pi

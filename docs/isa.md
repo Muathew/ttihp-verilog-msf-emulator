@@ -2,7 +2,8 @@
 
 > v2.1 (2026-10-21, branch `rtl-changes`) adds a timeout register per thread,
 > the peripheral ports `PW`/`PR` with a FIFO between threads (§6.5), the
-> debug view (§8) and a second 512-word SRAM bank (10-bit PC and addresses).
+> debug view (§8), a second 512-word SRAM bank (10-bit PC and addresses) and
+> a capture engine that records the pins into SRAM (§6.6).
 > v2.0 programs run unchanged unless one thread relies on a `TMO` the other
 > thread set after `TSTART`, or on an address wrapping at 512.
 > v2.0 (2026-10-16) supersedes v1.0. All v1 encodings keep their meaning **except
@@ -226,7 +227,7 @@ POLY=0xA001, init 0xFFFF, send ~CRC. USB CRC5 → reflected, POLY=0x14, init 0x1
 ### 6.4 STAT
 bit0 tx_full · bit1 tx_busy · bit2 rx_avail · bit3 rx_overrun · bit4 crc_busy ·
 bit5 T1 running · bit6 executing thread id · bit7 FIFO not empty · bit8 FIFO
-full · others 0.
+full · bit9 capture recording · bit10 capture done · others 0.
 
 ### 6.5 Peripheral ports and the FIFO
 `PW #p,rb` writes rb to port *p*, `PR ra,#p` reads port *p* into ra. Unused
@@ -236,6 +237,10 @@ ports: a write does nothing, a read gives 0.
 |---|---|---|
 | 0 | `FIFO_PUT rb`: push rb | `FIFO_GET ra`: pop into ra |
 | 1 | `FIFO_CFG rb`: rb[9:0] base, rb[12:10] *n*: size 2^(*n*+1) words (2–256); empties the FIFO, clears drops | `FIFO_STAT ra`: ra ← drops[6:0] << 9 \| count[8:0] (no side effect) |
+| 2 | `CAP_BUF rb` (§6.6) | `CAP_STAT ra` (§6.6) |
+| 3 | `CAP_DIV rb` | `CAP_TPOS ra` |
+| 4 | `CAP_TRIG rb` | 0 |
+| 5 | `CAP_CTL rb` | 0 |
 
 The FIFO's words live in the SRAM, in the size-aligned block that contains
 `base` (base's low bits are ignored); the read and write positions are in
@@ -250,6 +255,40 @@ to lock. Reset: base 64, 64 words (SRAM 64–127).
   and `Z` = 1; otherwise `Z` = 0.
 * Each thread touches the SRAM only in its own cycles, so the FIFO never
   makes one thread's timing depend on the other's.
+
+### 6.6 Capture engine
+Records 8 pins (the synchronised `uio`, or `ui`) into an SRAM ring buffer:
+a logic analyser on the chip. Configured through ports 2–5:
+
+| Port | Write | Bits |
+|---|---|---|
+| 2 | `CAP_BUF` | rb[9:0] base, rb[13:10] *n*: buffer of 2^(*n*+1) words, the size-aligned block containing base. Reset: 512, 256 words |
+| 3 | `CAP_DIV` | cycles per sample (0 = 1). Reset 1 |
+| 4 | `CAP_TRIG` | rb[7:0] mask, rb[15:8] value: the condition is (pins & mask) == value |
+| 5 | `CAP_CTL` | rb[9:0] *post*, bit12 edge trigger, bit13 record `ui` (else `uio`), bit14 change mode, bit15 arm (0 stops) |
+
+* Writing `CAP_CTL` with bit 15 set arms it: from the next cycle it takes a
+  sample every *div* cycles (pins as seen two cycles earlier, like any
+  input) and records continuously, wrapping round the buffer, so the words
+  before the trigger are kept.
+* **Sample mode:** two samples a word, the earlier in the low byte.
+  **Change mode:** a word {pins, ticks since the last word} at the first
+  sample, at every sample that differs from the last word's, and after
+  255 samples without a change.
+* **Trigger:** level (the condition holds) or edge (it holds, and did not
+  at the previous sample; after arming it must be seen false first). The
+  word holding the first such sample is the trigger word; *post* more
+  words are recorded after it, then the engine stops (done). Mask 0
+  triggers on the first sample.
+* It writes SRAM port B only in cycles the core does not use it, through
+  a two-word queue, so **recording never changes any thread's timing**. A
+  word that finds the queue full is lost (its slot keeps the old content)
+  and sets overflow: two samples a word every cycle leave the core every
+  other cycle for data, so only bursts of `LD`/`ST`/`MEM_W`/FIFO longer
+  than about 4 cycles cost samples.
+* `CAP_STAT`: bit15 recording, bit14 triggered, bit13 done, bit12 overflow,
+  bits 9:0 the address the next word goes to (after done: the oldest
+  word, once the buffer has wrapped). `CAP_TPOS`: the trigger word's address.
 
 ## 7. Threads
 

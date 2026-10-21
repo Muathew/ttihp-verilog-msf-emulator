@@ -33,9 +33,24 @@
 .equ ST_TID,     0x0040
 .equ ST_FAVAIL,  0x0080       ; FIFO not empty
 .equ ST_FFULL,   0x0100
+.equ ST_CAPRUN,  0x0200       ; capture engine recording
+.equ ST_CAPDONE, 0x0400       ; capture finished
 
 ; ---- FIFO_CFG ----  base in bits 9:0 (size-aligned block), size 2 << n
 .equ FIFO_N,     10           ; FIFO_CFG value = base | (n << FIFO_N)
+
+; ---- capture engine ----  CAP_BUF = base | (n << CAP_N): 2 << n words
+.equ CAP_N,      10
+; CAP_TRIG = mask | value << 8; CAP_CTL = post-trigger words | these:
+.equ CAP_EDGE,   0x1000       ; trigger on the condition becoming true
+.equ CAP_UI,     0x2000       ; record ui_in instead of uio
+.equ CAP_CHG,    0x4000       ; change mode (else two samples a word)
+.equ CAP_ARM,    0x8000       ; start (0: stop)
+; CAP_STAT bits (bits 9:0: next word's address)
+.equ CS_RUN,     0x8000
+.equ CS_TRIG,    0x4000
+.equ CS_DONE,    0x2000
+.equ CS_OVF,     0x1000
 
 ; ---- conventional done marker on uo_out used by the demos ----
 .equ DONE,       0x55

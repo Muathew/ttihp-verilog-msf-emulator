@@ -26,8 +26,9 @@ I2C (ACK/NACK, repeated start, clock stretching), USB low-speed TX and RX
 with CRC16, 10BASE-T transmit with FCS and link pulses, WS2812 LEDs, and a
 two-thread demo. As a debugging instrument the chip can also play an SPI or
 I2C device, monitor a UART, I2C or SPI bus and report timing faults with
-their lengths, bridge a UART to SPI, and break a device's timing by exact
-amounts ([instruments](docs/instruments.md)).
+their lengths, bridge a UART to SPI, break a device's timing by exact
+amounts, and record 8 pins as a logic analyser with a trigger
+([instruments](docs/instruments.md)).
 
 ## Documentation
 

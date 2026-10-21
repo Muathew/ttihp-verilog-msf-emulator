@@ -28,6 +28,7 @@ generic building blocks that firmware composes into protocols.
 | SERDES TX | NRZ / NRZI / Manchester, bit stuffing, differential pin pair, 1-16 bit words, programmable symbol period, double buffered (gapless), release mode for exact idle/EOP timing |
 | SERDES RX | NRZ / NRZI, de-stuffing, edge resync, continuous or async-character (UART-style) start, overrun flag |
 | CRC unit | any CRC up to 32 bits, normal or reflected, 1-16 bits per write, bit-serial in the background (CRC-8, CRC-5/16 USB, CRC-32 Ethernet ...) |
+| Capture engine | a logic analyser: records 8 pins into an SRAM ring buffer every *n* cycles (two samples a word, or a word per change with its time), level or edge trigger with pre-trigger history, using only data-RAM cycles the core leaves free |
 | Pins | `uio[7:0]` with per-bit set/clear/toggle/write of OUT and OE (open drain = OE), `uo_out[7:0]` written by firmware, `ui_in[7:0]` readable; all inputs pass a 2-flip-flop synchroniser |
 
 ### Timing model (what makes bit-banging exact)
@@ -106,13 +107,14 @@ single-step, stop at a PC and read every register.
 | `mon_i2c.s` | 12 MHz | uio5 SDA, uio6 SCL, uio0 reports | START/STOP, bytes and ACKs, SCL phases shorter than standard mode with their lengths |
 | `mon_spi.s` | 12 MHz | uio2 SCK, uio3 MOSI, uio7 MISO, uio5 CS, uio0 reports | MOSI and MISO bytes, mode mismatch, partial bytes |
 | `bridge.s` | 12 MHz | uio1 RX, uio0 TX; SPI as `spi_master.s` | length-prefixed SPI transfers driven over the UART, bytes read back returned |
+| `logic_analyzer.s` | 12 MHz | uio (or ui) recorded, uio0 TX | a capture of 8 pins with trigger and pre-trigger history, sent at 1 Mbaud |
 
    Timing knobs (assembler defines) let `uart_tx.s`, `i2c_master.s` and
    `bridge.s` move edges by exact amounts: bit time and stop bit, SCL low
    and high, SCK high and low.
 
 4. In simulation: `cd test && make` (or `python run_tests.py --all` on
-   Windows) runs 140 cocotb tests including a random differential check of
+   Windows) runs 148 cocotb tests including a random differential check of
    the RTL against an independent ISA model; `python formal/run_formal.py`
    runs the formal properties; `python tools/mutation.py` measures how many
    seeded RTL faults the tests catch (38 of 40; the two left cannot change behaviour).

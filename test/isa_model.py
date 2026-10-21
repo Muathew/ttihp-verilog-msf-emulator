@@ -15,8 +15,9 @@ documented cost rules:
 
 The model is stepped one clock at a time (`step()`), so peripheral timing
 (CRC busy) and per-cycle events (edges, CNT match, timeouts) are exact.
-TX/RX engines are not modelled (the random tests don't use them; they are
-checked by protocol decoders in test_peripherals.py).
+TX/RX engines and the capture engine are not modelled (the random tests
+don't use them; they are checked by protocol decoders in test_peripherals.py
+and by test_capture.py).
 
 Trace: every issue appends ("I", cycle, thread, pc, word, state) and every
 stall release appends ("R", cycle, thread, timed_out). `state` is the
@@ -36,6 +37,7 @@ PIN_W, PIN_R, SETM, CLRM, CNT_R, INCR, DECR, IN_RD, CALL, RET, WAIT_EDGE, WAIT_C
  X_CRCW, X_CRCRDL, X_CRCRDH, X_CRCSETL, X_CRCSETH, X_POLL, X_POLH, X_TSTART, X_TSTOP,
  X_TID, X_PW, X_PR) = range(32)
 P_FIFO, P_FCFG = 0, 1           # peripheral ports
+P_CAPTURE = {2, 3, 4, 5}        # capture engine: checked by test_capture.py
 
 BLOCKING_EXT = {X_LD, X_TXPUSH, X_TXWAIT, X_RXPOP, X_CRCW, X_CRCRDL}
 UNMODELLED_EXT = {X_TXCFG, X_TXDIV, X_TXPUSH, X_TXWAIT, X_RXCFG, X_RXDIV, X_RXPOP}
@@ -385,6 +387,8 @@ class IsaModel:
             elif port == P_FCFG:
                 self.fbase, self.fn = R[rb] & M10, (R[rb] >> 10) & 7
                 self.fwp = self.frp = self.fdrop = 0
+            elif port in P_CAPTURE:
+                raise NotImplementedError("capture engine not modelled")
         elif sub == X_PR:
             port = rb                       # PR ra, #port
             if port == P_FIFO:              # a load from the read slot
@@ -395,6 +399,8 @@ class IsaModel:
                     self._block(t, c, kind="ld", rd=ra, data=None, z=1)
             elif port == P_FCFG:
                 R[ra] = (self.fdrop << 9) | self.fcount()
+            elif port in P_CAPTURE:
+                raise NotImplementedError("capture engine not modelled")
             else:
                 R[ra] = 0
         elif sub == X_CRCCFG:

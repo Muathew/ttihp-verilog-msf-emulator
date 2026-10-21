@@ -57,6 +57,12 @@ module tt_um_msf_ctrl (
     input  wire        crc_busy,
     input  wire [15:0] crc_lo,
     input  wire [15:0] crc_hi,
+    // peripheral ports 2-7 (tt_um_msf_cap): writes out, status in
+    output wire        pw_we,
+    output wire [2:0]  pw_port,
+    output wire [15:0] pw_data,
+    input  wire [15:0] cap_stat,
+    input  wire [9:0]  cap_tpos,
     // debug view (project.v shows dbg_q on uo_out in debug mode)
     input  wire [5:0]  dbg_sel,
     output reg  [7:0]  dbg_q
@@ -314,8 +320,8 @@ module tt_um_msf_ctrl (
   // ------------------------------------------------------------------
   // Register write-back (always for the thread that owns the cycle)
   // ------------------------------------------------------------------
-  wire [15:0] stat = {7'd0, ffull, !fempty, cur, dual, crc_busy, rx_overrun, rx_avail,
-                      tx_busy, tx_full};
+  wire [15:0] stat = {5'd0, cap_stat[13], cap_stat[15], ffull, !fempty, cur, dual,
+                      crc_busy, rx_overrun, rx_avail, tx_busy, tx_full};
 
   reg        wbx_en;
   reg [15:0] wbx_d;
@@ -340,7 +346,12 @@ module tt_um_msf_ctrl (
           X_TID:    wbx_d = {15'd0, cur};
           X_PR:     begin                       // port reads (#0 = pop: LD path)
             wbx_en = !x_get;
-            wbx_d  = x_fstat ? {fdrop, fcount} : 16'd0;
+            case (f_b)
+              P_FCFG:  wbx_d = {fdrop, fcount};
+              3'd2:    wbx_d = cap_stat;
+              3'd3:    wbx_d = {6'd0, cap_tpos};
+              default: wbx_d = 16'd0;
+            endcase
           end
           X_RXPOP:  begin wbx_d = rx_word; wbx_en = rx_avail;  end
           X_CRCRDL: begin wbx_d = crc_lo;  wbx_en = !crc_busy; end
@@ -572,6 +583,11 @@ module tt_um_msf_ctrl (
   assign b_addr = do_memw ? waddr : do_st ? qa[9:0] : do_put ? faddr_w :
                   do_get ? faddr_r : qb[9:0];
   assign b_wd   = do_memw ? qa : qb;
+
+  // ports 2-7 belong to the capture engine
+  assign pw_we   = exec && x_pw && (f_a >= 3'd2);
+  assign pw_port = f_a;
+  assign pw_data = qb;
 
   wire per_rel = rel && rel_ok && (sk_c == K_TXPUSH || sk_c == K_CRCW);
   assign per_we  = (exec && x_perw) || (blk_now && (x_txp || x_crcw)) || per_rel;

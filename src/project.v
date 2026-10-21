@@ -45,9 +45,17 @@ module tt_um_msf (
   // ---- instruction memory: boot ROM (0-127) + SRAM (128-1023) ----
   wire [9:0]  imem_raddr;
   wire [15:0] rom_rd, sram_rd;
-  wire        b_en, b_we;
+  wire        b_en, b_we;               // the core's port B request
   wire [9:0]  b_addr;
   wire [15:0] b_wd, b_rd;
+  // capture engine: writes port B only in cycles the core leaves it free
+  wire        cap_req;
+  wire [9:0]  cap_addr;
+  wire [15:0] cap_wd;
+  wire        sb_en   = b_en | cap_req;
+  wire        sb_we   = b_en ? b_we : 1'b1;
+  wire [9:0]  sb_addr = b_en ? b_addr : cap_addr;
+  wire [15:0] sb_wd   = b_en ? b_wd : cap_wd;
 
   tt_um_msf_bootrom u_rom (
       .clk(clk), .rst_n(rst_n),
@@ -58,7 +66,7 @@ module tt_um_msf (
   tt_um_msf_sram u_sram (
       .clk(clk), .rst_n(rst_n),
       .raddr(imem_raddr), .rd(sram_rd),
-      .b_en(b_en), .b_we(b_we), .b_addr(b_addr), .b_wd(b_wd), .b_rd(b_rd)
+      .b_en(sb_en), .b_we(sb_we), .b_addr(sb_addr), .b_wd(sb_wd), .b_rd(b_rd)
   );
 
   // Both memories have a registered read, so the bank select must be
@@ -78,6 +86,10 @@ module tt_um_msf (
   wire        tx_full, tx_busy, rx_avail, rx_overrun, crc_busy;
   wire [15:0] rx_word, crc_lo, crc_hi;
   wire [7:0]  tx_mask, tx_val;
+  wire        pw_we;
+  wire [2:0]  pw_port;
+  wire [15:0] pw_data, cap_stat;
+  wire [9:0]  cap_tpos;
 
   tt_um_msf_ctrl u_ctrl (
       .clk(clk), .rst_n(rst_n),
@@ -91,7 +103,18 @@ module tt_um_msf (
       .tx_full(tx_full), .tx_busy(tx_busy), .rx_avail(rx_avail),
       .rx_overrun(rx_overrun), .rx_word(rx_word),
       .crc_busy(crc_busy), .crc_lo(crc_lo), .crc_hi(crc_hi),
+      .pw_we(pw_we), .pw_port(pw_port), .pw_data(pw_data),
+      .cap_stat(cap_stat), .cap_tpos(cap_tpos),
       .dbg_sel(ui_in[7:2]), .dbg_q(dbg_q)
+  );
+
+  // ---- capture engine (logic analyser) ----
+  tt_um_msf_cap u_cap (
+      .clk(clk), .rst_n(rst_n),
+      .uio_in(uio_sync), .ui_in(ui_sync),
+      .pw_we(pw_we), .pw_port(pw_port), .pw_data(pw_data),
+      .core_b(b_en), .req(cap_req), .addr(cap_addr), .wd(cap_wd),
+      .stat(cap_stat), .tpos(cap_tpos)
   );
 
   // ---- pins ----
@@ -132,5 +155,7 @@ module tt_um_msf (
   end
   always @(*) assume(rst_n == !f_init);
   always @(*) if (!f_init) assert(imem_rd == ((f_faddr[9:7] != 3'b000) ? sram_rd : rom_rd));
+  // F9: the capture engine never takes SRAM port B from the core
+  always @(*) if (!f_init) assert(!(b_en && cap_req));
 `endif
 endmodule

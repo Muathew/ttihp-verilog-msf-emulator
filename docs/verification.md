@@ -72,6 +72,7 @@ inputs**, so the proofs hold for every program and environment.
 | F6 | flags change only through the owning thread's flag ops / blocking ops (or T1's TSTART) |
 | F7 | the fetched word comes from the bank (ROM/SRAM) of the address it was fetched with |
 | F8 | the FIFO never holds more words than its size; its positions move only by a push that fits, a pop that finds a word, or `FIFO_CFG` |
+| F9 | the capture engine never writes SRAM port B in a cycle the core uses it |
 
 Every `cover()` point (WAIT edge/CMP/timeout release, LD release in T1, dual
 issue, TSTOP, a push to a full FIFO, a pop of an empty one) is shown
@@ -94,6 +95,7 @@ and each must make the proof fail:
 | `test_regressions` | one test per review bug B1-B5 (each failed on v1) |
 | `test_peripherals` | CRC check values (CRC-8/16/32/5), TX in every mode decoded from the pins, RX with +-2 % baud and +-1.5 % + jitter, RX at every divisor 4-40, TX->RX loopback |
 | `test_threads` | isolation, start/stop/restart, zero-cost branches, determinism of T0 vs any T1 load, events in the other thread's slot, a TMO per thread, the FIFO between threads, a wait on every pin of both banks in both threads with the other pins high |
+| `test_capture` | the capture engine: every recorded word against a model of the spec's rules (both modes, several sample periods, level and edge triggers, the ring with pre-trigger history, `ui` as source), the core's timing identical with and without recording, the overflow flag, and `logic_analyzer.s`'s UART dump decoded back into the driven samples |
 | `test_debug` | the debug view: every view against the program's values, off without the strap, and single-stepping a hand-driven clock while reading the PC and a register through the pins |
 | `test_boot` | framed UART and parallel loading, back-to-back bytes, late host, NAK + retry, data RAM, `G` anywhere |
 | `test_firmware` | the `firmware/` demos against independent decoders and slave models (SPI slave all modes, wired-AND I2C slave with stretching, USB NRZI/CRC16/EOP, 10BASE-T Manchester/FCS/TP_IDL/NLP) |
@@ -210,6 +212,7 @@ on all 16 pins in turn with the other seven high) was added and kills it:
 | The SPI monitor decodes SCK periods of 28 cycles in a byte, 36 between bytes, all modes | `test_mon_spi_limits` at those values |
 | The two threads cooperate without locks (UART in, SPI out) | `test_bridge`, all SPI modes |
 | The hardware FIFO hands words between threads in order, one instruction each way, and never overfills | `test_threads.test_fifo_between_threads`, `test_isa_v2` FIFO tests, formal F8, the random differential test (§2) |
+| The chip records 8 pins as a logic analyser without changing any thread's timing | `test_capture`: every word checked against the spec's rules; the same loop takes the same cycles recording or not; formal F9 |
 | A host can halt, single-step and read the core's state through the pins | `test_debug.test_debug_single_step`: hand-driven clock, PC trace and register read between edges |
 | Timing faults can be injected by exact amounts | `test_faults`: each knob measured at the pins; a one-cycle step in the UART bit time moves a receiver from pass to fail exactly where its geometry predicts |
 | v2 fits the 6x4 tiles and meets timing at 25 MHz in all corners, and at 50 MHz | the GDS runs above: 23 % utilisation, no setup or hold violations, clean DRC, precheck passed; the 20 ns run on `rtl-changes`: 3.09 ns to spare (§7) |

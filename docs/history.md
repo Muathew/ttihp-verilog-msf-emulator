@@ -24,7 +24,7 @@ Where an early decision was later changed, the entry says so.
 | 2026-10-17 | Sam | v2 done: bug fixes, ISA v2, SERDES, CRC, two threads, boot ROM v2, formal, 103 tests |
 | 2026-10-18 | Muath, Sam | AUP-ZU3 FPGA port; PS-stepped core and C protocol tests (14/14); 1 Hz blink; competitor survey updated (research.md) |
 | 2026-10-19..21 | Sam | Instruments from the survey: SPI and I2C targets, UART / I2C / SPI bus monitors, UART-to-SPI bridge, timing-fault knobs, CI hardening table, mutation score (39/40), WS2812 and a PIO comparison; 130 tests |
-| 2026-10-21 | Sam | Branch `rtl-changes`: 50 MHz sign-off, a timeout per thread, a hardware FIFO between the threads, the debug view, a second SRAM bank (1024 words); 140 tests |
+| 2026-10-21 | Sam | Branch `rtl-changes`: 50 MHz sign-off, a timeout per thread, a hardware FIFO between the threads, the debug view, a second SRAM bank (1024 words), a capture engine (logic analyser); 148 tests |
 
 ## 1. Architecture decision (24 Sep)
 
@@ -275,6 +275,13 @@ engine, Manchester receive and a glitch filter, more threads.
   when its bank is addressed, and the read data is chosen by a registered
   bank bit, the same rule as the ROM / SRAM select. `FIFO_CFG`'s size field
   moved up one bit to make room for a 10-bit base.
+* **Capture engine.** The useful form of PRISM's "FIFOs with DMA": a
+  logic analyser that records 8 pins into an SRAM ring buffer, two samples
+  a word or a word per change, with a level or edge trigger and history
+  before it. The rule that shaped it: the core's timing must not depend
+  on it, so it writes only in cycles the core leaves the data port free,
+  through a two-word queue, and reports a lost word instead of stalling
+  anyone. `logic_analyzer.s` arms it and sends the buffer to the host.
 
 ## Working conventions
 
