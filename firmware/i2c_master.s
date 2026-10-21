@@ -7,10 +7,15 @@
 ;   output : read bytes at data RAM [64 ..]
 ;            uo_out = 0x80 | bit1 (all write bytes ACKed) | bit0 (address ACKed)
 ; Q = quarter-bit delay loop count (3 cycles per count): Q=9 ~ 100 kHz at 12 MHz.
+; QL / QH = the delay counts of the SCL low / high phases (default Q): each
+; count moves an edge by 3 cycles, so the controller can break a device's
+; timing by exact amounts (timing-fault injection).
 .include "msf.inc"
 .equ SDA, 0x20
 .equ SCL, 0x40
 .equ Q,   9
+.equ QL,  Q
+.equ QH,  Q
 
 start:
         PIN_WI   0x00               ; drive-low value for both lines
@@ -67,16 +72,16 @@ halt:   JMP      halt
 ; ---- START (from idle or after an ACK clock: SCL low) ----
 i2c_start:
         OE_CLR   SDA
-        LDR      R5, #Q
+        LDR      R5, #QL
 s1:     DECR     R5
         JNZ      s1
         OE_CLR   SCL
         WAIT_EDGE 6, high           ; honour clock stretching
-        LDR      R5, #Q
+        LDR      R5, #QH
 s2:     DECR     R5
         JNZ      s2
         OE_SET   SDA                ; SDA falls while SCL is high
-        LDR      R5, #Q
+        LDR      R5, #QH
 s3:     DECR     R5
         JNZ      s3
         OE_SET   SCL
@@ -85,12 +90,12 @@ s3:     DECR     R5
 ; ---- STOP ----
 i2c_stop:
         OE_SET   SDA
-        LDR      R5, #Q
+        LDR      R5, #QL
 p1:     DECR     R5
         JNZ      p1
         OE_CLR   SCL
         WAIT_EDGE 6, high
-        LDR      R5, #Q
+        LDR      R5, #QH
 p2:     DECR     R5
         JNZ      p2
         OE_CLR   SDA                ; SDA rises while SCL is high
@@ -108,12 +113,12 @@ wb:     MOV      R5, R1
         JMP      wbc
 wb1:    OE_CLR   SDA                ; 1: release
         NOP                         ; equal path lengths
-wbc:    LDR      R5, #Q
+wbc:    LDR      R5, #QL
 w1:     DECR     R5
         JNZ      w1
         OE_CLR   SCL
         WAIT_EDGE 6, high
-        LDR      R5, #Q
+        LDR      R5, #QH
 w2:     DECR     R5
         JNZ      w2
         OE_SET   SCL
@@ -121,12 +126,12 @@ w2:     DECR     R5
         DECR     R0
         JNZ      wb
         OE_CLR   SDA                ; ACK clock: release SDA for the slave
-        LDR      R5, #Q
+        LDR      R5, #QL
 w3:     DECR     R5
         JNZ      w3
         OE_CLR   SCL
         WAIT_EDGE 6, high
-        LDR      R5, #Q
+        LDR      R5, #QH
 w4:     DECR     R5
         JNZ      w4
         PIN_R    R5                 ; SDA = 0 -> ACK
@@ -144,12 +149,12 @@ i2c_rbyte:
         LDR      R1, #0             ; ACK
 rb0:    OE_CLR   SDA
         LDR      R0, #8
-rb:     LDR      R5, #Q
+rb:     LDR      R5, #QL
 r1:     DECR     R5
         JNZ      r1
         OE_CLR   SCL
         WAIT_EDGE 6, high
-        LDR      R5, #Q
+        LDR      R5, #QH
 r2:     DECR     R5
         JNZ      r2
         SHIFT_IN                    ; sample SDA
@@ -159,12 +164,12 @@ r2:     DECR     R5
         ADDS     R5, R1, R1         ; Z=1 iff we ACK
         JNZ      rbn
         OE_SET   SDA
-rbn:    LDR      R5, #Q
+rbn:    LDR      R5, #QL
 r3:     DECR     R5
         JNZ      r3
         OE_CLR   SCL
         WAIT_EDGE 6, high
-        LDR      R5, #Q
+        LDR      R5, #QH
 r4:     DECR     R5
         JNZ      r4
         OE_SET   SCL

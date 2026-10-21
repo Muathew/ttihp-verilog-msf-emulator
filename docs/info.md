@@ -81,11 +81,30 @@ Each frame is answered with ACK `0x06` / NAK `0x15` on `uio[0]` (UART) and on
 | `usb_ls_tx.s` / `usb_ls_rx.s` | 12 MHz | uio0 D-, uio1 D+ | low-speed packet with CRC16 and exact EOP; receive + CRC check |
 | `eth_10baset_tx.s` | 20 MHz | uio2 TD+, uio3 TD- | 10BASE-T frame (preamble, SFD, CRC-32 FCS, TP_IDL) and link pulses |
 | `thread_demo.s` | 12 MHz | uio7, uio0/1 | exact square wave on T0 while T1 echoes UART |
+| `ws2812.s` | 12 MHz | uio0 | WS2812 LED chain at 800 kHz from the TX engine |
 
-3. In simulation: `cd test && make` (or `python run_tests.py --all` on
-   Windows) runs ~100 cocotb tests including a random differential check of
+3. Instruments (details and figures in `docs/instruments.md`): the chip as
+   a device, as a bus monitor reporting events at 1 Mbaud on `uio0`, as a
+   serial-to-SPI adapter, and as a controller that breaks timing on purpose.
+
+| Firmware | Clock | Pins | What to observe |
+|---|---|---|---|
+| `spi_target.s` | 12 MHz | uio2 SCK, uio3 MOSI, uio4 MISO, uio5 CS | a 64-register SPI device, modes 0-3, up to 750 kHz, no dummy byte |
+| `i2c_target.s` | 12 MHz | uio5 SDA, uio6 SCL (pull-ups) | a 128-byte EEPROM at address 0x50; 400 kHz with clock stretching |
+| `mon_uart.s` | 12 MHz | uio1 line, uio0 reports | bytes, framing errors, baud error, glitches |
+| `mon_i2c.s` | 12 MHz | uio5 SDA, uio6 SCL, uio0 reports | START/STOP, bytes and ACKs, SCL phases shorter than standard mode with their lengths |
+| `mon_spi.s` | 12 MHz | uio2 SCK, uio3 MOSI, uio7 MISO, uio5 CS, uio0 reports | MOSI and MISO bytes, mode mismatch, partial bytes |
+| `bridge.s` | 12 MHz | uio1 RX, uio0 TX; SPI as `spi_master.s` | length-prefixed SPI transfers driven over the UART, bytes read back returned |
+
+   Timing knobs (assembler defines) let `uart_tx.s`, `i2c_master.s` and
+   `bridge.s` move edges by exact amounts: bit time and stop bit, SCL low
+   and high, SCK high and low.
+
+4. In simulation: `cd test && make` (or `python run_tests.py --all` on
+   Windows) runs 130 cocotb tests including a random differential check of
    the RTL against an independent ISA model; `python formal/run_formal.py`
-   runs the formal properties.
+   runs the formal properties; `python tools/mutation.py` measures how many
+   seeded RTL faults the tests catch (39 of 40).
 
 ## External hardware
 

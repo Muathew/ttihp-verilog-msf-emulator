@@ -5,65 +5,14 @@ Every protocol is observed only through uio_out/uio_oe/uo_out and driven
 only through uio_in/ui_in, by independent decoders and slave models written
 from the protocol specs (golden references in golden_model.py).
 """
-import os
 import random
 
 import cocotb
 from cocotb.triggers import ClockCycles, RisingEdge, ReadOnly, Timer
 
-from assembler import assemble_file
-from msf_tb import start_clock, reset, load_words, sram, uart_decode, uart_send
+from fw_tb import DONE, spawn, fw_boot, Recorder
+from msf_tb import sram, uart_decode, uart_send
 from golden_model import usb_crc16, eth_fcs
-
-FW = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "firmware")
-DONE = 0x55
-
-
-_bg = []
-
-
-def spawn(coro):
-    """Background model task; cancelled by the next fw_boot."""
-    t = cocotb.start_soon(coro)
-    _bg.append(t)
-    return t
-
-
-async def fw_boot(dut, name, data=None, defines=None, uio_in=0):
-    while _bg:
-        _bg.pop().cancel()
-    start_clock(dut)
-    words = assemble_file(os.path.join(FW, name), base_addr=128, defines=defines)
-    for a in range(512):
-        dut.user_project.u_sram.mem[a].value = 0
-    load_words(dut, words, 128)
-    for a, w in (data or {}).items():
-        load_words(dut, [w], a)
-    await reset(dut, ui_in=1, uio_in=uio_in)
-    return words
-
-
-class Recorder:
-    """Per-cycle samples of (uio_out, uio_oe, uo_out)."""
-
-    def __init__(self, dut):
-        self.dut, self.out, self.oe, self.uo = dut, [], [], []
-        self.task = spawn(self._run())
-
-    async def _run(self):
-        while True:
-            await RisingEdge(self.dut.clk)
-            await ReadOnly()
-            self.out.append(int(self.dut.uio_out.value))
-            self.oe.append(int(self.dut.uio_oe.value))
-            self.uo.append(int(self.dut.uo_out.value))
-
-    async def until_uo(self, pred, limit):
-        for _ in range(limit):
-            await RisingEdge(self.dut.clk)
-            if self.uo and pred(self.uo[-1]):
-                return
-        raise AssertionError("timeout waiting for uo_out")
 
 
 # ============================================================================
@@ -83,6 +32,31 @@ async def test_fw_uart_tx_drift_free(dut):
     edges = [i for i in range(first_start, len(bits)) if bits[i] != bits[i - 1]]
     assert all((e - edges[0]) % 104 == 0 for e in edges), "bit timing drifted"
     assert (edges[-1] - edges[0]) > 104 * 10 * (len(msg) - 1)
+
+
+@cocotb.test()
+async def test_fw_ws2812(dut):
+    """WS2812 chain at 800 kHz from the TX engine: every bit 15 cycles, a 1
+    high for 10, a 0 for 5 (the LEDs allow +-2), no gap between bits, the
+    colours in order, then the line low for over 50 us to latch them."""
+    leds = [(0x10, 0xFF, 0x00), (0xA5, 0x5A, 0x81), (0x00, 0x00, 0xFF)]   # G, R, B
+    data = [b for led in leds for b in led]
+    await fw_boot(dut, "ws2812.s", data={0: len(leds), **{1 + i: b for i, b in enumerate(data)}})
+    rec = Recorder(dut)
+    await rec.until_uo(lambda v: v == DONE, 20000)
+    line = [v & 1 for v in rec.out]
+    rises = [i for i in range(1, len(line)) if line[i] and not line[i - 1]]
+    assert len(rises) == 24 * len(leds), len(rises)
+    assert all(b - a == 15 for a, b in zip(rises, rises[1:])), "gap or jitter between bits"
+    bits = []
+    for r in rises:
+        high = next(i for i in range(r, len(line)) if not line[i]) - r
+        assert high in (5, 10), high
+        bits.append(high == 10)
+    got = [sum(bits[8 * k + j] << (7 - j) for j in range(8)) for k in range(len(data))]
+    assert got == data, got
+    last_fall = rises[-1] + (10 if bits[-1] else 5)
+    assert len(line) - last_fall >= 600, "reset (latch) too short"
 
 
 # ============================================================================

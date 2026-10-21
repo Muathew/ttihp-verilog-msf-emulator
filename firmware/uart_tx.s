@@ -5,8 +5,12 @@
 ;   input  : zero-terminated byte string, one byte per word, data RAM 0..
 ;   done   : uo_out = DONE
 ;   BIT    : cycles per bit (104 = 115200 baud at 12 MHz)
+;   STOP   : stop bit length in cycles (default BIT). With BIT and STOP the
+;            line can break the receiver's expectations by exact amounts
+;            (baud error, short or long stop bits): timing-fault injection
 .include "msf.inc"
 .equ BIT, 104
+.equ STOP, BIT
 
 start:
         LDR      R0, #1             ; bit mask
@@ -31,6 +35,8 @@ bit:
         ADDS     R5, R5, R6
         DECR     R4
         JNZ      bit
+        LDI      R7, STOP - BIT
+        ADDS     R5, R5, R7         ; next frame: STOP after the stop bit began
         INCR     R2
         JMP      next
 done:

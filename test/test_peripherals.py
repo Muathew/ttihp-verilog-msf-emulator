@@ -271,6 +271,22 @@ async def test_rx_uart_char_mode(dut):
 
 
 @cocotb.test()
+async def test_rx_uart_divisor_sweep(dut):
+    """UART RX at every divisor 4..40: the bit timer's loads (div-1, div/2-1,
+    div+div/2-1) take every low-bit pattern, even and odd."""
+    data = [0x55, 0xA3]
+    for div in range(4, 41):
+        await boot_asm(dut, rx_fw(rx_cfg(pin=1, char=True, width=8, lsb=True), div, len(data)),
+                       uio_in=2)
+        await wait_uo(dut, 0x01)
+        for b in data:
+            await uart_send(dut, b, bit_cycles=div)
+        await wait_uo(dut, DONE, 200)
+        got = [sram(dut, i) for i in range(len(data))]
+        assert got == data, f"div={div}: {[hex(x) for x in got]}"
+
+
+@cocotb.test()
 async def test_rx_overrun_flag(dut):
     """Two words without a pop -> rx_overrun in STAT."""
     await boot_asm(dut, f"""

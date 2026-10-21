@@ -107,15 +107,22 @@ brief: it is a debugging and reverse-engineering tool):
 1. **SPI and I2C target firmware** (PRISM, TejasDasa, FIPE): firmware
    only. Emulating a device, not just driving one, is the core of a
    reverse-engineering tool and closes our gap in the required protocols.
+   *Taken (21 Oct):* `spi_target.s`, `i2c_target.s` ([instruments.md](instruments.md)).
 2. **Bus monitor, timing-fault injection and protocol checks** (FIPE):
    firmware plus the existing C models. A passive sniffer on the RX engine,
    edges shifted on purpose with `WAIT_CMP`, and flags when a device breaks
    the protocol make the chip an instrument, which is what the brief says
-   it is for.
+   it is for. *Taken (21 Oct):* UART, I2C and SPI monitors as firmware on
+   the chip itself (not the C models), and timing knobs on the controllers.
 3. **A claims-to-evidence validation table** (TejasDasa): documentation
    only; verification method is half of what the judges reward.
+   *Taken:* [verification.md](verification.md) §9, with every CI hardening
+   run in §7 and the mutation score in §8.
 4. **Thread mailbox or barrier** (TeslaCoilerOW, umerimran): small RTL
    change; lets the two threads hand data over, e.g. UART in, SPI out.
+   *Taken without the RTL change:* a lock-free queue in data RAM
+   (`firmware/ring.inc`) carries the monitors' events and the UART-to-SPI
+   bridge (`firmware/bridge.s`).
 5. **Trace and debug** (PRISM, ProtocolGremlin): our FPGA step mode already
    does this off-chip; an on-chip PC/pin trace would help silicon bring-up.
 6. **Manchester receive for 10BASE-T** (PRISM): RTL change in the RX
@@ -128,8 +135,8 @@ What changed in the field:
 * **Hardcaml is spreading** (TeslaCoilerOW, FIPE, GP_PAE, LeEmperor),
   which is Jane Street's own tool.
 * **Green GDS with SRAM macros** is now shown by at least three entries
-  (PRISM, Abagel-coder, TeslaCoilerOW). v2 has not been through the GDS
-  action yet.
+  (PRISM, Abagel-coder, TeslaCoilerOW). So is ours: v2 has hardened in
+  every GDS run since 17 Oct ([verification.md](verification.md) §7).
 * **8x4 tiles are being used** (PRISM, TeslaCoilerOW), but the rules say
   "the current maximum area is 6x4 tiles". Unless 8x4 is approved, those
   designs don't comply; PRISM's README calls 8x4 "the size allowed by the
@@ -139,7 +146,7 @@ What changed in the field:
   for the upper layers and a debugger for the state machine.
 * **Acting as the target, not only the controller**: TejasDasa and FIPE
   answer as an I2C target. We planned SPI and I2C slaves (questions 32–33)
-  but only built masters.
+  but only built masters (now both: 21 Oct).
 * **New ideas**: FIPE turns the emulator into a test instrument (timing
   fault injection and protocol monitors); TeslaCoilerOW moves data between
   engines without the host.
@@ -158,9 +165,9 @@ receive and debug features, but within the current 6x4 limit.
 Updated recommendations:
 
 1. Push v2 through the GDS action and get it green: the strongest rivals
-   already have that.
+   already have that. *Done 17 Oct.*
 2. Add SPI and I2C target firmware (the slave models in `test_firmware.py`
-   show what the master side expects).
+   show what the master side expects). *Done 21 Oct.*
 3. Lead the write-up with the two things the brief rewards: the chip as a
    debugging instrument (device emulation, bus monitoring, timing-fault
    injection) and the verification method (independent model, random

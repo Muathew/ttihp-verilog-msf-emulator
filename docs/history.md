@@ -23,6 +23,7 @@ Where an early decision was later changed, the entry says so.
 | 2026-10-16 | Sam | Full review of v1: 9 bugs and the gaps below; v2 plan written |
 | 2026-10-17 | Sam | v2 done: bug fixes, ISA v2, SERDES, CRC, two threads, boot ROM v2, formal, 103 tests |
 | 2026-10-18 | Muath, Sam | AUP-ZU3 FPGA port; PS-stepped core and C protocol tests (14/14); 1 Hz blink; competitor survey updated (research.md) |
+| 2026-10-19..21 | Sam | Instruments from the survey: SPI and I2C targets, UART / I2C / SPI bus monitors, UART-to-SPI bridge, timing-fault knobs, CI hardening table, mutation score (39/40), WS2812 and a PIO comparison; 130 tests |
 
 ## 1. Architecture decision (24 Sep)
 
@@ -171,8 +172,10 @@ Yosys' SAT engine (SymbiYosys solvers have no Windows wheels).
 Out of scope: 10BASE-T receive (needs ≥4x oversampling, 80 MHz), a full USB
 device stack, and local P&R (no PDK install; the GDS action is the gate).
 
-Still open: push so the GDS action hardens v2, check DRC, LVS and timing
-there, then run `make GATES=yes`; bring-up on silicon.
+Still open then: push so the GDS action hardens v2. It did, first time,
+on 17 Oct: 8 666 cells, 23 % utilisation, no timing violations in any
+corner, clean DRC and precheck, gate-level test passing (every run since
+in `verification.md` §7). Bring-up on silicon remains.
 
 ## 7. FPGA (18 Oct)
 
@@ -182,6 +185,40 @@ the wrapper gained a step mode, and the cocotb firmware tests were ported to
 C for the PS (14/14 against the RTL). Muath's 1 Hz blink became the first
 board check; a full RTL run measured its period at exactly 6,000,000 cycles.
 Current state: [fpga.md](fpga.md).
+
+## 8. Instruments (19 – 21 Oct)
+
+The survey (`research.md`) ranked what to take from other entries; the
+firmware-only items were done without touching the RTL, so the green GDS
+stands. They are described in [instruments.md](instruments.md).
+
+* **Targets.** The SPI target answers in the byte right after the command
+  although the address's last bit arrives on its last clock: it loads both
+  candidate registers early and sends the even one's first bit, swapping in
+  the odd one within the turnaround. Every latency was derived from the ISA
+  costs first and then asserted at the pins, and each speed limit is tested
+  from both sides (16-cycle SCK works, 14 fails).
+* **I2C monitor.** The hardest piece, redesigned three times. A first
+  version polled the lines after a timed wait and was too slow to return
+  for the next rise on a legal 100 kHz bus, so it missed every short low.
+  Its replacement queued events at SCL falls and could lose a bit right
+  after a reported fault. The rules that worked: catch every edge with a
+  level wait; measure from the earliest an edge can have been when it may
+  precede its wait (so a legal bus can never be flagged); queue nothing at
+  a fall, only after the next rise; and decode the rest of a byte untimed
+  after its first fault. A tracer that logs thread 0 instruction by
+  instruction against the pad edges found each problem; sweeps of legal,
+  single-fault and every-bit-faulty buses set the figures in its header.
+* **Fault injection.** Knobs on the existing controllers, kept as
+  assembler defines whose defaults leave the tested waveforms unchanged.
+  The UART sweep is the check that they are exact: a mid-bit receiver
+  fails at precisely the bit times its geometry predicts.
+* **Evidence.** `tools/gds_metrics.py` tabulates every CI hardening run;
+  `tools/mutation.py` measures how many seeded RTL faults the tests catch.
+  Its first run killed 38 of 40. One survivor was a reserved bit nothing
+  reads; the other showed the RX tests never loaded the bit timer with
+  certain values, and a divisor sweep added for it brought the score to
+  39 of 40. `verification.md` §9 maps each claim to its test.
 
 ## Working conventions
 

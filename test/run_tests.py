@@ -43,6 +43,10 @@ ALL_MODULES = [
     "test_reprogrammable",
     "test_crv_invariants",
     "test_golden_model",
+    "test_targets",
+    "test_monitors",
+    "test_bridge",
+    "test_faults",
 ]
 
 
