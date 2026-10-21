@@ -34,6 +34,7 @@ module tt_um_msf (
   // ---- debug view (isa.md §8) ----
   // ui_in[2] high while rst_n is low selects debug mode until the next reset:
   // uo_out then shows the byte of internal state chosen by ui_in[7:2]
+  // (ui_in[1] picks a page: 0 = T0/T1 and the core, 1 = T2/T3)
   // instead of the firmware's UO register. Loaded only during reset, so no
   // reset of its own. The select is the raw pad value: it only steers a
   // multiplexer onto the outputs (no flip-flop samples it), and it must act
@@ -107,7 +108,7 @@ module tt_um_msf (
       .crc_busy(crc_busy), .crc_lo(crc_lo), .crc_hi(crc_hi),
       .pw_we(pw_we), .pw_port(pw_port), .pw_data(pw_data),
       .cap_stat(cap_stat), .cap_tpos(cap_tpos),
-      .dbg_sel(ui_in[7:2]), .dbg_q(dbg_q)
+      .dbg_sel({ui_in[1], ui_in[7:2]}), .dbg_q(dbg_q)
   );
 
   // ---- capture engine (logic analyser) ----

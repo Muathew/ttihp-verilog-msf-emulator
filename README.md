@@ -7,9 +7,9 @@ is built for bit-banging: protocols are firmware, loaded over UART or a
 parallel port after fabrication. Entry for the Jane Street protocol emulator
 ASIC competition.
 
-* **Deterministic hardware threads** — two barrel-interleaved threads, each
-  with its own registers and stall state; one thread's timing never depends on
-  the other's (e.g. an exact square wave on T0 while T1 echoes UART).
+* **Deterministic hardware threads** — up to four barrel-interleaved threads,
+  each with its own registers and stall state; a thread's timing never depends
+  on what the others do (e.g. an exact square wave on T0 while T1 echoes UART).
 * **Exact timing** — 1 cycle per instruction, documented costs for every op,
   absolute cycle-counter waits (`WAIT_CMP`) for drift-free bit schedules,
   edge/level waits with programmable timeouts.

@@ -21,9 +21,10 @@ CONDS = ["any", "rise", "fall", "low", "high"]
 
 
 class Gen:
-    def __init__(self, seed, dual=False):
+    def __init__(self, seed, dual=False, threads=None):
         self.r = random.Random(seed)
-        self.dual = dual
+        self.threads = threads or (2 if dual else 1)
+        self.dual = self.threads >= 2
         self.lab = 0
         self.lines = []
         self.subs = []          # leaf subroutine bodies
@@ -141,6 +142,9 @@ class Gen:
     def block(self, depth, n):
         r = self.r
         for _ in range(n):
+            if self.threads == 4 and r.random() < 0.04:
+                self.thread_ctl()
+                continue
             k = r.random()
             if k < 0.55 or depth > 1:
                 self.simple()
@@ -177,6 +181,41 @@ class Gen:
                 self.simple(crc_ok=False)       # skipped
                 self.L(f"{tgt}:")
 
+    def thread_ctl(self):
+        """Four-thread programs: stop or (re)start one of T1-T3."""
+        r = self.r
+        k = r.randrange(1, 4)
+        if r.random() < 0.4:
+            self.L(f"TSTOP #{k}")
+        else:
+            self.L(f"LDI R6, t{k}_entry")
+            self.L(f"TSTART #{k}, R6")
+
+    def thread_code(self, k, org):
+        """Entry code of thread k (1-3): its own TMO sometimes, a block, and
+        it may stop or restart itself."""
+        r = self.r
+        self.subs = []
+        self.no_crc = True
+        self.L(f".org {org}")
+        self.L(f"t{k}_entry:")
+        if r.random() < 0.5:        # its own timeout (else the starter's)
+            b = self.reg()
+            self.L(f"LDR {b}, #{r.choice([0, r.randrange(10, 80)])}")
+            self.L(f"TMO {b}")
+        self.block(1, r.randrange(5, 15))
+        if r.random() < 0.3:
+            self.L("TSTOP" if k == 1 else f"TSTOP #{k}")
+        if r.random() < 0.3:
+            self.L(f"LDI R5, t{k}_entry")
+            self.L("TSTART R5" if k == 1 else f"TSTART #{k}, R5")
+        self.L(f"JMP t{k}_entry")
+        subs, self.subs = self.subs, None
+        for name in subs:
+            self.L(f"{name}:")
+            self.block(2, r.randrange(1, 3))
+            self.L("RET")
+
     # ------------------------------------------------------------------ programs
     def program(self, n=40):
         r = self.r
@@ -188,6 +227,10 @@ class Gen:
         if self.dual:
             self.L("LDI R6, t1_entry")
             self.L("TSTART R6")
+            if self.threads == 4:
+                for k in (2, 3):
+                    self.L(f"LDI R6, t{k}_entry")
+                    self.L(f"TSTART #{k}, R6")
             if r.random() < 0.5:        # T0's timeout changes; T1 keeps its own
                 b = self.reg()
                 self.L(f"LDR {b}, #{r.choice([0, r.randrange(20, 120)])}")
@@ -200,7 +243,10 @@ class Gen:
             self.L("TSTART R6")
         self.L("JMP start")
         t0_subs = self.subs
-        if self.dual:
+        if self.threads == 4:
+            for k, org in ((1, 500), (2, 620), (3, 740)):
+                self.thread_code(k, org)
+        elif self.dual:
             self.subs = []
             self.no_crc = True
             self.L(".org 500")
@@ -222,7 +268,7 @@ class Gen:
                 self.block(2, r.randrange(1, 3))
                 self.L("RET")
         self.subs, self.no_crc = None, False
-        self.L(f".org {700 if self.dual else 505}")
+        self.L(f".org {860 if self.threads == 4 else 700 if self.dual else 505}")
         for s in t0_subs:
             self.L(f"{s}:")
             self.block(2, r.randrange(1, 4))

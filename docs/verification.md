@@ -43,12 +43,16 @@ and in dual mode thread start / stop / restart from either thread. Each
 program runs on the RTL and on the model with the same per-cycle pad
 schedule; `diffcheck.py` compares **every** issue and stall-release event
 (cycle, thread, PC, instruction word) and the full architectural state at
-each issue (both register files, flags, OUT/OE/UO, SR, each thread's TMO,
+each issue (all four register files, flags, OUT/OE/UO, SR, each thread's TMO,
+the running threads,
 the FIFO's count, drops and configuration). The programs push to, pop from
 and reconfigure the FIFO from both threads, often while it is full or
 empty, either thread may set its own TMO, and code and data sit in both
 SRAM banks: T1 runs across the 511/512 boundary, calls and returns cross
-banks, data goes to 0-127 and 960-1023. 80 programs per run
+banks, data goes to 0-127 and 960-1023. A third set of programs runs four
+threads: T0 starts T1-T3 and any thread stops or restarts itself or the
+others, so the running set and the rotation change all the time. 120
+programs per run
 (~45 000 instructions); a failure prints the seed (`MSF_SEED=<n>`) and a
 disassembly window.
 
@@ -67,7 +71,7 @@ inputs**, so the proofs hold for every program and environment.
 | F1 | the issuing word was fetched in the previous cycle from the issuing thread's own address |
 | F2 | per thread, no instruction is skipped or repeated (independent ghost "next address") |
 | F3 | a WAIT completes only by its own event (edge/level/CNT match, re-derived by ghost logic), or by timeout after exactly TMO+1 stalled cycles (single mode) / within one slot of expiry (dual) |
-| F4 | thread T1 never issues in single-thread mode |
+| F4 | only T0 issues in single-thread mode, and only running threads ever own a cycle |
 | F5 | pin, SRAM-port, register-file and peripheral side effects only come from an issuing or completing instruction |
 | F6 | flags change only through the owning thread's flag ops / blocking ops (or T1's TSTART) |
 | F7 | the fetched word comes from the bank (ROM/SRAM) of the address it was fetched with |
@@ -75,7 +79,8 @@ inputs**, so the proofs hold for every program and environment.
 | F9 | the capture engine never writes SRAM port B in a cycle the core uses it |
 
 Every `cover()` point (WAIT edge/CMP/timeout release, LD release in T1, dual
-issue, TSTOP, a push to a full FIFO, a pop of an empty one) is shown
+issue, TSTOP, all four threads running and issuing, a push to a full FIFO,
+a pop of an empty one) is shown
 reachable, so the properties are not vacuous.
 
 **Mutation check:** the review bugs are re-introduced into copies of the RTL
@@ -94,9 +99,9 @@ and each must make the proof fail:
 | `test_core`, `test_isa_v2` | every instruction, hand-derived expected values, exact cycle costs, input-sync latency; FIFO costs, full / empty / drops / status; both SRAM banks (data, calls, code and branches across 511/512, the MEM_W pointer wrapping at 1023) |
 | `test_regressions` | one test per review bug B1-B5 (each failed on v1) |
 | `test_peripherals` | CRC check values (CRC-8/16/32/5), TX in every mode decoded from the pins, RX with +-2 % baud and +-1.5 % + jitter, RX at every divisor 4-40, TX->RX loopback; Manchester RX: two frames at +-2 % with +-1 cycle of jitter (re-locking between them) and a TX->RX loopback at 1 Mbit/s; the glitch filter: which pulses pass, its exact delay, and UART bytes with spikes at every bit centre decoded wrongly without it and rightly with it |
-| `test_threads` | isolation, start/stop/restart, zero-cost branches, determinism of T0 vs any T1 load, events in the other thread's slot, a TMO per thread, the FIFO between threads, a wait on every pin of both banks in both threads with the other pins high |
+| `test_threads` | isolation, start/stop/restart, zero-cost branches, determinism of T0 vs any T1 load, events in the other thread's slot, a TMO per thread, the FIFO between threads, a wait on every pin of both banks in both threads with the other pins high; four threads: one issue in four cycles each, TID and STAT, the cost of changing the running set (derived from the rule), and T0's pin timing unchanged whatever T1-T3 do |
 | `test_capture` | the capture engine: every recorded word against a model of the spec's rules (both modes, several sample periods, level and edge triggers, the ring with pre-trigger history, `ui` as source), the core's timing identical with and without recording, the overflow flag, and `logic_analyzer.s`'s UART dump decoded back into the driven samples |
-| `test_debug` | the debug view: every view against the program's values, off without the strap, and single-stepping a hand-driven clock while reading the PC and a register through the pins |
+| `test_debug` | the debug view: every view against the program's values (both pages: T2/T3 registers, running and stalled threads, flags, fetch pointers), off without the strap, and single-stepping a hand-driven clock while reading the PC and a register through the pins |
 | `test_boot` | framed UART and parallel loading, back-to-back bytes, late host, NAK + retry, data RAM, `G` anywhere |
 | `test_firmware` | the `firmware/` demos against independent decoders and slave models (SPI slave all modes, wired-AND I2C slave with stretching, USB NRZI/CRC16/EOP, 10BASE-T Manchester/FCS/TP_IDL/NLP) |
 | `test_protocols`, `test_extensions`, `test_reprogrammable`, `test_crv_invariants` | the original v1 bit-bang demos and constrained-random invariants, kept as regression |
@@ -211,6 +216,7 @@ on all 16 pins in turn with the other seven high) was added and kills it:
 | The I2C monitor keeps decoding a master that is out of spec on every bit (lows ≥ 16 cycles, bits ≥ 72) | `test_mon_i2c_fast_master` at the corners of that envelope; a sweep of 196 points inside it |
 | The SPI monitor decodes SCK periods of 28 cycles in a byte, 36 between bytes, all modes | `test_mon_spi_limits` at those values |
 | The two threads cooperate without locks (UART in, SPI out) | `test_bridge`, all SPI modes |
+| Up to four threads run in a fixed rotation; a thread's timing depends only on which threads run | `test_threads` four-thread tests; `test_random_four_threads` (RTL == model on every issue, the running set changing at random); formal F1-F6 and F4 for four threads |
 | The hardware FIFO hands words between threads in order, one instruction each way, and never overfills | `test_threads.test_fifo_between_threads`, `test_isa_v2` FIFO tests, formal F8, the random differential test (§2) |
 | The RX engine receives Manchester, re-locking after each frame | `test_rx_manchester_frames_jitter` (+-2 % rate, +-1 cycle jitter), `test_rx_manchester_loopback` |
 | The glitch filter removes pulses shorter than its length, delays the rest by exactly that, and leaves unfiltered pins alone | `test_filter_removes_short_pulses`, `test_filter_delay`, `test_filter_uart_spikes` |

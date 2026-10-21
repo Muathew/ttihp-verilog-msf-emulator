@@ -21,6 +21,7 @@ Directives
 Pseudo-ops
     LDI rd, V        LDR rd,#lo(V) ; LDH rd,#hi(V)   (always 2 words)
     LD ra, [rb] / ST [ra], rb are accepted as well as LD ra, rb / ST ra, rb
+    TSTART #t, rb / TSTOP #t name thread t (1-3); TSTART rb / TSTOP mean T1
     FIFO_PUT rb = PW #0, rb    FIFO_CFG rb  = PW #1, rb
     FIFO_GET ra = PR ra, #0    FIFO_STAT ra = PR ra, #1
     CAP_BUF / CAP_DIV / CAP_TRIG / CAP_CTL rb = PW #2..#5, rb
@@ -285,6 +286,10 @@ def _encode(mn, args, syms, pc):
         need(1)
         op, sel = MASK_OPS[mn]
         return [op << 11 | sel << 8 | _imm(a[0], syms, 8)]
+    if mn == "TSTART" and len(a) == 2:      # TSTART #thread, rb
+        return [0x0F << 11 | _imm(a[0], syms, 2) << 8 | _reg(a[1]) << 5 | EXT[mn][0]]
+    if mn == "TSTOP" and len(a) == 1:       # TSTOP #thread
+        return [0x0F << 11 | _imm(a[0], syms, 2) << 8 | EXT[mn][0]]
     if mn in EXT:
         sub, pat = EXT[mn]
         need(len(pat))
@@ -385,6 +390,10 @@ def disassemble(w, addr=None):
             return f"PW #{port}, R{r}" if sub == X_PW else f"PR R{r}, #{port}"
         if sub not in EXT_NAME:
             return "EXT-NOP"
+        if sub == EXT["TSTART"][0] and a & 3:
+            return f"TSTART #{a & 3}, R{b}"
+        if sub == EXT["TSTOP"][0] and a & 3:
+            return f"TSTOP #{a & 3}"
         name, pat = EXT_NAME[w & 0x1F]
         ops = [f"R{a}" if p == "a" else f"R{b}" for p in pat]
         return f"{name} {', '.join(ops)}".strip()

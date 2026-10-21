@@ -80,7 +80,7 @@ async def test_tmo_per_thread(dut):
     c = ctrl(dut)
     assert int(c.st.value) & 1, "T0's WAIT (TMO 0) should still be waiting"
     tmo = int(c.tmo.value)
-    assert (tmo & 0xFFFF, tmo >> 16) == (0, 3)
+    assert (tmo & 0xFFFF, (tmo >> 16) & 0xFFFF) == (0, 3)
 
 
 @cocotb.test()
@@ -214,7 +214,7 @@ async def test_tstop_from_t1_restores_full_rate(dut):
         LDR    R1, #0xEE    ; never executes
     """)
     await ClockCycles(dut.clk, 80)
-    assert reg(dut, 7) == 3 and int(ctrl(dut).dual.value) == 0
+    assert reg(dut, 7) == 3 and int(ctrl(dut).run.value) == 0b0001
     assert reg(dut, 1, 1) == 9
 
 
@@ -235,7 +235,7 @@ async def test_tstop_from_t0_and_restart(dut):
     """)
     await ClockCycles(dut.clk, 12)
     await ClockCycles(dut.clk, 20)
-    assert reg(dut, 6) == 0x66 and int(ctrl(dut).dual.value) == 1
+    assert reg(dut, 6) == 0x66 and int(ctrl(dut).run.value) == 0b0011
     assert 0 < reg(dut, 1, 1) < 12, f"T1 R1 = {reg(dut, 1, 1)} (should have restarted)"
 
 
@@ -282,3 +282,131 @@ async def test_both_threads_blocking(dut):
     await ClockCycles(dut.clk, 120)
     assert reg(dut, 7, 1) == 0x77
     assert reg(dut, 5) in (1, 2, 3), f"T0 woke {reg(dut, 5)} cycles after its target"
+
+
+# ----------------------------------------------------------------------------
+# Four threads (isa.md §7, ISA v2.1). Expected values from the rotation rule.
+# ----------------------------------------------------------------------------
+QUAD_BODY = """
+        NOP
+        NOP
+        NOP
+        NOP
+        NOP
+        NOP
+        TID    R5
+        CNT_R  R3
+        CNT_R  R4
+        SUBS   R4, R4, R3
+        STAT   R6
+"""
+
+
+@cocotb.test()
+async def test_four_threads_round_robin(dut):
+    """T0 starts T1-T3: then every thread issues once in four cycles, TID
+    gives 0-3, and STAT shows T1-T3 running (bits 5, 11, 12) and the
+    thread id (bits 6 and 13)."""
+    body = "\n".join(f"t{k}: {QUAD_BODY}\nh{k}: JMP h{k}" for k in (1, 2, 3))
+    await boot_asm(dut, CLEAR + f"""
+        LDI    R2, t1
+        TSTART R2
+        LDI    R2, t2
+        TSTART #2, R2
+        LDI    R2, t3
+        TSTART #3, R2
+        {QUAD_BODY}
+    h0: JMP h0
+    {body}
+    """)
+    await ClockCycles(dut.clk, 200)
+    for t in range(4):
+        assert reg(dut, 4, t) == 4, f"T{t}: {reg(dut, 4, t)} cycles between instructions"
+        assert reg(dut, 5, t) == t
+        assert reg(dut, 6, t) == 0x1820 | (t & 1) << 6 | (t >> 1) << 13, \
+            f"T{t} STAT {reg(dut, 6, t):#06x}"
+
+
+@cocotb.test()
+async def test_thread_set_changes(dut):
+    """Changing the running set, by the rule: with T0 and T1 running, T0
+    starting T2 costs T0 nothing extra (the word in flight is T1's): its
+    next instruction comes after T1's and T2's, 3 cycles on. Stopping T2
+    again likewise. T0 restarting a running T1 makes T1's next slot a
+    bubble: T1's first new instruction comes 7 cycles after T0's CNT_R
+    before the TSTART (3 slots of T0's, then bubble, T2, T0, T1)."""
+    await boot_asm(dut, CLEAR + """
+        LDI    R2, t1
+        TSTART R2
+        LDI    R2, t2
+        CNT_R  R3
+        TSTART #2, R2
+        CNT_R  R4
+        SUBS   R4, R4, R3     ; 2 + 3 = 5
+        CNT_R  R5
+        TSTOP  #2
+        CNT_R  R6
+        SUBS   R6, R6, R5     ; 3 + 2 = 5
+        LDI    R2, t2
+        TSTART #2, R2
+        NOP
+        LDI    R2, t1b
+        CNT_R  R1
+        TSTART #1, R2         ; restart T1 while it runs
+    h0: JMP h0
+    t1: JMP t1
+    t1b: CNT_R R3
+    h1: JMP h1
+    t2: JMP t2
+    """)
+    await ClockCycles(dut.clk, 200)
+    assert reg(dut, 4) == 5 and reg(dut, 6) == 5
+    assert reg(dut, 3, 1) - reg(dut, 1) == 7
+
+
+@cocotb.test()
+async def test_t0_timing_independent_of_three_threads(dut):
+    """T0's pin timing with T1-T3 running depends only on which threads run,
+    not on what they do (spinning versus waits, loads, CRC and branches)."""
+    async def run(body):
+        await boot_asm(dut, CLEAR + """
+            OE_SET 1
+            LDI    R2, ta
+            TSTART R2
+            LDI    R2, ta
+            TSTART #2, R2
+            LDI    R2, ta
+            TSTART #3, R2
+        lp: PIN_TGL 1
+            LDR    R1, #3
+        d:  DECR   R1
+            JNZ    d
+            JMP    lp
+        ta:
+        """ + body)
+        times, last = [], 0
+        for c in range(800):
+            await RisingEdge(dut.clk)
+            await ReadOnly()
+            v = int(dut.uio_out.value) & 1
+            if v != last:
+                times.append(c)
+                last = v
+        return times
+    a = await run("spin: JMP spin")
+    b = await run("""
+        TID  R7
+        LDR  R1, #4
+    w:  CNT_R R2
+        ADDS R2, R2, R1
+        WAIT_CMP R2
+        LDR  R4, #1
+        LD   R5, R4
+        ST   R4, R5
+        FIFO_PUT R5
+        FIFO_GET R6
+        DECR R1
+        JNZ  w
+        JMP  ta
+    """)
+    assert len(a) > 20 and a == b

@@ -4,7 +4,8 @@
 > the peripheral ports `PW`/`PR` with a FIFO between threads (§6.5), the
 > debug view (§8), a second 512-word SRAM bank (10-bit PC and addresses) and
 > a capture engine that records the pins into SRAM (§6.6), Manchester
-> receive (§6.2) and an input glitch filter (§6.7).
+> receive (§6.2), an input glitch filter (§6.7) and four hardware threads
+> (§7: `TSTART` / `TSTOP` name the thread; with no name, T1 as before).
 > v2.0 programs run unchanged unless one thread relies on a `TMO` the other
 > thread set after `TSTART`, or on an address wrapping at 512.
 > v2.0 (2026-10-16) supersedes v1.0. All v1 encodings keep their meaning **except
@@ -15,7 +16,7 @@
 ## 1. Machine model
 
 * 16-bit instructions, word addressed, 10-bit PC (0–1023, wraps).
-* **Two hardware threads** T0 and T1 (§7). Each thread has its own PC, R0–R7
+* **Four hardware threads** T0–T3 (§7). Each thread has its own PC, R0–R7
   (16-bit), flags `Z`/`N`, blocking-op state and `TMO`. After reset only T0 runs.
 * **Flags:** `ADDS`, `SUBS`, `INCR`, `DECR` set `Z` (result==0) and `N` (bit 15).
   Every **blocking op** (§5) sets `Z` = 1 if it ended by timeout, else 0, and
@@ -28,7 +29,7 @@
   * Data (`LD`/`ST`/`MEM_W`/FIFO): always the SRAM, all 1024 words. SRAM 0–127 is
     therefore 128 words of data RAM that never collide with code; 128–1023 is
     code (self-modifying writes are allowed but must be ≥ 2 instructions ahead
-    of the write in single-thread mode, ≥ 1 slot in dual mode).
+    of the write in single-thread mode, ≥ 1 slot in multi-thread mode).
 * **Shift register `SR`** (16-bit) with configurable output/input pins (§4).
 * **Pins:** `uio` (8 bidirectional: `OUT`, `OE`, input), `uo_out` (8 outputs:
   `UO`), `ui_in` (8 inputs).
@@ -124,9 +125,9 @@ Reserved bits must be 0 (the assembler enforces this).
 | 24 | `CRC_SETH rb` | CRC[31:16] ← rb |
 | 25 | `CRC_POLL rb` | POLY[15:0] ← rb |
 | 26 | `CRC_POLH rb` | POLY[31:16] ← rb |
-| 27 | `TSTART rb` | (re)start T1 at rb[9:0] with cleared T1 state (§7) |
-| 28 | `TSTOP` | stop T1 (§7) |
-| 29 | `TID ra` | ra ← executing thread id (0/1) |
+| 27 | `TSTART #t,rb` | (re)start thread *t* at rb[9:0] with cleared state (§7); *t* in the ra field, 1–3, 0 = T1 (`TSTART rb`) |
+| 28 | `TSTOP #t` | stop thread *t* (§7); *t* as for `TSTART` (`TSTOP` = T1) |
+| 29 | `TID ra` | ra ← executing thread id (0–3) |
 | 30 | `PW #p,rb` | peripheral port *p* (0–7, in the ra field) ← rb (§6.5) |
 | 31 | `PR ra,#p` | ra ← peripheral port *p* (0–7, in the rb field) (§6.5) |
 
@@ -154,10 +155,10 @@ Blocking ops: `WAIT_EDGE`, `WAIT_CMP`, `LD`, `FIFO_GET`, `TX_PUSH`, `TX_WAIT`,
   timeout expires); the next instruction executes in the thread's next slot.
 * Timeout: loaded from the thread's `TMO` at issue, decremented every stalled cycle, release
   with `Z=1` when it reaches 0: a full timeout is exactly `TMO`+1 stalled
-  cycles for a stall issued in single-thread mode; in dual mode (also if the
-  other thread stops meanwhile) the release is in the thread's first own
-  slot at or after expiry (`TMO`+1 or `TMO`+2 cycles). `TMO`=0 disables the
-  timeout. On a non-timeout completion `Z=0`.
+  cycles for a stall issued in single-thread mode; in multi-thread mode
+  (also if other threads start or stop meanwhile) the release is in the
+  thread's first own slot at or after expiry (`TMO`+1 to `TMO`+4 cycles).
+  `TMO`=0 disables the timeout. On a non-timeout completion `Z=0`.
 * `WAIT_EDGE` edge conditions compare the pin with its value in the previous
   cycle (the first comparison is against the value at issue). Level conditions
   release in the first stall cycle where the level holds.
@@ -171,11 +172,12 @@ Blocking ops: `WAIT_EDGE`, `WAIT_CMP`, `LD`, `FIFO_GET`, `TX_PUSH`, `TX_WAIT`,
 `T` ≥ issue-CNT+2: next instruction executes when `CNT == T+1`; blocking op that
 stalls *k* cycles costs 1+*k*.
 
-**Dual-thread mode:** slots alternate T0, T1. Every instruction costs one slot of
-its thread (branches have **no** penalty). A blocking op that stalls completes in
-a slot of its own thread (it cannot complete in the other thread's slot), so it
-costs ≥ 2 slots. `LD` and `FIFO_GET` cost exactly 2 slots. Conditions are still sampled every
-cycle (an edge or `CNT` match in the other thread's slot is not lost).
+**Multi-thread mode** (§7): the running threads take cycles in turn. Every
+instruction costs one slot of its thread (branches have **no** penalty). A
+blocking op that stalls completes in a slot of its own thread (it cannot
+complete in another thread's slot), so it costs ≥ 2 slots. `LD` and
+`FIFO_GET` cost exactly 2 slots. Conditions are still sampled every cycle
+(an edge or `CNT` match in another thread's slot is not lost).
 
 ## 6. Peripherals
 
@@ -239,8 +241,9 @@ POLY=0xA001, init 0xFFFF, send ~CRC. USB CRC5 → reflected, POLY=0x14, init 0x1
 
 ### 6.4 STAT
 bit0 tx_full · bit1 tx_busy · bit2 rx_avail · bit3 rx_overrun · bit4 crc_busy ·
-bit5 T1 running · bit6 executing thread id · bit7 FIFO not empty · bit8 FIFO
-full · bit9 capture recording · bit10 capture done · others 0.
+bit5 T1 running · bit6 executing thread id, bit 0 · bit7 FIFO not empty ·
+bit8 FIFO full · bit9 capture recording · bit10 capture done · bit11 T2
+running · bit12 T3 running · bit13 executing thread id, bit 1 · others 0.
 
 ### 6.5 Peripheral ports and the FIFO
 `PW #p,rb` writes rb to port *p*, `PR ra,#p` reads port *p* into ra. Unused
@@ -265,7 +268,7 @@ to lock. Reset: base 64, 64 words (SRAM 64–127).
   drops counts it (modulo 128: a reader subtracts its last reading), and
   `Z` = 1; otherwise `Z` = 0.
 * `FIFO_GET ra`: a load from the oldest word, so it costs what `LD` costs
-  (2 cycles, or 2 slots in dual mode). If the FIFO is empty, ra is unchanged
+  (2 cycles, or 2 slots in multi-thread mode). If the FIFO is empty, ra is unchanged
   and `Z` = 1; otherwise `Z` = 0.
 * Each thread touches the SRAM only in its own cycles, so the FIFO never
   makes one thread's timing depend on the other's.
@@ -317,18 +320,37 @@ pins' present levels.
 
 ## 7. Threads
 
-* `TSTART rb` (either thread): T1 gets PC=rb, R0–R7=0, flags 0, no pending op,
-  the starting thread's `TMO`, and runs. If T1 was running it is restarted.
-* `TSTOP` (either thread): T1 stops at the end of the cycle.
-* Single mode (T1 stopped) has exactly the v1 timing. Dual mode: cycles
-  alternate between the threads. Transition costs:
-  * T0 executes `TSTART` in single mode (cycle *c*): T0 issues again at *c*+1,
-    T1's first instruction issues at *c*+2 (no bubble).
-  * T0 restarts a running T1 (`TSTART` at *c*): T1's slot *c*+1 is a bubble,
-    T1 restarts at *c*+3. T1 restarting itself costs nothing (issues at *c*+2).
-  * T1 executes `TSTOP` (*c*): single mode from *c*+1, T0 issues at *c*+1.
-  * T0 executes `TSTOP` (*c*): single mode from *c*+1, one bubble, T0 issues
-    at *c*+2.
+Four threads, T0–T3. T0 always runs; T1–T3 are started and stopped by any
+running thread. `TSTART` and `TSTOP` name the thread in the ra field (1–3;
+0 means T1, so the v2.0 encodings `TSTART rb` / `TSTOP` keep their meaning).
+
+* `TSTART #t,rb`: thread *t* gets PC=rb, R0–R7=0, flags 0, no pending op,
+  the starting thread's `TMO`, and runs. If it was running it is
+  restarted (a thread may restart itself).
+* `TSTOP #t`: thread *t* stops at the end of the cycle (a thread may stop
+  itself; stopping a thread that is not running does nothing).
+* **Single mode** (only T0 runs) has exactly the v1 timing (§5).
+* **Multi-thread mode** (T0 and at least one of T1–T3 running): each cycle
+  belongs to one running thread, the next running one after the previous
+  cycle's, in the order T0, T1, T2, T3, T0, …. With *n* threads running,
+  each owns every *n*-th cycle. A thread's timing therefore depends only
+  on which threads are running, never on what they do.
+* **When `TSTART` / `TSTOP` changes the running set** in cycle *c*, cycle
+  *c*+1 belongs to the thread that would have owned it before the change,
+  if it still runs and was not just restarted; otherwise to the next
+  running thread after *c*'s owner, and *c*+1 is a bubble for it (it
+  issues nothing, though a stalled op may still complete). For two
+  threads this gives:
+  * T0 starts T1 in single mode (cycle *c*): T0 issues again at *c*+1, T1's
+    first instruction at *c*+2 (no bubble).
+  * T0 restarts a running T1 (*c*): T1's slot *c*+1 is a bubble, T1
+    restarts at *c*+3. T1 restarting itself costs nothing (it issues at
+    *c*+2).
+  * T1 stops itself (*c*): single mode from *c*+1, T0 issues at *c*+1.
+  * T0 stops T1 (*c*): single mode from *c*+1, one bubble, T0 issues at
+    *c*+2.
+  and, for instance, with T0 and T1 running, T0 starting T2 at *c* costs
+  nothing: T1 issues at *c*+1, T2 at *c*+2, T0 at *c*+3.
 * Shared: memory, pins, SR, MEM_W pointer, FIFO, peripherals, CNT. A thread's
   peripheral transfers happen only in its own slots, so they never collide.
   Each thread has its own `TMO`.
@@ -337,22 +359,37 @@ pins' present levels.
 
 Holding `ui_in[2]` high while `rst_n` is low puts the chip in debug mode
 until the next reset. `uo_out` then shows one byte of internal state chosen
-by `ui_in[7:2]` instead of `UO`; the firmware runs as usual (it still sees
+by `ui_in[7:2]` on the page chosen by `ui_in[1]`, instead of `UO`; the
+firmware runs as usual (it still sees
 `ui_in` as inputs). The select acts without a clock edge, so a host that
 clocks the chip one cycle at a time (the demo board's RP2040 can) reads any
 view between steps: halt, single-step, breakpoints on a PC and register
 inspection need nothing more on the chip.
+
+Page 0 (`ui_in[1]` = 0):
 
 | `ui_in[7:2]` | `uo_out` |
 |---|---|
 | 0x00–0x0F | T0 register R(sel[3:1]), low byte if sel[0]=0, high if 1 |
 | 0x10–0x1F | T1 register, same layout |
 | 0x20 | PC of the last instruction issued, bits 7:0 |
-| 0x21 | bits 1:0 that PC's bits 9:8 · bit2 its thread · bit3 dual mode · bit4 T0 stalled · bit5 T1 stalled |
+| 0x21 | bits 1:0 that PC's bits 9:8 · bit2 its thread, bit 0 · bit3 multi-thread mode · bit4 T0 stalled · bit5 T1 stalled · bit6 its thread, bit 1 |
 | 0x22, 0x23 | that instruction's word, low / high byte |
 | 0x24 | bit0 Z(T0) · bit1 N(T0) · bit2 Z(T1) · bit3 N(T1) |
 | 0x25, 0x26 | `CNT` low / high byte |
 | 0x27, 0x28 | `SR` low / high byte |
 | 0x29, 0x2A, 0x2B | `OUT`, `OE`, `UO` |
 | 0x2C, 0x2D | FIFO count[7:0]; {drops[6:0], count[8]} |
+| others | 0 |
+
+Page 1 (`ui_in[1]` = 1):
+
+| `ui_in[7:2]` | `uo_out` |
+|---|---|
+| 0x00–0x0F | T2 register R(sel[3:1]), low byte if sel[0]=0, high if 1 |
+| 0x10–0x1F | T3 register, same layout |
+| 0x20 | bits 3:0 stalled threads (bit *t* = T*t*) · bits 7:4 running threads |
+| 0x21 | {N, Z} of T3, T2, T1, T0 (bits 7:6 … 1:0) |
+| 0x22–0x25 | T0–T3 fetch pointer, bits 7:0 (a running thread's: its next instruction; T0 alone: one ahead) |
+| 0x26 | the four pointers' bits 9:8 (T3 in bits 7:6 … T0 in 1:0) |
 | others | 0 |

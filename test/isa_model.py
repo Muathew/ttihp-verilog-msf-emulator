@@ -5,11 +5,18 @@ Written from docs/isa.md, NOT from the RTL: there is no fetch pipeline,
 no flush flag and no pc-hold trick here -- only instruction semantics plus the
 documented cost rules:
 
-  single mode : instruction = 1 cycle; taken branch/JMP/CALL/RET/JR = 2;
-                a blocking op that stalls releases in a stall cycle and the
-                next instruction issues in the following cycle.
-  dual mode   : cycles alternate T0/T1; every instruction = 1 slot; a
-                stalled blocking op releases in one of its own slots.
+  single mode : only T0 runs. Instruction = 1 cycle; taken branch/JMP/
+                CALL/RET/JR = 2; a blocking op that stalls releases in a
+                stall cycle and the next instruction issues in the following
+                cycle.
+  multi mode  : T0 and up to three of T1-T3 run; every cycle has an owner
+                (the next running thread in the order T0, T1, T2, T3, after
+                the previous owner) and every instruction = 1 slot; a stalled
+                blocking op releases in one of its own slots. When TSTART /
+                TSTOP changed the running set in cycle c, c+1 belongs to the
+                thread that would have owned it before, if it still runs and
+                was not restarted; otherwise to the next running thread after
+                c's owner, and c+1 is a bubble for it.
   inputs      : a pad value in cycle t is seen by instructions in cycle t+2.
   reset       : cycle 0 is the reset bubble; ROM[0] issues in cycle 1.
 
@@ -64,10 +71,12 @@ class IsaModel:
             self.mem[a] = w & M16
         self.uio_pad = uio_pad or (lambda c: 0)
         self.ui_pad = ui_pad or (lambda c: 0)
-        self.th = [Thread(0), Thread(1)]
+        self.th = [Thread(i) for i in range(4)]
         self.th[0].ready_at = 1
-        self.dual = False
-        self.dual_t0_parity = 0  # in dual mode, T0 owns cycles with this parity
+        self.alive = 1             # running threads (bit mask; T0 always)
+        self.own = 0             # owner of the current cycle
+        self.bubble = False      # the current cycle's slot is a bubble
+        self._restarted = None   # thread restarted by TSTART this cycle
         self.cycle = 0
         self.out = self.oe = self.uo = 0
         self.sr = 0
@@ -100,19 +109,30 @@ class IsaModel:
     def crc_busy(self):
         return self.crc_rem != 0
 
-    def owner(self, c):
-        if not self.dual:
-            return 0
-        return 0 if (c & 1) == self.dual_t0_parity else 1
+    @property
+    def multi(self):
+        return (self.alive & 0b1110) != 0
+
+    def running(self, tid):
+        return (self.alive >> tid) & 1 == 1
+
+    @staticmethod
+    def next_after(a, run):
+        """The next running thread after a (cyclically, a itself if alone)."""
+        for k in range(1, 5):
+            x = (a + k) & 3
+            if (run >> x) & 1:
+                return x
 
     def snapshot(self):
-        return {
-            "regs0": list(self.th[0].regs), "regs1": list(self.th[1].regs),
-            "z0": self.th[0].z, "n0": self.th[0].n, "z1": self.th[1].z, "n1": self.th[1].n,
-            "out": self.out, "oe": self.oe, "uo": self.uo, "sr": self.sr,
-            "tmo0": self.th[0].tmo, "tmo1": self.th[1].tmo,
-            "fcount": self.fcount(), "fdrop": self.fdrop, "fcfg": (self.fbase, self.fn),
-        }
+        snap = {"out": self.out, "oe": self.oe, "uo": self.uo, "sr": self.sr,
+                "run": self.alive, "fcount": self.fcount(), "fdrop": self.fdrop,
+                "fcfg": (self.fbase, self.fn)}
+        for t in self.th:
+            k = t.tid
+            snap.update({f"regs{k}": list(t.regs), f"z{k}": t.z, f"n{k}": t.n,
+                         f"tmo{k}": t.tmo})
+        return snap
 
     # ---------------------------------------------------------------- FIFO
     def fsize(self):
@@ -132,11 +152,13 @@ class IsaModel:
     # ---------------------------------------------------------------- clock
     def step(self):
         c = self.cycle
-        cur = self.owner(c)
+        cur = self.own
+        run_before = self.alive
+        self._restarted = None
         # 1) event tracking for every stalled thread (every cycle)
         for t in self.th:
             b = t.blk
-            if b is None or (t.tid == 1 and not self.dual):
+            if b is None or not self.running(t.tid):
                 continue
             if b["kind"] == "edge":
                 pin = ((self.ui(c) if b["bank"] else self.uio(c)) >> b["pin"]) & 1
@@ -154,9 +176,16 @@ class IsaModel:
         t = self.th[cur]
         crc_step_pending = self.crc_rem != 0
         if t.blk is not None:
-            self._try_release(t, c)
-        elif c >= t.ready_at:
+            self._try_release(t, c)           # (also in a bubble slot)
+        elif not self.bubble and c >= t.ready_at:
             self._issue(t, c)
+
+        # 2b) who owns the next cycle
+        was = self.next_after(cur, run_before)
+        if self.running(was) and was != self._restarted:
+            self.own, self.bubble = was, False
+        else:
+            self.own, self.bubble = self.next_after(cur, self.alive), True
 
         # 3) end-of-cycle bookkeeping
         for th in self.th:
@@ -174,8 +203,8 @@ class IsaModel:
         self.cycle += 1
 
     def _next_ready(self, t, c, redirect):
-        if self.dual:
-            t.ready_at = c + 2
+        if self.multi:
+            t.ready_at = c + 1                # its next own slot (no redirect cost)
         else:
             t.ready_at = c + (2 if redirect else 1)
 
@@ -372,8 +401,10 @@ class IsaModel:
         elif sub == X_TMO:
             t.tmo = R[rb]
         elif sub == X_STAT:
-            R[ra] = (int(self.fcount() == self.fsize()) << 8) | (int(self.fcount() > 0) << 7) | \
-                (t.tid << 6) | (int(self.dual) << 5) | (int(self.crc_busy()) << 4)
+            R[ra] = ((t.tid >> 1) << 13) | (int(self.running(3)) << 12) | \
+                (int(self.running(2)) << 11) | \
+                (int(self.fcount() == self.fsize()) << 8) | (int(self.fcount() > 0) << 7) | \
+                ((t.tid & 1) << 6) | (int(self.running(1)) << 5) | (int(self.crc_busy()) << 4)
         elif sub == X_PW:
             port = ra                       # PW #port, rb
             if port == P_FIFO:
@@ -428,30 +459,23 @@ class IsaModel:
         elif sub == X_POLH:
             self.poly = (self.poly & 0xFFFF) | (R[rb] << 16)
         elif sub == X_TSTART:
-            t1 = self.th[1]
-            t1.regs = [0] * 8
-            t1.z = t1.n = 0
-            t1.blk = None
-            t1.tmo = t.tmo                  # the starter's TMO
+            tt = (ra & 3) or 1              # ra field: the thread (0 = T1)
+            th = self.th[tt]
             target = R[rb] & M10
-            if not self.dual:
-                # dual from c+1: T0 owns c+1 (issues there), T1 owns c+2
-                self.dual = True
-                self.dual_t0_parity = (c + 1) & 1
-                t1.pc, t1.ready_at = target, c + 2
-                self._ovr = c + 1
-            elif t.tid == 0:
-                # T1's slot c+1 carries a stale word: T1 restarts at c+3
-                t1.pc, t1.ready_at = target, c + 3
+            th.regs = [0] * 8
+            th.z = th.n = 0
+            th.blk = None
+            th.tmo = t.tmo                  # the starter's TMO
+            if self.running(tt):
+                self._restarted = tt
+            self.alive |= 1 << tt
+            if tt == t.tid:
+                nxt = target                # restarting itself
             else:
-                nxt = target                # T1 restarts itself at its next slot
+                th.pc, th.ready_at = target, c + 1
         elif sub == X_TSTOP:
-            if self.dual:
-                self.dual = False
-                if t.tid == 0:
-                    self._ovr = c + 2       # T0 pays one bubble cycle
-                else:
-                    self.th[0].ready_at = min(self.th[0].ready_at, c + 1)
+            tp = (ra & 3) or 1
+            self.alive &= ~(1 << tp)
         elif sub == X_TID:
             R[ra] = t.tid
         return nxt, redirect

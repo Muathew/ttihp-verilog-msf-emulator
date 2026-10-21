@@ -20,8 +20,8 @@ class Probe:
         c = dut.user_project.u_ctrl
         self.issue, self.thr, self.pc, self.ir, self.rel = (
             c.dbg_issue, c.dbg_thr, c.dbg_pc, c.ir, c.dbg_rel)
-        self.rf = [[c.u_rf.rf[i] for i in range(8)], [c.u_rf1.rf[i] for i in range(8)]]
-        self.zf, self.nf, self.sr, self.tmo = c.zf, c.nf, c.sr, c.tmo
+        self.rf = [[rf.rf[i] for i in range(8)] for rf in (c.u_rf, c.u_rf1, c.u_rf2, c.u_rf3)]
+        self.zf, self.nf, self.sr, self.tmo, self.run = c.zf, c.nf, c.sr, c.tmo, c.run
         self.fifo = (c.fwp, c.frp, c.fdrop, c.fbase, c.fn)
         p = dut.user_project.u_pio
         self.out, self.oe, self.uo = p.out_r, p.oe_r, p.uo_r
@@ -29,14 +29,14 @@ class Probe:
     def state(self):
         zf, nf, tmo = int(self.zf.value), int(self.nf.value), int(self.tmo.value)
         wp, rp, drop, base, fn = (int(h.value) for h in self.fifo)
-        return {
-            "regs0": [int(h.value) for h in self.rf[0]],
-            "regs1": [int(h.value) for h in self.rf[1]],
-            "z0": zf & 1, "n0": nf & 1, "z1": zf >> 1, "n1": nf >> 1,
-            "out": int(self.out.value), "oe": int(self.oe.value), "uo": int(self.uo.value),
-            "sr": int(self.sr.value), "tmo0": tmo & 0xFFFF, "tmo1": tmo >> 16,
-            "fcount": (wp - rp) & 0x1FF, "fdrop": drop, "fcfg": (base, fn),
-        }
+        snap = {"out": int(self.out.value), "oe": int(self.oe.value), "uo": int(self.uo.value),
+                "sr": int(self.sr.value), "run": int(self.run.value),
+                "fcount": (wp - rp) & 0x1FF, "fdrop": drop, "fcfg": (base, fn)}
+        for k in range(4):
+            snap.update({f"regs{k}": [int(h.value) for h in self.rf[k]],
+                         f"z{k}": (zf >> k) & 1, f"n{k}": (nf >> k) & 1,
+                         f"tmo{k}": (tmo >> (16 * k)) & 0xFFFF})
+        return snap
 
 
 async def run_and_compare(dut, src, cycles, uio=None, ui=None, data=None, probe=None, tag=""):
@@ -44,7 +44,7 @@ async def run_and_compare(dut, src, cycles, uio=None, ui=None, data=None, probe=
 
     uio/ui: per-cycle pad values (lists, default constant 0 / 1).
     data:   {addr: word} preloaded into SRAM (e.g. data RAM 0..127).
-    Returns (issues, issues_on_T1, releases).
+    Returns (issues, [issues on T0..T3], releases).
     """
     words = assemble(src, base_addr=128)
     uio = uio or [0] * cycles
@@ -98,4 +98,5 @@ async def run_and_compare(dut, src, cycles, uio=None, ui=None, data=None, probe=
                 f"{ctx}\n--- program ---\n{src}")
     assert len(rtl) == len(mod), f"{tag}: event count rtl={len(rtl)} model={len(mod)}"
     issues = [e for e in rtl if e[0] == "I"]
-    return len(issues), sum(1 for e in issues if e[2] == 1), sum(1 for e in rtl if e[0] == "R")
+    per = [sum(1 for e in issues if e[2] == k) for k in range(4)]
+    return len(issues), per, sum(1 for e in rtl if e[0] == "R")

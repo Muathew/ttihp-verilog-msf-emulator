@@ -24,7 +24,7 @@ Where an early decision was later changed, the entry says so.
 | 2026-10-17 | Sam | v2 done: bug fixes, ISA v2, SERDES, CRC, two threads, boot ROM v2, formal, 103 tests |
 | 2026-10-18 | Muath, Sam | AUP-ZU3 FPGA port; PS-stepped core and C protocol tests (14/14); 1 Hz blink; competitor survey updated (research.md) |
 | 2026-10-19..21 | Sam | Instruments from the survey: SPI and I2C targets, UART / I2C / SPI bus monitors, UART-to-SPI bridge, timing-fault knobs, CI hardening table, mutation score (39/40), WS2812 and a PIO comparison; 130 tests |
-| 2026-10-21 | Sam | Branch `rtl-changes`: 50 MHz sign-off, a timeout per thread, a hardware FIFO between the threads, the debug view, a second SRAM bank (1024 words), a capture engine (logic analyser), Manchester receive, a glitch filter; 153 tests |
+| 2026-10-21 | Sam | Branch `rtl-changes`: 50 MHz sign-off, a timeout per thread, a hardware FIFO between the threads, the debug view, a second SRAM bank (1024 words), a capture engine (logic analyser), Manchester receive, a glitch filter, four threads; 158 tests |
 
 ## 1. Architecture decision (24 Sep)
 
@@ -296,6 +296,16 @@ engine, Manchester receive and a glitch filter, more threads.
 * **Glitch filter.** Opt-in per `uio` pin, so every response time derived
   earlier still holds when it is off: a pin changes only after holding
   its new level 1-15 cycles. The capture engine keeps the raw pins.
+* **Four threads.** One rule decides every cycle's owner: the thread
+  whose instruction word was fetched in the cycle before, if it still
+  runs and was not just restarted; otherwise the next running thread,
+  with an empty slot. It reproduces every documented two-thread transition
+  cost, which was checked before any RTL was changed: the old and new ISA
+  models gave the same cycle-by-cycle trace on 400 random programs (101 000
+  T1 instructions). `TSTART` / `TSTOP` name the thread in their spare
+  register field (0 = T1), so v2.0 programs run unchanged; the debug view
+  gained a page for T2 / T3. At 50 MHz each of four threads runs at
+  12.5 MIPS, the speed of the single thread at 12 MHz.
 
 ## Working conventions
 

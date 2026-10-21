@@ -31,21 +31,22 @@ def _seeds(base, default):
     return [base + i for i in range(n)]
 
 
-async def _run(dut, seeds, dual):
+async def _run(dut, seeds, dual, threads=None):
     cocotb.start_soon(Clock(dut.clk, 80, unit="ns").start())
     dut.ena.value = 1
     probe = Probe(dut)
-    tot = [0, 0, 0]
+    tot, per = [0, 0], [0, 0, 0, 0]
     for s in seeds:
-        src = Gen(s, dual=dual).program()
+        src = Gen(s, dual=dual, threads=threads).program()
         rng = random.Random(s)
         data = {a: rng.randrange(65536) for a in range(128)}
         uio, ui = input_schedule(s, CYCLES)
         res = await run_and_compare(dut, src, CYCLES, uio, ui, data, probe,
-                                    tag=f"seed {s} ({'dual' if dual else 'single'})")
-        tot = [a + b for a, b in zip(tot, res)]
-    dut._log.info(f"{len(seeds)} programs: {tot[0]} instructions ({tot[1]} on T1), "
-                  f"{tot[2]} stall releases -- RTL == model")
+                                    tag=f"seed {s} ({threads or (2 if dual else 1)} threads)")
+        tot = [tot[0] + res[0], tot[1] + res[2]]
+        per = [a + b for a, b in zip(per, res[1])]
+    dut._log.info(f"{len(seeds)} programs: {tot[0]} instructions (T0..T3: {per}), "
+                  f"{tot[1]} stall releases -- RTL == model")
 
 
 @cocotb.test()
@@ -56,3 +57,10 @@ async def test_random_single_thread(dut):
 @cocotb.test()
 async def test_random_dual_thread(dut):
     await _run(dut, _seeds(5000, 40), dual=True)
+
+
+@cocotb.test()
+async def test_random_four_threads(dut):
+    """T0 starts T1-T3; every thread may stop or restart itself and the
+    others, so the running set and the rotation change all the time."""
+    await _run(dut, _seeds(9000, 40), dual=True, threads=4)

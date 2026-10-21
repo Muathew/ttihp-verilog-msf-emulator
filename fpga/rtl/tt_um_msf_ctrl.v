@@ -1,18 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
-// msfcore control unit (ISA v2.0, docs/isa.md): fetch / decode / execute
-// for two hardware threads, blocking-op (stall) engine, shift register,
+// msfcore control unit (ISA v2.1, docs/isa.md): fetch / decode / execute
+// for four hardware threads, blocking-op (stall) engine, shift register,
 // data-RAM port, pin writes and the peripheral bus.
 //
 // Pipeline. IMEM has a registered read: the word fetched with imem_raddr in
 // cycle N is decoded in cycle N+1.
-//  * Single-thread mode (dual=0): T0 owns every cycle. During execution pc0 =
-//    address+1 (fetch-ahead). Taken redirects insert one bubble (flush0).
+//  * Single-thread mode (only T0 runs): T0 owns every cycle. During execution
+//    pc0 = address+1 (fetch-ahead). Taken redirects insert one bubble (bub).
 //    Blocking op at W: pc0 is held at W+1 on entry so mem[W+1] is re-fetched
 //    every stall cycle; on the release cycle pc0 advances to W+2, so mem[W+1]
 //    executes exactly once with pc0 == its address+1.
-//  * Dual-thread mode (dual=1): cycles alternate T0/T1 (tsel). The word for
-//    thread t is fetched in the other thread's cycle, so pc_t is simply the
-//    address of t's next instruction and redirects cost nothing.
+//  * Multi-thread mode (T0 and any of T1-T3 running): each cycle has an
+//    owner, the next running thread after the last (T0..T3, cyclically).
+//    The word for the next owner is fetched in the current cycle, so pc_t is
+//    simply the address of t's next instruction and redirects cost nothing.
+//    When TSTART / TSTOP changes the running set, the next cycle belongs to
+//    the thread whose word is in flight if it still runs and was not
+//    restarted; otherwise to the next running thread, as a bubble.
 // Blocking ops (WAIT_EDGE, WAIT_CMP, LD, TX_PUSH, TX_WAIT, RX_POP, CRC_W,
 // CRC_RDL) stall their thread; the release (and its transfer) happens only in
 // a cycle owned by that thread, so peripheral / register-file / port-B
@@ -64,7 +68,7 @@ module tt_um_msf_ctrl (
     input  wire [15:0] cap_stat,
     input  wire [9:0]  cap_tpos,
     // debug view (project.v shows dbg_q on uo_out in debug mode)
-    input  wire [5:0]  dbg_sel,
+    input  wire [6:0]  dbg_sel,      // {page, view}
     output reg  [7:0]  dbg_q
 );
   // ------------------------------------------------------------------
@@ -97,38 +101,55 @@ module tt_um_msf_ctrl (
   // ------------------------------------------------------------------
   // Thread scheduling state
   // ------------------------------------------------------------------
-  reg        dual;            // T1 running: barrel-interleave T0/T1
-  reg        tsel;            // dual mode: thread that owns this cycle
-  reg [9:0]  pc0, pc1;
-  reg        flush0, flush1;  // next decode slot of that thread is a bubble
-  reg [1:0]  zf, nf;          // per-thread flags
+  reg [3:0]  run;             // running threads (T0 always)
+  reg [1:0]  own;             // thread that owns this cycle (T0 in single mode)
+  reg        bub;             // this cycle's decode slot is a bubble
+  reg [39:0] pcs;             // per-thread PC (10 bits each)
+  reg [3:0]  zf, nf;          // per-thread flags
 
-  wire       cur  = dual & tsel;
-  wire       fl_c = cur ? flush1 : flush0;
+  wire       multi = |run[3:1];
+  wire [1:0] cur   = own;
+  wire       fl_c  = bub;
+  wire [9:0] pc0   = pcs[9:0];
+
+  // the next running thread after a, in the order T0..T3 (a if alone)
+  function [1:0] next_after(input [1:0] a, input [3:0] r);
+    reg [1:0] x;
+    integer   k;
+    begin
+      next_after = a;
+      for (k = 3; k >= 1; k = k - 1) begin
+        x = a + k;
+        if (r[x]) next_after = x;
+      end
+    end
+  endfunction
+
+  wire [1:0] fth = next_after(own, run);   // multi mode: whose word is fetched now
 
   // per-thread blocking-op state (index = thread)
-  reg  [1:0]  st;             // stalled
-  reg  [5:0]  sk;             // kind          (3 bits per thread)
-  reg  [5:0]  srd;            // dest register (3 bits per thread)
-  reg  [31:0] sop;            // latched operand (CMP target / push data)
-  reg  [7:0]  wsel;           // {bank, pin}   (4 bits per thread)
-  reg  [5:0]  wcond;          // edge/level condition (3 bits per thread)
-  reg  [1:0]  wprev;          // pin value last cycle
-  reg  [1:0]  whit;           // sticky event seen
-  reg  [31:0] sto;            // timeout counters
-  reg  [1:0]  sto_en;
-  reg  [31:0] ldh;            // LD data captured the cycle after issue
-  reg  [1:0]  ldq;            // LD issued by this thread last cycle
-  reg  [31:0] tmo;            // blocking-op timeout reload (0 = none)
-  reg  [1:0]  fge;            // the pending LD is a FIFO pop of an empty FIFO
+  reg  [3:0]  st;             // stalled
+  reg  [11:0] sk;             // kind          (3 bits per thread)
+  reg  [11:0] srd;            // dest register (3 bits per thread)
+  reg  [63:0] sop;            // latched operand (CMP target / push data)
+  reg  [15:0] wsel;           // {bank, pin}   (4 bits per thread)
+  reg  [11:0] wcond;          // edge/level condition (3 bits per thread)
+  reg  [3:0]  wprev;          // pin value last cycle
+  reg  [3:0]  whit;           // sticky event seen
+  reg  [63:0] sto;            // timeout counters
+  reg  [3:0]  sto_en;
+  reg  [63:0] ldh;            // LD data captured the cycle after issue
+  reg  [3:0]  ldq;            // LD issued by this thread last cycle
+  reg  [63:0] tmo;            // blocking-op timeout reload (0 = none)
+  reg  [3:0]  fge;            // the pending LD is a FIFO pop of an empty FIFO
 
   wire        st_c   = st[cur];
-  wire [15:0] tmo_c  = cur ? tmo[31:16] : tmo[15:0];
+  wire [15:0] tmo_c  = tmo[16*cur +: 16];
   wire        fge_c  = fge[cur];
-  wire [2:0]  sk_c   = cur ? sk[5:3]    : sk[2:0];
-  wire [2:0]  srd_c  = cur ? srd[5:3]   : srd[2:0];
-  wire [15:0] sop_c  = cur ? sop[31:16] : sop[15:0];
-  wire [15:0] ldh_c  = cur ? ldh[31:16] : ldh[15:0];
+  wire [2:0]  sk_c   = sk[3*cur +: 3];
+  wire [2:0]  srd_c  = srd[3*cur +: 3];
+  wire [15:0] sop_c  = sop[16*cur +: 16];
+  wire [15:0] ldh_c  = ldh[16*cur +: 16];
   wire        zc     = zf[cur];
   wire        nc     = nf[cur];
 
@@ -159,8 +180,8 @@ module tt_um_msf_ctrl (
   // ------------------------------------------------------------------
   wire [15:0] ir    = fl_c ? 16'h7000 : imem_rd;      // bubble decodes as NOP
   wire        exec  = !st_c && !fl_c;                 // an instruction issues
-  wire [9:0]  pc_c  = cur ? pc1 : pc0;
-  wire [9:0]  apc1  = dual ? pc_c + 10'd1 : pc0;      // issuing address + 1
+  wire [9:0]  pc_c  = pcs[10*cur +: 10];
+  wire [9:0]  apc1  = multi ? pc_c + 10'd1 : pc0;     // issuing address + 1
 
   wire [4:0]  op    = ir[15:11];
   wire [2:0]  f_a   = ir[10:8];
@@ -208,21 +229,33 @@ module tt_um_msf_ctrl (
   wire        wb_en;
   wire [2:0]  wb_a;
   wire [15:0] wb_d;
-  wire        t1_clr = exec && x_tstrt;
-  wire [15:0] qa0, qb0, qa1, qb1, qc0, qc1;
+  // TSTART / TSTOP name a thread in the ra field (0 = T1, as in ISA v2.0)
+  wire [1:0]  tt        = (f_a[1:0] == 2'd0) ? 2'd1 : f_a[1:0];
+  wire        do_tstart = exec && x_tstrt;
+  wire [63:0] qa_w, qb_w, qc_w;
 
   tt_um_msf_regfile u_rf (
       .clk(clk), .rst_n(rst_n), .clr(1'b0),
-      .ra(ra_i), .rb(rb_i), .rc(dbg_sel[3:1]), .we(wb_en && !cur), .wa(wb_a), .wd(wb_d),
-      .qa(qa0), .qb(qb0), .qc(qc0));
+      .ra(ra_i), .rb(rb_i), .rc(dbg_sel[3:1]), .we(wb_en && cur == 2'd0), .wa(wb_a), .wd(wb_d),
+      .qa(qa_w[15:0]), .qb(qb_w[15:0]), .qc(qc_w[15:0]));
 
   tt_um_msf_regfile u_rf1 (
-      .clk(clk), .rst_n(rst_n), .clr(t1_clr),
-      .ra(ra_i), .rb(rb_i), .rc(dbg_sel[3:1]), .we(wb_en && cur), .wa(wb_a), .wd(wb_d),
-      .qa(qa1), .qb(qb1), .qc(qc1));
+      .clk(clk), .rst_n(rst_n), .clr(do_tstart && tt == 2'd1),
+      .ra(ra_i), .rb(rb_i), .rc(dbg_sel[3:1]), .we(wb_en && cur == 2'd1), .wa(wb_a), .wd(wb_d),
+      .qa(qa_w[31:16]), .qb(qb_w[31:16]), .qc(qc_w[31:16]));
 
-  wire [15:0] qa = cur ? qa1 : qa0;
-  wire [15:0] qb = cur ? qb1 : qb0;
+  tt_um_msf_regfile u_rf2 (
+      .clk(clk), .rst_n(rst_n), .clr(do_tstart && tt == 2'd2),
+      .ra(ra_i), .rb(rb_i), .rc(dbg_sel[3:1]), .we(wb_en && cur == 2'd2), .wa(wb_a), .wd(wb_d),
+      .qa(qa_w[47:32]), .qb(qb_w[47:32]), .qc(qc_w[47:32]));
+
+  tt_um_msf_regfile u_rf3 (
+      .clk(clk), .rst_n(rst_n), .clr(do_tstart && tt == 2'd3),
+      .ra(ra_i), .rb(rb_i), .rc(dbg_sel[3:1]), .we(wb_en && cur == 2'd3), .wa(wb_a), .wd(wb_d),
+      .qa(qa_w[63:48]), .qb(qb_w[63:48]), .qc(qc_w[63:48]));
+
+  wire [15:0] qa = qa_w[16*cur +: 16];
+  wire [15:0] qb = qb_w[16*cur +: 16];
 
   // ------------------------------------------------------------------
   // ALU
@@ -277,13 +310,13 @@ module tt_um_msf_ctrl (
   wire ent_pin = imm8[3] ? ui_in[imm8[2:0]] : uio_in[imm8[2:0]];
 
   // per-thread release conditions, evaluated every cycle
-  wire [1:0] cond_now;       // condition true this cycle (incl. sticky event)
-  wire [1:0] evt;            // event to latch (edge / CNT match)
-  wire [1:0] tmo_now;        // timeout reached
-  wire [1:0] pin_t;
+  wire [3:0] cond_now;       // condition true this cycle (incl. sticky event)
+  wire [3:0] evt;            // event to latch (edge / CNT match)
+  wire [3:0] tmo_now;        // timeout reached
+  wire [3:0] pin_t;
   genvar t;
   generate
-    for (t = 0; t < 2; t = t + 1) begin : g_cond
+    for (t = 0; t < 4; t = t + 1) begin : g_cond
       wire [3:0]  ws = wsel[4*t +: 4];
       wire [2:0]  wc = wcond[3*t +: 3];
       wire [2:0]  k  = sk[3*t +: 3];
@@ -320,8 +353,9 @@ module tt_um_msf_ctrl (
   // ------------------------------------------------------------------
   // Register write-back (always for the thread that owns the cycle)
   // ------------------------------------------------------------------
-  wire [15:0] stat = {5'd0, cap_stat[13], cap_stat[15], ffull, !fempty, cur, dual,
-                      crc_busy, rx_overrun, rx_avail, tx_busy, tx_full};
+  wire [15:0] stat = {2'd0, cur[1], run[3], run[2], cap_stat[13], cap_stat[15], ffull,
+                      !fempty, cur[0], run[1], crc_busy, rx_overrun, rx_avail, tx_busy,
+                      tx_full};
 
   reg        wbx_en;
   reg [15:0] wbx_d;
@@ -343,7 +377,7 @@ module tt_um_msf_ctrl (
           X_SWAP:   wbx_d = {qb[7:0], qb[15:8]};
           X_STAT:   wbx_d = stat;
           X_CRCRDH: wbx_d = crc_hi;
-          X_TID:    wbx_d = {15'd0, cur};
+          X_TID:    wbx_d = {14'd0, cur};
           X_PR:     begin                       // port reads (#0 = pop: LD path)
             wbx_en = !x_get;
             case (f_b)
@@ -384,60 +418,48 @@ module tt_um_msf_ctrl (
     else                               tgt = apc1 + {rel9[8], rel9};
   end
 
-  wire do_tstart = exec && x_tstrt;
-  wire do_tstop  = exec && x_tstop && dual;
+  wire       do_tstop = exec && x_tstop && run[tt];
+  wire [3:0] tbit     = 4'd1 << tt;
+  wire [3:0] run_n    = do_tstart ? (run | tbit) : do_tstop ? (run & ~tbit) : run;
+  // multi mode: the word fetched now still belongs to the next cycle's owner
+  wire       f_ok     = run_n[fth] && !(do_tstart && tt == fth);
 
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      pc0 <= 10'd0; pc1 <= 10'd0; flush0 <= 1'b1; flush1 <= 1'b0;
-      dual <= 1'b0; tsel <= 1'b0;
-    end else if (!dual) begin
-      // ---- single-thread mode: T0 owns every cycle ----
-      if (st[0]) begin
-        if (rel) pc0 <= pc0 + 10'd1;            // release: mem[W+1] issues next
-      end else if (redirect) begin
-        pc0 <= tgt; flush0 <= 1'b1;
-      end else if (enter || do_tstart) begin
-        flush0 <= 1'b0;                        // hold pc0 = W+1
-      end else begin
-        pc0 <= pc0 + 10'd1; flush0 <= 1'b0;
-      end
-      if (do_tstart) begin
-        dual <= 1'b1; tsel <= 1'b0;            // T0 issues next cycle, T1 after
-        pc1 <= qb[9:0]; flush1 <= 1'b0;
-      end
+      pcs <= 40'd0; bub <= 1'b1; run <= 4'b0001; own <= 2'd0;
     end else begin
-      // ---- dual-thread mode ----
-      tsel <= ~tsel;
-      if (!cur) begin
-        if (!st[0]) begin
-          if (flush0)        flush0 <= 1'b0;
-          else if (redirect) pc0 <= tgt;
-          else               pc0 <= pc0 + 10'd1;
-        end
-      end else begin
-        if (!st[1]) begin
-          if (flush1)        flush1 <= 1'b0;
-          else if (redirect) pc1 <= tgt;
-          else               pc1 <= pc1 + 10'd1;
-        end
-      end
-      if (do_tstart) begin
-        pc1    <= qb[9:0];
-        flush1 <= !cur;            // T1's word in flight is stale if T0 restarted it
-      end
-      if (do_tstop) begin
-        dual <= 1'b0; tsel <= 1'b0;
-        if (cur) begin
-          if (!st[0]) pc0 <= pc0 + 10'd1;       // back to fetch-ahead
+      run <= run_n;
+      if (!multi) begin
+        // ---- single-thread mode: T0 owns every cycle ----
+        if (st[0]) begin
+          if (rel) pcs[9:0] <= pc0 + 10'd1;      // release: mem[W+1] issues next
+        end else if (redirect) begin
+          pcs[9:0] <= tgt; bub <= 1'b1;
+        end else if (enter || do_tstart) begin
+          bub <= 1'b0;                           // hold pc0 = W+1
         end else begin
-          flush0 <= 1'b1;                      // word in flight belongs to T1
+          pcs[9:0] <= pc0 + 10'd1; bub <= 1'b0;
+        end
+        if (do_tstart) pcs[10*tt +: 10] <= qb[9:0];  // T0 issues next cycle, the new thread after
+      end else begin
+        // ---- multi-thread mode: the owner advances its own PC ----
+        if (!st[cur] && !bub) begin
+          if (redirect) pcs[10*cur +: 10] <= tgt;
+          else          pcs[10*cur +: 10] <= pc_c + 10'd1;
+        end
+        if (do_tstart) pcs[10*tt +: 10] <= qb[9:0];  // (also a thread restarting itself)
+        if (f_ok) begin
+          own <= fth; bub <= 1'b0;
+          // back to single mode with T0's word in flight: fetch-ahead again
+          if (run_n[3:1] == 3'd0 && !st[0]) pcs[9:0] <= pc0 + 10'd1;
+        end else begin
+          own <= next_after(cur, run_n); bub <= 1'b1;
         end
       end
     end
   end
 
-  assign imem_raddr = dual ? (tsel ? pc0 : pc1) : pc0;
+  assign imem_raddr = multi ? pcs[10*fth +: 10] : pc0;
 
   // ------------------------------------------------------------------
   // Flags and per-thread blocking state
@@ -445,10 +467,10 @@ module tt_um_msf_ctrl (
   integer i;
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      zf <= 2'b00; nf <= 2'b00;
-      st <= 2'b00; sk <= 6'd0; srd <= 6'd0; sop <= 32'd0; wsel <= 8'd0;
-      wcond <= 6'd0; wprev <= 2'b00; whit <= 2'b00; sto <= 32'd0; sto_en <= 2'b00;
-      ldh <= 32'd0; ldq <= 2'b00; fge <= 2'b00;
+      zf <= 4'b0; nf <= 4'b0;
+      st <= 4'b0; sk <= 12'd0; srd <= 12'd0; sop <= 64'd0; wsel <= 16'd0;
+      wcond <= 12'd0; wprev <= 4'b0; whit <= 4'b0; sto <= 64'd0; sto_en <= 4'b0;
+      ldh <= 64'd0; ldq <= 4'b0; fge <= 4'b0;
     end else begin
       // flags of the owning thread
       if (exec && flag_op) begin
@@ -462,7 +484,7 @@ module tt_um_msf_ctrl (
         zf[cur] <= !rel_ok || fge_c;           // a pop of an empty FIFO: Z = 1
       end
 
-      for (i = 0; i < 2; i = i + 1) begin
+      for (i = 0; i < 4; i = i + 1) begin
         ldq[i] <= exec && (x_ld || x_get) && (cur == i);
         if (ldq[i]) ldh[16*i +: 16] <= b_rd;
         if (st[i]) begin
@@ -485,8 +507,8 @@ module tt_um_msf_ctrl (
         end
       end
 
-      if (do_tstart) begin               // fresh T1 (wins over the above)
-        zf[1] <= 1'b0; nf[1] <= 1'b0; st[1] <= 1'b0; whit[1] <= 1'b0; ldq[1] <= 1'b0;
+      if (do_tstart) begin               // a fresh thread (wins over the above)
+        zf[tt] <= 1'b0; nf[tt] <= 1'b0; st[tt] <= 1'b0; whit[tt] <= 1'b0; ldq[tt] <= 1'b0;
       end
     end
   end
@@ -500,7 +522,7 @@ module tt_um_msf_ctrl (
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       cnt <= 16'd0; sr <= 16'd0; sr_po <= 3'd7; sr_pi <= 3'd7; sr_lsb <= 1'b0;
-      waddr <= 10'd128; tmo <= 32'hFFFF_FFFF;
+      waddr <= 10'd128; tmo <= {4{16'hFFFF}};
       fbase <= 10'd64; fn <= 3'd5; fwp <= 9'd0; frp <= 9'd0; fdrop <= 7'd0;
     end else begin
       cnt <= cnt + 16'd1;
@@ -516,7 +538,7 @@ module tt_um_msf_ctrl (
         if (op == OP_MEMW) waddr <= waddr + 10'd1;
         else if (x_mema)   waddr <= qb[9:0];
         if (x_tmo) tmo[16*cur +: 16] <= qb;
-        if (x_tstrt) tmo[31:16] <= tmo_c;      // T1 starts with its starter's TMO
+        if (x_tstrt) tmo[16*tt +: 16] <= tmo_c; // a thread starts with its starter's TMO
         if (x_put) begin
           if (!ffull) fwp   <= fwp + 9'd1;
           else        fdrop <= fdrop + 7'd1;   // modulo 128
@@ -603,7 +625,7 @@ module tt_um_msf_ctrl (
   wire       z         = zf[0];
   wire       n         = nf[0];
   wire       dbg_issue = exec;
-  wire       dbg_thr   = cur;
+  wire [1:0] dbg_thr   = cur;
   wire [9:0] dbg_pc    = apc1 - 10'd1;
   wire       dbg_rel   = rel;
 
@@ -613,21 +635,32 @@ module tt_um_msf_ctrl (
   // ------------------------------------------------------------------
   reg [9:0]  lpc;
   reg [15:0] lir;
-  reg        lthr;
+  reg [1:0]  lthr;
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      lpc <= 10'd0; lir <= 16'h0; lthr <= 1'b0;
+      lpc <= 10'd0; lir <= 16'h0; lthr <= 2'd0;
     end else if (exec) begin
       lpc <= dbg_pc; lir <= ir; lthr <= cur;
     end
   end
 
-  wire [15:0] dbg_reg = dbg_sel[4] ? qc1 : qc0;
+  // dbg_sel[6] picks a page: 0 = T0/T1 registers and the core, 1 = T2/T3
+  wire [15:0] dbg_reg = qc_w[16*{dbg_sel[6], dbg_sel[4]} +: 16];
   always @(*) begin
     if (!dbg_sel[5]) dbg_q = dbg_sel[0] ? dbg_reg[15:8] : dbg_reg[7:0];
+    else if (dbg_sel[6]) case (dbg_sel[4:0])
+      5'h00: dbg_q = {run, st};
+      5'h01: dbg_q = {nf[3], zf[3], nf[2], zf[2], nf[1], zf[1], nf[0], zf[0]};
+      5'h02: dbg_q = pcs[7:0];
+      5'h03: dbg_q = pcs[17:10];
+      5'h04: dbg_q = pcs[27:20];
+      5'h05: dbg_q = pcs[37:30];
+      5'h06: dbg_q = {pcs[39:38], pcs[29:28], pcs[19:18], pcs[9:8]};
+      default: dbg_q = 8'h00;
+    endcase
     else case (dbg_sel[4:0])
       5'h00: dbg_q = lpc[7:0];
-      5'h01: dbg_q = {2'd0, st[1], st[0], dual, lthr, lpc[9:8]};
+      5'h01: dbg_q = {1'b0, lthr[1], st[1], st[0], multi, lthr[0], lpc[9:8]};
       5'h02: dbg_q = lir[7:0];
       5'h03: dbg_q = lir[15:8];
       5'h04: dbg_q = {4'd0, nf[1], zf[1], nf[0], zf[0]};
@@ -656,33 +689,32 @@ module tt_um_msf_ctrl (
 
   // ---- ghost: where did the word being decoded come from? ----
   reg [9:0] f_faddr;
-  reg       f_fthr;
+  reg [1:0] f_fthr;
   always @(posedge clk) begin
     f_faddr <= imem_raddr;
-    f_fthr  <= dual ? ~tsel : 1'b0;
+    f_fthr  <= multi ? fth : 2'd0;
   end
 
   // ---- ghost: per-thread expected next issue address ----
-  reg [9:0] f_next0, f_next1;
-  reg       f_has0, f_has1;
+  reg [39:0] f_next;
+  reg [3:0]  f_has;
   wire [9:0] f_succ = redirect ? tgt : dbg_pc + 10'd1;
   always @(posedge clk) begin
     if (f_init) begin
-      f_has0 <= 1'b0; f_has1 <= 1'b0;
+      f_has <= 4'b0;
     end else begin
-      if (exec && !cur) begin f_next0 <= f_succ; f_has0 <= 1'b1; end
-      if (exec &&  cur) begin f_next1 <= f_succ; f_has1 <= 1'b1; end
-      if (do_tstart)    begin f_next1 <= qb[9:0]; f_has1 <= 1'b1; end
+      if (exec)      begin f_next[10*cur +: 10] <= f_succ; f_has[cur] <= 1'b1; end
+      if (do_tstart) begin f_next[10*tt +: 10] <= qb[9:0]; f_has[tt] <= 1'b1; end
     end
   end
 
   // ---- ghost: per-thread blocking-op witnesses (independent re-statement
   //      of isa.md section 5, not shared with the design's own logic) ----
-  wire [1:0]  f_seen_w, f_evt_w, f_single_w;
-  wire [33:0] f_cnt_w;       // 17 bits per thread
-  wire [31:0] f_tmo_w;
+  wire [3:0]  f_seen_w, f_evt_w, f_single_w;
+  wire [67:0] f_cnt_w;       // 17 bits per thread
+  wire [63:0] f_tmo_w;
   generate
-    for (t = 0; t < 2; t = t + 1) begin : g_fv
+    for (t = 0; t < 4; t = t + 1) begin : g_fv
       reg [15:0] tgt, tm;
       reg [16:0] n;
       reg        seen, prev, single;   // single: issued in single-thread mode
@@ -702,7 +734,7 @@ module tt_um_msf_ctrl (
       end
       always @(posedge clk) begin
         if (cur == t && enter) begin
-          kind <= kind_i; tgt <= qa; tm <= tmo_c; n <= 17'd0; seen <= 1'b0; single <= !dual;
+          kind <= kind_i; tgt <= qa; tm <= tmo_c; n <= 17'd0; seen <= 1'b0; single <= !multi;
           sel <= imm8[3:0]; cond <= imm8[6:4]; prev <= ent_pin;
         end else if (st[t]) begin
           n <= n + 17'd1;
@@ -717,8 +749,8 @@ module tt_um_msf_ctrl (
       assign f_tmo_w[16*t +: 16] = tm;
     end
   endgenerate
-  wire [16:0] f_cnt_c = cur ? f_cnt_w[33:17] : f_cnt_w[16:0];
-  wire [15:0] f_tmo_c = cur ? f_tmo_w[31:16] : f_tmo_w[15:0];
+  wire [16:0] f_cnt_c = f_cnt_w[17*cur +: 17];
+  wire [15:0] f_tmo_c = f_tmo_w[16*cur +: 16];
 
   always @(*) begin
     if (!f_init) begin
@@ -726,8 +758,7 @@ module tt_um_msf_ctrl (
       //    from the issuing thread's address (catches B1-type pc bugs)
       if (exec) assert(f_faddr == dbg_pc && f_fthr == cur);
       // F2 no skipped / repeated instruction per thread
-      if (exec && !cur && f_has0) assert(dbg_pc == f_next0);
-      if (exec &&  cur && f_has1) assert(dbg_pc == f_next1);
+      if (exec && f_has[cur]) assert(dbg_pc == f_next[10*cur +: 10]);
       // F3 WAIT release causes (catches B2): a WAIT completes by its own
       //    event, or by timeout after exactly TMO+1 stalled cycles
       if (rel && (sk_c == K_EDGE || sk_c == K_CMP) && rel_ok)
@@ -736,14 +767,16 @@ module tt_um_msf_ctrl (
         assert(f_tmo_c != 16'd0);
         // f_cnt = stalled cycles before this one; release in stall cycle TMO+1
         // exactly when the whole stall is in single-thread mode (a single-mode
-        // stall cannot see dual mode: only a running thread can TSTART), and
-        // in the next own slot after expiry otherwise
+        // stall cannot see multi mode: only a running thread can TSTART), and
+        // in the thread's first own slot after expiry otherwise (a running
+        // thread owns at least one cycle in any four)
         assert(f_cnt_c >= {1'b0, f_tmo_c});
         if (f_single_w[cur]) assert(f_cnt_c == {1'b0, f_tmo_c});
-        else assert(f_cnt_c <= {1'b0, f_tmo_c} + 17'd1);
+        else assert(f_cnt_c <= {1'b0, f_tmo_c} + 17'd3);
       end
-      // F4 single mode never runs T1; T1 only exists in dual mode
-      if (!dual) assert(!cur);
+      // F4 single mode runs only T0, and only running threads own cycles
+      if (!multi) assert(cur == 2'd0);
+      assert(run[cur] && run[0]);
       // F5 side effects only from an issuing (or completing) instruction
       if (out_we || oe_we || uo_we || b_en) assert(exec);
       if (wb_en)  assert(exec || rel);
@@ -753,15 +786,19 @@ module tt_um_msf_ctrl (
   end
 
   // F6 flags change only through the owning thread's flag ops / blocking ops
+  wire f_flagev = exec && flag_op || blk_now || rel || exec && x_put;
+  generate
+    for (t = 0; t < 4; t = t + 1) begin : g_f6
+      always @(posedge clk)
+        if (!f_init && !$past(f_init))
+          if (zf[t] != $past(zf[t]) || nf[t] != $past(nf[t]))
+            assert(($past(cur) == t && $past(f_flagev)) ||
+                   ($past(do_tstart) && $past(tt) == t));
+    end
+  endgenerate
+
   always @(posedge clk) begin
     if (!f_init && !$past(f_init)) begin
-      if (zf[0] != $past(zf[0]) || nf[0] != $past(nf[0]))
-        assert(!$past(cur) && ($past(exec && flag_op) || $past(blk_now) || $past(rel) ||
-                               $past(exec && x_put)));
-      if (zf[1] != $past(zf[1]) || nf[1] != $past(nf[1]))
-        assert(($past(cur) && ($past(exec && flag_op) || $past(blk_now) || $past(rel) ||
-                               $past(exec && x_put)))
-               || $past(do_tstart));
       // F8 the FIFO never holds more words than its size, and its pointers
       //    move only by a push that fits, a pop that finds a word, or a reset
       assert(fcount <= fsize);
@@ -777,9 +814,10 @@ module tt_um_msf_ctrl (
     cover(rel && sk_c == K_EDGE && rel_ok);
     cover(rel && sk_c == K_CMP && rel_ok);
     cover(rel && !rel_ok);
-    cover(rel && sk_c == K_LD && cur);
-    cover(dual && exec && cur);
-    cover(do_tstop && cur);
+    cover(rel && sk_c == K_LD && cur != 2'd0);
+    cover(multi && exec && cur == 2'd1);
+    cover(do_tstop && cur != 2'd0);
+    cover(run == 4'b1111 && exec && cur == 2'd3);
     cover(exec && x_put && ffull);
     cover(rel && sk_c == K_LD && fge_c);
   end

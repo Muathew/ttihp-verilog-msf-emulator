@@ -37,7 +37,7 @@ TOP_FILES = ["project.v", "tt_um_msf_ctrl.v", "tt_um_msf_regfile.v", "tt_um_msf_
 # (name, file, old, new): re-introduce a review bug
 MUTANTS = [
     ("B1 pc not advanced on release", "tt_um_msf_ctrl.v",
-     "if (rel) pc0 <= pc0 + 10'd1;", "if (rel) pc0 <= pc0;"),
+     "if (rel) pcs[9:0] <= pc0 + 10'd1;", "if (rel) pcs[9:0] <= pc0;"),
     ("B2 WAIT kinds not separated", "tt_um_msf_ctrl.v",
      "(k == K_EDGE || k == K_CMP) ? (evt[t] || whit[t]) :",
      "(k == K_EDGE || k == K_CMP) ? (e || cmp || whit[t]) :"),

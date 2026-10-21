@@ -136,3 +136,46 @@ async def test_debug_single_step(dut):
     incrs = run.count(129)
     r1 = (await view(dut, 0x03)) << 8 | await view(dut, 0x02)
     assert r1 == incrs, f"R1 = {r1}, INCR issued {incrs} times"
+
+
+async def view1(dut, sel):
+    """A view on page 1 (ui_in[1] = 1): T2/T3 registers, threads."""
+    dut.ui_in.value = sel << 2 | 0b10 | DIRECT
+    await Timer(1, unit="ns")
+    return int(dut.uo_out.value)
+
+
+@cocotb.test()
+async def test_debug_view_page1(dut):
+    """Page 1: T2 and T3 registers, the running and stalled threads, every
+    thread's flags and fetch pointers (four threads, all parked)."""
+    words = await boot_asm(dut, """
+        LDI    R2, t1
+        TSTART R2
+        LDI    R2, t2
+        TSTART #2, R2
+        LDI    R2, t3
+        TSTART #3, R2
+    h0: JMP h0
+    t1: JMP t1
+    t2: LDI R1, 0x2211
+        LDI R7, 0x2277
+        LDR R3, #0
+        DECR R3                 ; Z2 = 0, N2 = 1
+    h2: JMP h2
+    t3: LDI R1, 0x3311
+        LDR R3, #1
+        DECR R3                 ; Z3 = 1
+        WAIT_EDGE 0             ; T3 stalls for good (uio0 never moves)
+    """, ui_in=STRAP | DIRECT)
+    await ClockCycles(dut.clk, 120)
+    for t, regs in ((2, {1: 0x2211, 7: 0x2277, 3: 0xFFFF}), (3, {1: 0x3311, 3: 0})):
+        for r, v in regs.items():
+            base = (t - 2) << 4 | r << 1
+            got = (await view1(dut, base | 1)) << 8 | await view1(dut, base)
+            assert got == v, f"T{t} R{r}: {got:#06x} != {v:#06x}"
+    assert await view1(dut, 0x20) == 0xF0 | 0x08     # all run, T3 stalled
+    flags = await view1(dut, 0x21)
+    assert (flags >> 4) & 3 == 0b10 and (flags >> 6) & 3 == 0b01, f"flags {flags:#04x}"
+    h0 = self_jump(words)                            # T0 parks at h0, the first self-jump
+    assert await view1(dut, 0x22) == h0 & 0xFF       # T0's fetch pointer

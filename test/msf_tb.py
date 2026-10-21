@@ -59,7 +59,8 @@ async def boot_asm(dut, asm, ui_in=1, uio_in=0, extra=None):
 
 
 def reg(dut, i, thread=0):
-    rf = dut.user_project.u_ctrl.u_rf if thread == 0 else dut.user_project.u_ctrl.u_rf1
+    c = dut.user_project.u_ctrl
+    rf = (c.u_rf, c.u_rf1, c.u_rf2, c.u_rf3)[thread]
     return int(rf.rf[i].value)
 
 
