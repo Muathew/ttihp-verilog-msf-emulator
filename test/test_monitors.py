@@ -300,11 +300,10 @@ async def test_mon_i2c_protocol_errors(dut):
 
 @cocotb.test()
 async def test_mon_i2c_single_faults(dut):
-    """One short phase per byte, on each data bit from the third, at
+    """One short phase per byte, on each data bit from the second, at
     100 kHz and at the legal minimum: each is reported once, with its
-    length, and every byte still decodes. (A byte's first bit queues the
-    byte before it: its high is not checked, nor, when that high ends before
-    the queuing does, the second bit's low.)"""
+    length, and every byte still decodes. (A byte's first bit pushes the
+    byte before it into the FIFO: its high is not checked.)"""
     w = I2cWave()
     w.idle(BOOT)
     w.start()
@@ -312,7 +311,7 @@ async def test_mon_i2c_single_faults(dut):
     rng = random.Random(11)
     for base in ((60, 60), (LMIN, HMIN)):
         w.tlow, w.thigh = base
-        for bit in range(2, 8):
+        for bit in range(1, 8):
             for kind, val in (("L", 30), ("L", 50), ("H", 12), ("H", 40)):
                 v = rng.randrange(256)
                 w.byte_(v, phases={bit: {"low" if kind == "L" else "high": val}})
@@ -325,9 +324,9 @@ async def test_mon_i2c_single_faults(dut):
 @cocotb.test()
 async def test_mon_i2c_fast_master(dut):
     """A master out of spec on every bit, at the monitor's limits (lows of
-    34 cycles, bits of 72): every byte decodes, and each reports its first
+    16 cycles, bits of 72): every byte decodes, and each reports its first
     short phase only."""
-    for low, high in ((34, 38), (40, 32), (56, 16)):
+    for low, high in ((16, 56), (34, 38), (40, 32), (56, 16)):
         w = I2cWave(tlow=low, thigh=high)
         w.idle(BOOT)
         w.start()
@@ -441,7 +440,7 @@ async def test_mon_spi_modes(dut):
 @cocotb.test()
 async def test_mon_spi_limits(dut):
     """At the documented limits: SCK periods of 28 cycles inside a byte,
-    60 from a byte's last sampling edge to the next byte's first, 16 from
+    36 from a byte's last sampling edge to the next byte's first, 16 from
     CS low to the first sampling edge and 6 to the first SCK edge."""
     for mode in range(4):
         w = SpiWave(mode)
@@ -449,7 +448,7 @@ async def test_mon_spi_limits(dut):
         w.select(setup=2 if w.cpha == 0 else 6)   # (first sampling edge 16 / 20 after CS)
         data = [(0xA5, 0x3C), (0x00, 0xFF), (0xFF, 0x00), (0x5A, 0xC3)]
         for o, i in data:
-            w.byte(o, i, half=14, gap=32)    # 28 per bit, 28 + 32 = 60 between
+            w.byte(o, i, half=14, gap=8)     # 28 per bit, 28 + 8 = 36 between
         w.deselect()
         got = await spi_mon(dut, w, mode)
         assert got == w.want, f"mode {mode}: {got} != {w.want}"

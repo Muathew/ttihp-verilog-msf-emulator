@@ -34,7 +34,8 @@ PIN_W, PIN_R, SETM, CLRM, CNT_R, INCR, DECR, IN_RD, CALL, RET, WAIT_EDGE, WAIT_C
 (X_SRLD, X_SRRD, X_XFER, X_SERCFG, X_OUTW, X_MEMA, X_LD, X_ST, X_SWAP, X_JR, X_TMO,
  X_STAT, X_TXCFG, X_TXDIV, X_TXPUSH, X_TXWAIT, X_RXCFG, X_RXDIV, X_RXPOP, X_CRCCFG,
  X_CRCW, X_CRCRDL, X_CRCRDH, X_CRCSETL, X_CRCSETH, X_POLL, X_POLH, X_TSTART, X_TSTOP,
- X_TID) = range(30)
+ X_TID, X_PW, X_PR) = range(32)
+P_FIFO, P_FCFG = 0, 1           # peripheral ports
 
 BLOCKING_EXT = {X_LD, X_TXPUSH, X_TXWAIT, X_RXPOP, X_CRCW, X_CRCRDL}
 UNMODELLED_EXT = {X_TXCFG, X_TXDIV, X_TXPUSH, X_TXWAIT, X_RXCFG, X_RXDIV, X_RXPOP}
@@ -47,6 +48,7 @@ class Thread:
         self.z = 0
         self.n = 0
         self.pc = 0
+        self.tmo = 0xFFFF       # blocking-op timeout reload (per thread)
         self.ready_at = 0       # earliest cycle the next instruction may issue
         self.blk = None         # pending blocking op (dict) or None
 
@@ -69,7 +71,9 @@ class IsaModel:
         self.sr = 0
         self.sr_po, self.sr_pi, self.sr_lsb = 7, 7, 0
         self.waddr = 128
-        self.tmo = 0xFFFF
+        self.fbase, self.fn = 64, 5     # FIFO: SRAM block and size 2 << fn
+        self.fwp = self.frp = 0         # words pushed / popped since configured
+        self.fdrop = 0
         self.crc = 0
         self.poly = 0
         self.crc_len_m1 = 7
@@ -104,7 +108,21 @@ class IsaModel:
             "regs0": list(self.th[0].regs), "regs1": list(self.th[1].regs),
             "z0": self.th[0].z, "n0": self.th[0].n, "z1": self.th[1].z, "n1": self.th[1].n,
             "out": self.out, "oe": self.oe, "uo": self.uo, "sr": self.sr,
+            "tmo0": self.th[0].tmo, "tmo1": self.th[1].tmo,
+            "fcount": self.fcount(), "fdrop": self.fdrop, "fcfg": (self.fbase, self.fn),
         }
+
+    # ---------------------------------------------------------------- FIFO
+    def fsize(self):
+        return 2 << self.fn
+
+    def fcount(self):
+        return self.fwp - self.frp
+
+    def faddr(self, n):
+        """SRAM address of the FIFO's n-th word (the block is size-aligned)."""
+        m = self.fsize() - 1
+        return (self.fbase & ~m & M9) | (n & m)
 
     def fetch(self, a):
         return self.rom[a] if a < 128 else self.mem[a]
@@ -190,7 +208,8 @@ class IsaModel:
         """Transfer performed when a blocking op completes successfully."""
         k = b["kind"]
         if k == "ld":
-            t.regs[b["rd"]] = b["data"]
+            if b["data"] is not None:       # None: a pop of an empty FIFO
+                t.regs[b["rd"]] = b["data"]
         elif k == "crcw":
             self._crc_write(b["data"])
         elif k == "crcrd":
@@ -205,13 +224,13 @@ class IsaModel:
         if ok or b["tmo_now"]:
             if ok:
                 self._complete(t, b)
-            t.z = 0 if ok else 1
+            t.z = b.get("z", 0) if ok else 1
             t.blk = None
             self.trace.append(("R", c, t.tid, 0 if ok else 1))
             self._next_ready(t, c, False)
 
     def _block(self, t, c, **kw):
-        b = dict(kw, issued=c, hit=False, now=False, tmo=self.tmo, tmo_en=self.tmo != 0)
+        b = dict(kw, issued=c, hit=False, now=False, tmo=t.tmo, tmo_en=t.tmo != 0)
         t.blk = b
 
     # ---------------------------------------------------------------- issue
@@ -349,9 +368,35 @@ class IsaModel:
         elif sub == X_JR:
             nxt, redirect = R[rb] & M9, True
         elif sub == X_TMO:
-            self.tmo = R[rb]
+            t.tmo = R[rb]
         elif sub == X_STAT:
-            R[ra] = (t.tid << 6) | (int(self.dual) << 5) | (int(self.crc_busy()) << 4)
+            R[ra] = (int(self.fcount() == self.fsize()) << 8) | (int(self.fcount() > 0) << 7) | \
+                (t.tid << 6) | (int(self.dual) << 5) | (int(self.crc_busy()) << 4)
+        elif sub == X_PW:
+            port = ra                       # PW #port, rb
+            if port == P_FIFO:
+                if self.fcount() < self.fsize():
+                    self.mem[self.faddr(self.fwp)] = R[rb]
+                    self.fwp += 1
+                    t.z = 0
+                else:
+                    self.fdrop = (self.fdrop + 1) & 0x7F
+                    t.z = 1
+            elif port == P_FCFG:
+                self.fbase, self.fn = R[rb] & M9, (R[rb] >> 9) & 7
+                self.fwp = self.frp = self.fdrop = 0
+        elif sub == X_PR:
+            port = rb                       # PR ra, #port
+            if port == P_FIFO:              # a load from the read slot
+                if self.fcount() > 0:
+                    self._block(t, c, kind="ld", rd=ra, data=self.mem[self.faddr(self.frp)])
+                    self.frp += 1
+                else:
+                    self._block(t, c, kind="ld", rd=ra, data=None, z=1)
+            elif port == P_FCFG:
+                R[ra] = (self.fdrop << 9) | self.fcount()
+            else:
+                R[ra] = 0
         elif sub == X_CRCCFG:
             self.crc_len_m1, self.crc_refl = R[rb] & 0xF, (R[rb] >> 4) & 1
         elif sub == X_CRCW:
@@ -381,6 +426,7 @@ class IsaModel:
             t1.regs = [0] * 8
             t1.z = t1.n = 0
             t1.blk = None
+            t1.tmo = t.tmo                  # the starter's TMO
             target = R[rb] & M9
             if not self.dual:
                 # dual from c+1: T0 owns c+1 (issues there), T1 owns c+2

@@ -47,6 +47,7 @@ ALL_MODULES = [
     "test_monitors",
     "test_bridge",
     "test_faults",
+    "test_debug",
 ]
 
 

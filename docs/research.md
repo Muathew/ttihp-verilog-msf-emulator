@@ -121,10 +121,14 @@ brief: it is a debugging and reverse-engineering tool):
 4. **Thread mailbox or barrier** (TeslaCoilerOW, umerimran): small RTL
    change; lets the two threads hand data over, e.g. UART in, SPI out.
    *Taken without the RTL change:* a lock-free queue in data RAM
-   (`firmware/ring.inc`) carries the monitors' events and the UART-to-SPI
-   bridge (`firmware/bridge.s`).
+   (`ring.inc`) carried the monitors' events and the UART-to-SPI bridge
+   (`firmware/bridge.s`). *Then with it (branch `rtl-changes`):* a hardware
+   FIFO between the threads, one instruction to push or pop (`isa.md` §6.5).
 5. **Trace and debug** (PRISM, ProtocolGremlin): our FPGA step mode already
    does this off-chip; an on-chip PC/pin trace would help silicon bring-up.
+   *Taken (branch `rtl-changes`):* the debug view (`isa.md` §8) shows the
+   PC, instruction and every register on `uo_out`, so the demo board's
+   RP2040 can halt and single-step the chip.
 6. **Manchester receive for 10BASE-T** (PRISM): RTL change in the RX
    engine; the stretch goal we only half meet.
 

@@ -21,18 +21,21 @@ class Probe:
         self.issue, self.thr, self.pc, self.ir, self.rel = (
             c.dbg_issue, c.dbg_thr, c.dbg_pc, c.ir, c.dbg_rel)
         self.rf = [[c.u_rf.rf[i] for i in range(8)], [c.u_rf1.rf[i] for i in range(8)]]
-        self.zf, self.nf, self.sr = c.zf, c.nf, c.sr
+        self.zf, self.nf, self.sr, self.tmo = c.zf, c.nf, c.sr, c.tmo
+        self.fifo = (c.fwp, c.frp, c.fdrop, c.fbase, c.fn)
         p = dut.user_project.u_pio
         self.out, self.oe, self.uo = p.out_r, p.oe_r, p.uo_r
 
     def state(self):
-        zf, nf = int(self.zf.value), int(self.nf.value)
+        zf, nf, tmo = int(self.zf.value), int(self.nf.value), int(self.tmo.value)
+        wp, rp, drop, base, fn = (int(h.value) for h in self.fifo)
         return {
             "regs0": [int(h.value) for h in self.rf[0]],
             "regs1": [int(h.value) for h in self.rf[1]],
             "z0": zf & 1, "n0": nf & 1, "z1": zf >> 1, "n1": nf >> 1,
             "out": int(self.out.value), "oe": int(self.oe.value), "uo": int(self.uo.value),
-            "sr": int(self.sr.value),
+            "sr": int(self.sr.value), "tmo0": tmo & 0xFFFF, "tmo1": tmo >> 16,
+            "fcount": (wp - rp) & 0x1FF, "fdrop": drop, "fcfg": (base, fn),
         }
 
 

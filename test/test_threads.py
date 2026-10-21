@@ -4,7 +4,7 @@ test_random_diff.test_random_dual_thread cross-checks the model at scale."""
 import cocotb
 from cocotb.triggers import ClockCycles, RisingEdge, ReadOnly
 
-from msf_tb import boot_asm, reg, ctrl
+from msf_tb import boot_asm, reg, ctrl, sram
 
 CLEAR = "\n".join(f"LDR R{i}, #0" for i in range(8)) + "\n"
 
@@ -46,6 +46,74 @@ async def test_dual_branch_costs_one_slot(dut):
     """)
     await ClockCycles(dut.clk, 60)
     assert reg(dut, 4) == 6
+
+
+@cocotb.test()
+async def test_tmo_per_thread(dut):
+    """Each thread has its own TMO; T1 starts with its starter's (isa.md §7).
+    T1's WAIT times out with the 10 it inherited although T0 then set 0, and
+    T1's own TMO write leaves T0's alone. Dual-mode timeout: the release is
+    in T1's first own slot at or after expiry, so TMO+2 = 12 stalled cycles
+    after the WAIT's issue slot, and CNT_R to CNT_R is 2 + 12 + 2 = 16."""
+    await boot_asm(dut, CLEAR + """
+        LDR    R1, #10
+        TMO    R1
+        LDI    R2, t1
+        TSTART R2          ; T1 inherits TMO = 10
+        LDR    R1, #0
+        TMO    R1          ; T0: no timeout from now on
+        WAIT_EDGE 0        ; uio[0] never moves: T0 waits for ever
+    h0: JMP h0
+    t1: CNT_R  R3
+        WAIT_EDGE 0
+        CNT_R  R4
+        LDR    R5, #0
+        JNZ    t1n
+        LDR    R5, #1      ; Z = 1: timed out
+  t1n:  LDR    R1, #3
+        TMO    R1          ; T1's own TMO
+    h1: JMP h1
+    """)
+    await ClockCycles(dut.clk, 120)
+    assert reg(dut, 5, 1) == 1, "T1's WAIT did not time out"
+    assert reg(dut, 4, 1) - reg(dut, 3, 1) == 16
+    c = ctrl(dut)
+    assert int(c.st.value) & 1, "T0's WAIT (TMO 0) should still be waiting"
+    tmo = int(c.tmo.value)
+    assert (tmo & 0xFFFF, tmo >> 16) == (0, 3)
+
+
+@cocotb.test()
+async def test_fifo_between_threads(dut):
+    """T0 pushes 20 words at its own pace, T1 pops and stores them: all
+    arrive, in order, none dropped (default FIFO: SRAM 64..127, 64 words)."""
+    await boot_asm(dut, CLEAR + """
+        LDI    R2, t1
+        TSTART R2
+        LDI    R1, 0x200
+        LDR    R6, #20
+    lp: FIFO_PUT R1
+        INCR   R1
+        LDR    R3, #5
+    d:  DECR   R3
+        JNZ    d
+        DECR   R6
+        JNZ    lp
+    h0: JMP h0
+    t1: LDR    R5, #0
+        LDR    R6, #20
+    g:  FIFO_GET R1
+        JZ     g           ; empty: try again
+        ST     R5, R1
+        INCR   R5
+        DECR   R6
+        JNZ    g
+        FIFO_STAT R4
+    h1: JMP h1
+    """)
+    await ClockCycles(dut.clk, 900)
+    assert [sram(dut, i) for i in range(20)] == list(range(0x200, 0x214))
+    assert reg(dut, 4, 1) == 0, "FIFO should be empty with no drops"
 
 
 async def t0_toggle_times(dut, t1_body, cycles=600):

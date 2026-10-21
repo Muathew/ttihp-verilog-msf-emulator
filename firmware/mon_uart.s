@@ -25,10 +25,10 @@ start:  LDI      R1, 10 * BIT
         RX_DIV   R1
         LDI      R1, (RX_EN | RX_CHAR | RX_LSB | (9 - 1) << 8 | LINE)
         RX_CFG   R1                ; 8 data bits + the stop bit
-        CALL     ring_clear
+        LDI      R1, 64 | 5 << FIFO_N
+        FIFO_CFG R1                ; FIFO: SRAM 64..127, empty
         LDI      R1, report
         TSTART   R1
-        LDR      R6, #RING         ; queue: next slot to write
 fr:     WAIT_EDGE LINE, fall       ; start bit (or a glitch)
         JZ       nofr
         CNT_R    R3                ; t0
@@ -75,7 +75,7 @@ rx:     RX_POP   R1                ; 9 bits, stop bit in bit 8
         MOV      R1, R0
         ADDS     R0, R0, R0        ; Z = no 'B' event
         JZ       byte
-        CALL     put
+        FIFO_PUT R1
 byte:   LDR      R4, #0xFF
         AND      R1, R2, R4        ; data bits
         SHR      R5, R2, #7
@@ -85,11 +85,11 @@ byte:   LDR      R4, #0xFF
         JNZ      ok
         LDI      R4, 'F' << 8
 ok:     OR       R1, R1, R4
-        CALL     put
+        FIFO_PUT R1
         JMP      fr
 glitch: LDI      R1, 'G' << 8
         OR       R1, R1, R2
-        CALL     put
+        FIFO_PUT R1
         JMP      rxu               ; then the byte it makes a receiver see
 nofr:   STAT     R1                ; no start edge for a frame time: did the
         LDR      R4, #ST_RXAVAIL   ; RX engine get a frame whose start this
@@ -100,8 +100,7 @@ rxu:    RX_POP   R1                ; report it, untimed
         MOV      R2, R1
         JMP      byte
 
-xlat:   LDR      R2, #0            ; events are queued ready to send
+xlat:   LDR      R2, #0            ; events are pushed ready to send
         RET
 
-.include "ring.inc"
 .include "report.inc"

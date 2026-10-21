@@ -45,7 +45,7 @@ TOPLEVEL = tb
 # List test modules to run, separated by commas and without the .py suffix:
 # GL mode uses only top-level-port tests (no internal hierarchy in netlist).
 ifneq ($(GATES),yes)
-COCOTB_TEST_MODULES = test_core,test_regressions,test_isa_v2,test_peripherals,test_threads,test_boot,test_random_diff,test_protocols,test_extensions,test_firmware,test_reprogrammable,test_crv_invariants,test_golden_model,test_targets,test_monitors,test_bridge,test_faults
+COCOTB_TEST_MODULES = test_core,test_regressions,test_isa_v2,test_peripherals,test_threads,test_boot,test_random_diff,test_protocols,test_extensions,test_firmware,test_reprogrammable,test_crv_invariants,test_golden_model,test_targets,test_monitors,test_bridge,test_faults,test_debug
 else
 COCOTB_TEST_MODULES = test_gl_smoke
 endif

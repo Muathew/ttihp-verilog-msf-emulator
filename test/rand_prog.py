@@ -4,9 +4,11 @@
 Programs are structured so they keep making progress: bounded DECR/JNZ loops,
 forward conditional skips, CALL/RET to leaf subroutines (R7 is reserved for
 CALL), JR through a computed address, WAITs bounded by a small TMO, data-RAM
-traffic confined to SRAM 0..127 (never code), CRC bursts bracketed by blocking
-CRC_RDL so no CRC register is touched while the unit is busy. In dual mode T0
-starts/stops/restarts T1, both threads hammer shared pins/SR/data RAM.
+traffic confined to SRAM 0..127 (never code), FIFO pushes / pops / status
+reads and re-configurations (block kept inside 0..127), CRC bursts bracketed
+by blocking CRC_RDL so no CRC register is touched while the unit is busy. In
+dual mode T0 starts/stops/restarts T1, both threads hammer shared pins/SR/
+data RAM/FIFO, and each thread may set its own TMO.
 """
 import random
 
@@ -38,7 +40,7 @@ class Gen:
     # ------------------------------------------------------------------ pieces
     def simple(self, crc_ok=True):
         r = self.r
-        k = r.randrange(26)
+        k = r.randrange(30)
         a, b, c = self.reg(), self.reg(), self.reg()
         if k < 4:
             self.L(f"LDR {a}, #{r.randrange(256)}")
@@ -83,6 +85,16 @@ class Gen:
             self.L("NOP")
         elif k == 24 and crc_ok and not self.no_crc:
             self.crc_burst()
+        elif k in (26, 27):
+            self.L(f"FIFO_PUT {a}")
+        elif k == 28:
+            self.L(f"FIFO_GET {a}")
+        elif k == 29:
+            if r.random() < 0.8:
+                self.L(f"FIFO_STAT {a}")
+            else:                       # size 2..64, block inside data RAM 0..127
+                self.L(f"LDI {a}, {r.randrange(128) | r.randrange(6) << 9}")
+                self.L(f"FIFO_CFG {a}")
         else:
             self.L(f"ADDS {a}, {b}, {c}")
 
@@ -170,6 +182,10 @@ class Gen:
         if self.dual:
             self.L("LDI R6, t1_entry")
             self.L("TSTART R6")
+            if r.random() < 0.5:        # T0's timeout changes; T1 keeps its own
+                b = self.reg()
+                self.L(f"LDR {b}, #{r.choice([0, r.randrange(20, 120)])}")
+                self.L(f"TMO {b}")
         self.block(0, n)
         if self.dual and r.random() < 0.5:
             self.L("TSTOP")
@@ -187,6 +203,10 @@ class Gen:
             self.subs = []
             self.no_crc = True
             self.L("t1_entry:")
+            if r.random() < 0.5:        # T1's own timeout (else the one T0 had)
+                b = self.reg()
+                self.L(f"LDR {b}, #{r.choice([0, r.randrange(10, 80)])}")
+                self.L(f"TMO {b}")
             self.block(1, r.randrange(5, 15))
             if r.random() < 0.3:
                 self.L("TSTOP")

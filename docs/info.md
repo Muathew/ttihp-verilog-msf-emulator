@@ -20,7 +20,8 @@ generic building blocks that firmware composes into protocols.
 | Block | What it does |
 |---|---|
 | Core | 16-bit RISC, 8 registers per thread, 5-bit opcodes + a 32-entry extension group, single-cycle execute, deterministic cycle costs |
-| 2 hardware threads | barrel-interleaved (XMOS-style): when T1 runs, cycles alternate T0/T1; each thread has its own PC, registers, flags and stall state, and its timing does not depend on the other thread |
+| 2 hardware threads | barrel-interleaved (XMOS-style): when T1 runs, cycles alternate T0/T1; each thread has its own PC, registers, flags, timeout and stall state, and its timing does not depend on the other thread |
+| FIFO | a queue between the threads, kept in data RAM with its positions in hardware: one instruction to push (`FIFO_PUT`, 1 cycle) or pop (`FIFO_GET`, 2 cycles), words dropped by a full FIFO counted |
 | Blocking ops | `WAIT_EDGE` (any/rising/falling edge or level, on `uio` or `ui` pins), `WAIT_CMP` (cycle counter == register), `LD`, `TX_PUSH`, `TX_WAIT`, `RX_POP`, `CRC_W`, `CRC_RDL` stall the thread with a programmable timeout (Z=1 on timeout) |
 | Memory | 512 x 16 IHP two-port SRAM macro + 128-word boot ROM. Fetch: 0-127 ROM, 128-511 SRAM. Data (`LD`/`ST`/`MEM_W`): all 512 SRAM words, so 0-127 is free data RAM |
 | Shift register | 16-bit SR, load/read, `SHIFT_OUT`/`SHIFT_IN`/`XFER` (full duplex) on configurable pins, MSB- or LSB-first |
@@ -63,6 +64,16 @@ cmd 'W' (0x57): write len words at addr     cmd 'G' (0x47): jump to addr (len 0)
 Each frame is answered with ACK `0x06` / NAK `0x15` on `uio[0]` (UART) and on
 `uo_out[3:0]` (bit0 waiting, bit1 OK, bit2 CRC error, bit3 starting firmware).
 `tools/msf_boot.py firmware.s --port COMx` assembles and loads a program.
+
+### Debug view
+
+Hold `ui_in[2]` high during reset and `uo_out` shows, instead of the
+firmware's outputs, the byte of internal state selected by `ui_in[7:2]`:
+either thread's registers, the PC and word of the last instruction issued,
+flags, stall state, `CNT`, `SR`, the pin registers and the FIFO (full table
+in `docs/isa.md` §8). The select works without a clock edge, so with the
+demo board's RP2040 clocking the chip one cycle at a time you can halt,
+single-step, stop at a PC and read every register.
 
 ## How to test
 

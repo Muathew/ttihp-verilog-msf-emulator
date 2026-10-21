@@ -43,7 +43,10 @@ and in dual mode thread start / stop / restart from either thread. Each
 program runs on the RTL and on the model with the same per-cycle pad
 schedule; `diffcheck.py` compares **every** issue and stall-release event
 (cycle, thread, PC, instruction word) and the full architectural state at
-each issue (both register files, flags, OUT/OE/UO, SR). 80 programs per run
+each issue (both register files, flags, OUT/OE/UO, SR, each thread's TMO,
+the FIFO's count, drops and configuration). The programs push to, pop from
+and reconfigure the FIFO from both threads, often while it is full or
+empty, and either thread may set its own TMO. 80 programs per run
 (~45 000 instructions); a failure prints the seed (`MSF_SEED=<n>`) and a
 disassembly window.
 
@@ -66,9 +69,11 @@ inputs**, so the proofs hold for every program and environment.
 | F5 | pin, SRAM-port, register-file and peripheral side effects only come from an issuing or completing instruction |
 | F6 | flags change only through the owning thread's flag ops / blocking ops (or T1's TSTART) |
 | F7 | the fetched word comes from the bank (ROM/SRAM) of the address it was fetched with |
+| F8 | the FIFO never holds more words than its size; its positions move only by a push that fits, a pop that finds a word, or `FIFO_CFG` |
 
 Every `cover()` point (WAIT edge/CMP/timeout release, LD release in T1, dual
-issue, TSTOP) is shown reachable, so the properties are not vacuous.
+issue, TSTOP, a push to a full FIFO, a pop of an empty one) is shown
+reachable, so the properties are not vacuous.
 
 **Mutation check:** the review bugs are re-introduced into copies of the RTL
 and each must make the proof fail:
@@ -83,10 +88,11 @@ and each must make the proof fail:
 
 | Module | Scope |
 |---|---|
-| `test_core`, `test_isa_v2` | every instruction, hand-derived expected values, exact cycle costs, input-sync latency |
+| `test_core`, `test_isa_v2` | every instruction, hand-derived expected values, exact cycle costs, input-sync latency; FIFO costs, full / empty / drops / status |
 | `test_regressions` | one test per review bug B1-B5 (each failed on v1) |
 | `test_peripherals` | CRC check values (CRC-8/16/32/5), TX in every mode decoded from the pins, RX with +-2 % baud and +-1.5 % + jitter, RX at every divisor 4-40, TX->RX loopback |
-| `test_threads` | isolation, start/stop/restart, zero-cost branches, determinism of T0 vs any T1 load, events in the other thread's slot |
+| `test_threads` | isolation, start/stop/restart, zero-cost branches, determinism of T0 vs any T1 load, events in the other thread's slot, a TMO per thread, the FIFO between threads |
+| `test_debug` | the debug view: every view against the program's values, off without the strap, and single-stepping a hand-driven clock while reading the PC and a register through the pins |
 | `test_boot` | framed UART and parallel loading, back-to-back bytes, late host, NAK + retry, data RAM, `G` anywhere |
 | `test_firmware` | the `firmware/` demos against independent decoders and slave models (SPI slave all modes, wired-AND I2C slave with stretching, USB NRZI/CRC16/EOP, 10BASE-T Manchester/FCS/TP_IDL/NLP) |
 | `test_protocols`, `test_extensions`, `test_reprogrammable`, `test_crv_invariants` | the original v1 bit-bang demos and constrained-random invariants, kept as regression |
@@ -136,7 +142,11 @@ later commits changed firmware, tests and docs only):
 | 39022166820 | 17 Oct | main | a7a9b86 | 8 666 | 23.2 % | 23.09 ns | 0.11 ns | 0 / 0 | 0 | 0 |
 | 39017713663 | 17 Oct | ethernet | a7a9b86 | 8 666 | 23.2 % | 23.09 ns | 0.11 ns | 0 / 0 | 0 | 0 |
 
-The clock is 40 ns (25 MHz), so the slow corner has 23 ns to spare. The
+The clock is 40 ns (25 MHz), so the slow corner has 23 ns to spare. On the
+`rtl-changes` branch the same RTL was hardened at 20 ns (50 MHz, run
+39633377026): the same 8 666 cells, 3.09 ns of setup slack at the slow
+corner, 0.11 ns of hold slack at the fast corner, no violations, no
+routing DRC or antenna errors. The constraint stays at 20 ns there. The
 precheck (KLayout SG13G2 DRC, pin, boundary, layer and cell-name checks)
 passed in each run. LibreLane also warns of 16 max-slew and 58 max-fanout
 nets at the slow corner; they are design-rule warnings, not timing
@@ -183,11 +193,13 @@ is how the sweep was checked against the survivor.
 | UART, SPI, I2C, USB LS, 10BASE-T TX run as firmware | `test_firmware` against independent decoders and device models; the same checks in C on the FPGA build (§5) |
 | The chip can be an SPI device at up to 750 kHz with no dummy byte, and an I2C device at 100 kHz (400 kHz with stretching) | `test_targets`: data in all modes, latencies 4 / 5 / 8 / 13 cycles as derived, a 16-cycle SCK works and 14 fails, 400 kHz needs `STRETCH` |
 | A bus monitor never reports a timing fault on a legal I2C bus, and reports the real faults with their lengths | `test_monitors`: random legal buses raise no event; single faults at every data bit, at 100 kHz and the legal minimum, reported once each within the stated accuracy |
-| The I2C monitor keeps decoding a master that is out of spec on every bit (lows ≥ 34 cycles, bits ≥ 72) | `test_mon_i2c_fast_master` at the corners of that envelope |
-| The SPI monitor decodes SCK periods of 28 cycles in a byte, 60 between bytes, all modes | `test_mon_spi_limits` at those values |
+| The I2C monitor keeps decoding a master that is out of spec on every bit (lows ≥ 16 cycles, bits ≥ 72) | `test_mon_i2c_fast_master` at the corners of that envelope; a sweep of 196 points inside it |
+| The SPI monitor decodes SCK periods of 28 cycles in a byte, 36 between bytes, all modes | `test_mon_spi_limits` at those values |
 | The two threads cooperate without locks (UART in, SPI out) | `test_bridge`, all SPI modes |
+| The hardware FIFO hands words between threads in order, one instruction each way, and never overfills | `test_threads.test_fifo_between_threads`, `test_isa_v2` FIFO tests, formal F8, the random differential test (§2) |
+| A host can halt, single-step and read the core's state through the pins | `test_debug.test_debug_single_step`: hand-driven clock, PC trace and register read between edges |
 | Timing faults can be injected by exact amounts | `test_faults`: each knob measured at the pins; a one-cycle step in the UART bit time moves a receiver from pass to fail exactly where its geometry predicts |
-| v2 fits the 6x4 tiles and meets timing at 25 MHz in all corners | the GDS runs above: 23 % utilisation, no setup or hold violations, clean DRC, precheck passed (§7) |
+| v2 fits the 6x4 tiles and meets timing at 25 MHz in all corners, and at 50 MHz | the GDS runs above: 23 % utilisation, no setup or hold violations, clean DRC, precheck passed; the 20 ns run on `rtl-changes`: 3.09 ns to spare (§7) |
 | The tests catch a broken design, not only pass a working one | 39 of 40 sampled single-bit mutants killed; the survivor flips a reserved bit nothing reads (§8) |
 
 What is **not** validated yet:

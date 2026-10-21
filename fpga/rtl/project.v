@@ -29,6 +29,19 @@ module tt_um_msf (
     uio_sync <= uio_s1;
   end
 
+  // ---- debug view (isa.md §8) ----
+  // ui_in[2] high while rst_n is low selects debug mode until the next reset:
+  // uo_out then shows the byte of internal state chosen by ui_in[7:2]
+  // instead of the firmware's UO register. Loaded only during reset, so no
+  // reset of its own. The select is the raw pad value: it only steers a
+  // multiplexer onto the outputs (no flip-flop samples it), and it must act
+  // without a clock edge so a host can read every view between single steps.
+  reg dbg_mode;
+  always @(posedge clk)
+    if (!rst_n) dbg_mode <= ui_sync[2];
+  wire [7:0] uo_fw, dbg_q;
+  assign uo_out = dbg_mode ? dbg_q : uo_fw;
+
   // ---- instruction memory: boot ROM (0-127) + SRAM (128-511) ----
   wire [8:0]  imem_raddr;
   wire [15:0] rom_rd, sram_rd;
@@ -77,7 +90,8 @@ module tt_um_msf (
       .per_we(per_we), .per_sub(per_sub), .per_wd(per_wd), .rx_pop(rx_pop),
       .tx_full(tx_full), .tx_busy(tx_busy), .rx_avail(rx_avail),
       .rx_overrun(rx_overrun), .rx_word(rx_word),
-      .crc_busy(crc_busy), .crc_lo(crc_lo), .crc_hi(crc_hi)
+      .crc_busy(crc_busy), .crc_lo(crc_lo), .crc_hi(crc_hi),
+      .dbg_sel(ui_in[7:2]), .dbg_q(dbg_q)
   );
 
   // ---- pins ----
@@ -87,7 +101,7 @@ module tt_um_msf (
       .uo_we(uo_we), .uo_d(uo_d),
       .tx_mask(tx_mask), .tx_val(tx_val),
       .out_q(out_q), .oe_q(oe_q), .uo_q(uo_q),
-      .uio_out(uio_out), .uio_oe(uio_oe), .uo_out(uo_out)
+      .uio_out(uio_out), .uio_oe(uio_oe), .uo_out(uo_fw)
   );
 
   // ---- peripherals ----

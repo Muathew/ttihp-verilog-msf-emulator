@@ -35,7 +35,7 @@ pinout:
   # Inputs (all firmware-readable via IN_RD / WAIT_EDGE ..., ui)
   ui[0]: "BOOT_DIRECT (1 = run SRAM firmware at reset)"
   ui[1]: "BOOT_PARALLEL (loader byte source: 0 UART, 1 parallel)"
-  ui[2]: "IN2 / parallel boot data bit 2"
+  ui[2]: "IN2 / parallel boot data bit 2 / debug view (high at reset)"
   ui[3]: "IN3 / parallel boot data bit 3"
   ui[4]: "IN4 / parallel boot data bit 4"
   ui[5]: "IN5 / parallel boot data bit 5"

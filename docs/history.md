@@ -22,7 +22,9 @@ Where an early decision was later changed, the entry says so.
 | 2026-10-14 | Sam | 10BASE-T transmit at 20 MHz as a real test (v1: waveform playback) |
 | 2026-10-16 | Sam | Full review of v1: 9 bugs and the gaps below; v2 plan written |
 | 2026-10-17 | Sam | v2 done: bug fixes, ISA v2, SERDES, CRC, two threads, boot ROM v2, formal, 103 tests |
-| 2026-10-18 | Muath, Sam | AUP-ZU3 FPGA port; PS-stepped core and C protocol tests (14/14); 1 Hz blink; competitor survey updated (research.md) || 2026-10-19..21 | Sam | Instruments from the survey: SPI and I2C targets, UART / I2C / SPI bus monitors, UART-to-SPI bridge, timing-fault knobs, CI hardening table, mutation score (39/40), WS2812 and a PIO comparison; 130 tests |
+| 2026-10-18 | Muath, Sam | AUP-ZU3 FPGA port; PS-stepped core and C protocol tests (14/14); 1 Hz blink; competitor survey updated (research.md) |
+| 2026-10-19..21 | Sam | Instruments from the survey: SPI and I2C targets, UART / I2C / SPI bus monitors, UART-to-SPI bridge, timing-fault knobs, CI hardening table, mutation score (39/40), WS2812 and a PIO comparison; 130 tests |
+| 2026-10-21 | Sam | Branch `rtl-changes`: 50 MHz sign-off, a timeout per thread, a hardware FIFO between the threads, the debug view; 137 tests |
 
 ## 1. Architecture decision (24 Sep)
 
@@ -220,6 +222,46 @@ stands. They are described in [instruments.md](instruments.md).
   reads; the other showed the RX tests never loaded the bit timer with
   certain values, and a divisor sweep added for it brought the score to
   39 of 40. `verification.md` §9 maps each claim to its test.
+
+## 9. RTL changes (21 Oct –, branch `rtl-changes`)
+
+A separate line of RTL work, never merged, so the green design stays the
+reference. The ideas and why each was worth it are in `research.md`; the
+order was: clock, three small changes, a second SRAM bank, a capture
+engine, Manchester receive and a glitch filter, more threads.
+
+* **Clock.** The 40 ns runs had 23 ns of setup slack, so the hardening
+  constraint went to 20 ns (50 MHz); the demo board can clock a design up
+  to 66.5 MHz. It closed with the same 8 666 cells and 3.09 ns to spare
+  at the slow corner, no setup or hold violations: the worst path is about
+  17 ns, so the v2 logic would run to roughly 59 MHz. Firmware timing is in
+  cycles, so every instrument gets faster in proportion.
+* **Timeout per thread.** `TMO` was shared, so a timeout thread 0 set also
+  cut thread 1's waits short (the reporter retried its `TX_PUSH` for that
+  reason). Each thread now has its own, and `TSTART` copies the starter's,
+  which keeps every existing program working.
+* **FIFO.** `PW` / `PR` take the last two free EXT codes and reach eight
+  ports each; port 0 is a FIFO whose words stay in data RAM while its
+  positions are in hardware, so a push is a 1-cycle store and a pop a
+  2-cycle load (a flip-flop FIFO deep enough for the monitors, 64 words,
+  would have cost about 2 000 cells). A first version cleared the drop
+  count when read; the SPI monitor's producer and the reporter would both
+  read it, so reads have no side effect and drops count modulo 128. The
+  monitors and the bridge moved onto it from `ring.inc`:
+
+  | | Before (software queue) | After (FIFO) |
+  |---|---|---|
+  | `mon_i2c.s` / `mon_spi.s` / `mon_uart.s` / `bridge.s` | 380 / 176 / 184 / 120 words | 319 / 104 / 145 / 81 |
+  | SPI monitor, gap between bytes | 60 cycles | 36 |
+  | I2C monitor, shortest SCL low it decodes (72-cycle bits) | 34 cycles | 16 |
+  | I2C monitor, high a byte's first bit needs for the low after it to be timed | about 56 cycles | 36 (every legal high) |
+  | I2C monitor, faults it reports | from a byte's third bit | from its second |
+
+* **Debug view.** `ui_in[2]` high at reset makes `uo_out` show the PC and
+  word of the last instruction, the registers, flags and the rest
+  (`isa.md` §8). The select comes straight from the pins, not through the
+  synchroniser: changing the view between single steps must not need a
+  clock edge, and nothing but the output multiplexer sees it.
 
 ## Working conventions
 

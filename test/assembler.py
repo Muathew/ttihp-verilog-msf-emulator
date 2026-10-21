@@ -21,6 +21,8 @@ Directives
 Pseudo-ops
     LDI rd, V        LDR rd,#lo(V) ; LDH rd,#hi(V)   (always 2 words)
     LD ra, [rb] / ST [ra], rb are accepted as well as LD ra, rb / ST ra, rb
+    FIFO_PUT rb = PW #0, rb    FIFO_CFG rb  = PW #1, rb
+    FIFO_GET ra = PR ra, #0    FIFO_STAT ra = PR ra, #1
 """
 import ast
 import operator
@@ -58,6 +60,13 @@ EXT = {
     "TSTART": (27, "b"), "TSTOP": (28, ""), "TID": (29, "a"),
 }
 EXT_NAME = {v[0]: (k, v[1]) for k, v in EXT.items()}
+
+# Peripheral ports: PW #port, rb (port in the ra field) / PR ra, #port (port
+# in the rb field), and names for the ports in use: mnemonic -> (sub, port)
+X_PW, X_PR = 30, 31
+PORT_OPS = {"FIFO_PUT": (X_PW, 0), "FIFO_CFG": (X_PW, 1),
+            "FIFO_GET": (X_PR, 0), "FIFO_STAT": (X_PR, 1)}
+PORT_NAME = {v: k for k, v in PORT_OPS.items()}
 
 WAIT_COND = {"any": 0, "rise": 1, "rising": 1, "fall": 2, "falling": 2,
              "low": 4, "high": 5}
@@ -273,6 +282,17 @@ def _encode(mn, args, syms, pc):
         ra = _reg(a[pat.index("a")]) if "a" in pat else 0
         rb = _reg(a[pat.index("b")]) if "b" in pat else 0
         return [0x0F << 11 | ra << 8 | rb << 5 | sub]
+    if mn == "PW":
+        need(2)
+        return [0x0F << 11 | _imm(a[0], syms, 3) << 8 | _reg(a[1]) << 5 | X_PW]
+    if mn == "PR":
+        need(2)
+        return [0x0F << 11 | _reg(a[0]) << 8 | _imm(a[1], syms, 3) << 5 | X_PR]
+    if mn in PORT_OPS:
+        need(1)
+        sub, port = PORT_OPS[mn]
+        r = _reg(a[0])
+        return [0x0F << 11 | (port << 8 | r << 5 if sub == X_PW else r << 8 | port << 5) | sub]
     if mn not in OP:
         raise AsmError(f"unknown mnemonic {mn!r}")
     op = OP[mn]
@@ -347,7 +367,14 @@ def disassemble(w, addr=None):
     if op in (0x12, 0x13):
         return f"{MASK_NAME.get((op, a), 'NOP')} {imm8:#04x}"
     if op == 0x0F:
-        if (w & 0x1F) not in EXT_NAME:
+        sub = w & 0x1F
+        if sub in (X_PW, X_PR):
+            port, r = (a, b) if sub == X_PW else (b, a)
+            name = PORT_NAME.get((sub, port))
+            if name:
+                return f"{name} R{r}"
+            return f"PW #{port}, R{r}" if sub == X_PW else f"PR R{r}, #{port}"
+        if sub not in EXT_NAME:
             return "EXT-NOP"
         name, pat = EXT_NAME[w & 0x1F]
         ops = [f"R{a}" if p == "a" else f"R{b}" for p in pat]

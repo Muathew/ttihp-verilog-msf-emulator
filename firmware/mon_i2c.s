@@ -11,7 +11,7 @@
 ;   'H' SCL high shorter than HMIN: data = its length in cycles (+-1; HFLOOR
 ;       for anything shorter than that)
 ;   'L' SCL low shorter than LMIN: data = its length, -1 to +LSLACK (and
-;       about 40 to 54 for a low shorter than thread 0's turnaround)
+;       about 38 to 54 for a low shorter than thread 0's turnaround)
 ;   'L' / 'H' with data 0: that phase was short on a byte's 9th bit, which
 ;       has no room for its length (follows the byte)
 ; A legal bus never raises 'H' or 'L': lengths are counted from the cycles
@@ -25,14 +25,14 @@
 ;    wait is exact; one between a look and the wait counts from the look,
 ;    so the low after it may read up to LSLACK cycles long;
 ;  - nothing is queued at a fall, so thread 0 is back in time for the next
-;    edge: a byte's word is queued after the next rise, which is why a
-;    byte's first bit is not timed (its high, nor the low after it if that
-;    high ends before the queuing does: highs under ~56 cycles);
+;    edge: a byte's word is pushed into the FIFO after the next rise, which
+;    is why a byte's first bit's high is not timed (the low after it is,
+;    whenever that high lasts 36 cycles or more: every legal high does);
 ;  - only the first short phase of each byte is reported: that word too is
 ;    queued after the next rise, and the rest of the byte is decoded
 ;    without timing it, so a master that is too fast throughout still
 ;    decodes and the reports do not flood.
-; Every byte decodes on any bus whose SCL lows are at least 34 cycles and
+; Every byte decodes on any bus whose SCL lows are at least 16 cycles and
 ; whose bits are at least 72 (6 us), however far out of spec (the legal
 ; minimums are 56 and 104); test/test_monitors.py checks these claims.
 .include "msf.inc"
@@ -58,13 +58,13 @@
 ; R0 = when SCL rose, R1 = when the rise wait began (then scratch),
 ; R2 = when SCL last fell + LMIN - 1, R3 = bits left in the byte,
 ; R4 = SDA | SCL (also the low-phase timeout), R5 = both lines as SCL rose,
-; R6 = queue slot, R7 = HWAIT, then when SCL fell + LMIN - 1
+; R7 = HWAIT, then when SCL fell + LMIN - 1
 start:  LDR      R1, #(7 | SDAP << 3)
         SER_CFG  R1                ; SR in = SDA
-        CALL     ring_clear
+        LDI      R1, 64 | 5 << FIFO_N
+        FIFO_CFG R1                ; FIFO: SRAM 64..127, empty
         LDI      R1, report
         TSTART   R1
-        LDR      R6, #RING         ; queue: next slot to write
         LDR      R1, #HWAIT
         TMO      R1                ; (only the bit loop below changes it)
 
@@ -80,7 +80,7 @@ iw:     WAIT_EDGE SDAP, high       ; SDA low with SCL low: not a START
         JZ       iw
         JMP      idle
 st:     LDI      R1, 'S' << 8
-        CALL     put
+        FIFO_PUT R1
 st1:    LDR      R3, #MARK         ; bits left in this byte
         SR_LD    R3
 sw:     WAIT_EDGE SCLP, low        ; SCL falls after the START (maybe while
@@ -200,21 +200,10 @@ q_l:    ADDS     R1, R1, R7        ; the low (127 = fine)
         LDH      R1, #1
         SHL      R1, R1, #7
         OR       R1, R1, R5        ; 0x8000 | low << 7 | high
-        LD       R7, R6            ; (put, inline)
-        ADDS     R7, R7, R7
-        JNZ      q_tf
-        ST       R6, R1
-        INCR     R6
-        LDR      R7, #RING_END
-        SUBS     R7, R6, R7
-        JNZ      q_tn
-        LDR      R6, #RING
-q_tn:   LDR      R7, #HWAIT
+        FIFO_PUT R1
+        LDR      R7, #HWAIT
         TMO      R7
         JMP      qline
-q_tf:   CALL     put               ; (counts it as dropped)
-        LDR      R4, #(SDA | SCL)
-        JMP      q_tn
 qrise:  WAIT_EDGE SCLP, high
         JZ       qrise
         SHIFT_IN                   ; SDA
@@ -257,16 +246,8 @@ rise_qb: WAIT_EDGE SCLP, high
         JNZ      q_f
         LDH      R5, #(0x400 >> 8)
 q_f:    OR       R1, R1, R5
-q_p:    LD       R7, R6            ; (put, inline)
-        ADDS     R7, R7, R7
-        JNZ      q_bf
-        ST       R6, R1
-        INCR     R6
-        LDR      R7, #RING_END
-        SUBS     R7, R6, R7
-        JNZ      q_w
-        LDR      R6, #RING
-q_w:    PIN_R    R5                ; both lines (SDA as SCL rose: a START /
+q_p:    FIFO_PUT R1
+        PIN_R    R5                ; both lines (SDA as SCL rose: a START /
         AND      R5, R5, R4        ; STOP comes later than this)
         LDR      R7, #SCL
         SUBS     R7, R5, R7
@@ -285,9 +266,6 @@ q_e:    MOV      R7, R0
 q_x:    LDR      R5, #(LMIN - 1)
         ADDS     R7, R7, R5
         JMP      fallen
-q_bf:   CALL     put               ; queue full: count the word as dropped
-        LDR      R4, #(SDA | SCL)
-        JMP      q_w
 rlong_qb: CNT_R  R2
         SUBS     R2, R2, R4
         JMP      rise_qb
@@ -306,14 +284,14 @@ sdachg: LDR      R4, #SDA
         JZ       xs
         LDR      R4, #0x10
         OR       R1, R1, R4
-xs:     CALL     put
+xs:     FIFO_PUT R1
         ADDS     R2, R2, R2
         JZ       st1
         JMP      idle
 edge:   ADDS     R2, R2, R2
         JZ       st                ; it fell: (repeated) START
         LDI      R1, 'P' << 8
-        CALL     put
+        FIFO_PUT R1
         JMP      idle
 
 ; ---- thread 1: queued words -> events
@@ -385,5 +363,4 @@ xl_a:   OR       R1, R2, R4
         LDI      R2, 'H' << 8
 xl_r:   RET
 
-.include "ring.inc"
 .include "report.inc"

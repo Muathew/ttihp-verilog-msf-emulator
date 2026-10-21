@@ -56,7 +56,10 @@ module tt_um_msf_ctrl (
     input  wire [15:0] rx_word,
     input  wire        crc_busy,
     input  wire [15:0] crc_lo,
-    input  wire [15:0] crc_hi
+    input  wire [15:0] crc_hi,
+    // debug view (project.v shows dbg_q on uo_out in debug mode)
+    input  wire [5:0]  dbg_sel,
+    output reg  [7:0]  dbg_q
 );
   // ------------------------------------------------------------------
   // Encodings
@@ -77,7 +80,10 @@ module tt_um_msf_ctrl (
                    X_RXCFG = 5'd16, X_RXDIV = 5'd17, X_RXPOP = 5'd18, X_CRCCFG = 5'd19,
                    X_CRCW = 5'd20, X_CRCRDL = 5'd21, X_CRCRDH = 5'd22, X_CRCSETL = 5'd23,
                    X_CRCSETH = 5'd24, X_POLL = 5'd25, X_POLH = 5'd26, X_TSTART = 5'd27,
-                   X_TSTOP = 5'd28, X_TID = 5'd29;
+                   X_TSTOP = 5'd28, X_TID = 5'd29, X_PW = 5'd30, X_PR = 5'd31;
+
+  // peripheral ports (PW #p, rb / PR ra, #p)
+  localparam [2:0] P_FIFO = 3'd0, P_FCFG = 3'd1;
 
   localparam [2:0] K_EDGE = 3'd0, K_CMP = 3'd1, K_LD = 3'd2, K_TXPUSH = 3'd3,
                    K_TXWAIT = 3'd4, K_RXPOP = 3'd5, K_CRCW = 3'd6, K_CRCRD = 3'd7;
@@ -107,8 +113,12 @@ module tt_um_msf_ctrl (
   reg  [1:0]  sto_en;
   reg  [31:0] ldh;            // LD data captured the cycle after issue
   reg  [1:0]  ldq;            // LD issued by this thread last cycle
+  reg  [31:0] tmo;            // blocking-op timeout reload (0 = none)
+  reg  [1:0]  fge;            // the pending LD is a FIFO pop of an empty FIFO
 
   wire        st_c   = st[cur];
+  wire [15:0] tmo_c  = cur ? tmo[31:16] : tmo[15:0];
+  wire        fge_c  = fge[cur];
   wire [2:0]  sk_c   = cur ? sk[5:3]    : sk[2:0];
   wire [2:0]  srd_c  = cur ? srd[5:3]   : srd[2:0];
   wire [15:0] sop_c  = cur ? sop[31:16] : sop[15:0];
@@ -122,7 +132,20 @@ module tt_um_msf_ctrl (
   reg [2:0]  sr_po, sr_pi;    // SR output / input pin
   reg        sr_lsb;
   reg [8:0]  waddr;           // MEM_W pointer
-  reg [15:0] tmo;             // blocking-op timeout reload (0 = none)
+
+  // FIFO (port 0): words in SRAM [base, base+size), pointers here. Size is
+  // 2 << fn (2..256); the block is size-aligned (base's low bits ignored).
+  reg [8:0]  fbase;
+  reg [2:0]  fn;
+  reg [8:0]  fwp, frp;        // free-running write / read counts
+  reg [6:0]  fdrop;           // words a full FIFO dropped (modulo 128)
+  wire [8:0] fsize  = 9'd2 << fn;
+  wire [8:0] fmask  = fsize - 9'd1;
+  wire [8:0] fcount = fwp - frp;
+  wire       fempty = (fcount == 9'd0);
+  wire       ffull  = (fcount == fsize);
+  wire [8:0] faddr_w = (fbase & ~fmask) | (fwp & fmask);
+  wire [8:0] faddr_r = (fbase & ~fmask) | (frp & fmask);
 
   // ------------------------------------------------------------------
   // Decode
@@ -153,6 +176,9 @@ module tt_um_msf_ctrl (
   wire x_crcrl = ext && sub == X_CRCRDL, x_crcrh = ext && sub == X_CRCRDH;
   wire x_tstrt = ext && sub == X_TSTART, x_tstop = ext && sub == X_TSTOP;
   wire x_tid   = ext && sub == X_TID;
+  wire x_pw    = ext && sub == X_PW,     x_pr    = ext && sub == X_PR;
+  wire x_put   = x_pw && f_a == P_FIFO,  x_fcfg  = x_pw && f_a == P_FCFG;
+  wire x_get   = x_pr && f_b == P_FIFO,  x_fstat = x_pr && f_b == P_FCFG;
   wire x_perw  = ext && (sub == X_TXCFG || sub == X_TXDIV || sub == X_RXCFG ||
                          sub == X_RXDIV || sub == X_CRCCFG || sub == X_CRCSETL ||
                          sub == X_CRCSETH || sub == X_POLL || sub == X_POLH);
@@ -176,17 +202,17 @@ module tt_um_msf_ctrl (
   wire [2:0]  wb_a;
   wire [15:0] wb_d;
   wire        t1_clr = exec && x_tstrt;
-  wire [15:0] qa0, qb0, qa1, qb1;
+  wire [15:0] qa0, qb0, qa1, qb1, qc0, qc1;
 
   tt_um_msf_regfile u_rf (
       .clk(clk), .rst_n(rst_n), .clr(1'b0),
-      .ra(ra_i), .rb(rb_i), .we(wb_en && !cur), .wa(wb_a), .wd(wb_d),
-      .qa(qa0), .qb(qb0));
+      .ra(ra_i), .rb(rb_i), .rc(dbg_sel[3:1]), .we(wb_en && !cur), .wa(wb_a), .wd(wb_d),
+      .qa(qa0), .qb(qb0), .qc(qc0));
 
   tt_um_msf_regfile u_rf1 (
       .clk(clk), .rst_n(rst_n), .clr(t1_clr),
-      .ra(ra_i), .rb(rb_i), .we(wb_en && cur), .wa(wb_a), .wd(wb_d),
-      .qa(qa1), .qb(qb1));
+      .ra(ra_i), .rb(rb_i), .rc(dbg_sel[3:1]), .we(wb_en && cur), .wa(wb_a), .wd(wb_d),
+      .qa(qa1), .qb(qb1), .qc(qc1));
 
   wire [15:0] qa = cur ? qa1 : qa0;
   wire [15:0] qb = cur ? qb1 : qb0;
@@ -221,8 +247,9 @@ module tt_um_msf_ctrl (
   // ------------------------------------------------------------------
   // Blocking ops
   // ------------------------------------------------------------------
-  wire is_blk = (op == OP_WEDGE) || (op == OP_WCMP) || x_ld || x_txp || x_txw ||
-                x_rxp || x_crcw || x_crcrl;
+  // a FIFO pop is a load from the read slot (an empty FIFO reads nothing)
+  wire is_blk = (op == OP_WEDGE) || (op == OP_WCMP) || x_ld || x_get || x_txp ||
+                x_txw || x_rxp || x_crcw || x_crcrl;
   wire blk_ready = (x_txp && !tx_full) || (x_txw && !tx_busy) || (x_rxp && rx_avail) ||
                    ((x_crcw || x_crcrl) && !crc_busy);
   wire enter   = exec && is_blk && !blk_ready;   // WAIT_* and LD are never "ready"
@@ -232,7 +259,7 @@ module tt_um_msf_ctrl (
   always @(*) begin
     if (op == OP_WEDGE)   kind_i = K_EDGE;
     else if (op == OP_WCMP) kind_i = K_CMP;
-    else if (x_ld)        kind_i = K_LD;
+    else if (x_ld || x_get) kind_i = K_LD;
     else if (x_txp)       kind_i = K_TXPUSH;
     else if (x_txw)       kind_i = K_TXWAIT;
     else if (x_rxp)       kind_i = K_RXPOP;
@@ -286,7 +313,8 @@ module tt_um_msf_ctrl (
   // ------------------------------------------------------------------
   // Register write-back (always for the thread that owns the cycle)
   // ------------------------------------------------------------------
-  wire [15:0] stat = {9'd0, cur, dual, crc_busy, rx_overrun, rx_avail, tx_busy, tx_full};
+  wire [15:0] stat = {7'd0, ffull, !fempty, cur, dual, crc_busy, rx_overrun, rx_avail,
+                      tx_busy, tx_full};
 
   reg        wbx_en;
   reg [15:0] wbx_d;
@@ -309,6 +337,10 @@ module tt_um_msf_ctrl (
           X_STAT:   wbx_d = stat;
           X_CRCRDH: wbx_d = crc_hi;
           X_TID:    wbx_d = {15'd0, cur};
+          X_PR:     begin                       // port reads (#0 = pop: LD path)
+            wbx_en = !x_get;
+            wbx_d  = x_fstat ? {fdrop, fcount} : 16'd0;
+          end
           X_RXPOP:  begin wbx_d = rx_word; wbx_en = rx_avail;  end
           X_CRCRDL: begin wbx_d = crc_lo;  wbx_en = !crc_busy; end
           default:  wbx_en = 1'b0;
@@ -318,7 +350,8 @@ module tt_um_msf_ctrl (
     endcase
   end
 
-  wire rel_wb = rel && rel_ok && (sk_c == K_LD || sk_c == K_RXPOP || sk_c == K_CRCRD);
+  wire rel_wb = rel && rel_ok && ((sk_c == K_LD && !fge_c) || sk_c == K_RXPOP ||
+                                  sk_c == K_CRCRD);
   assign wb_en = (exec && wbx_en) || rel_wb;
   assign wb_a  = rel_wb ? srd_c : (op == OP_CALL) ? 3'd7 : f_a;
   assign wb_d  = !rel_wb ? wbx_d :
@@ -403,7 +436,7 @@ module tt_um_msf_ctrl (
       zf <= 2'b00; nf <= 2'b00;
       st <= 2'b00; sk <= 6'd0; srd <= 6'd0; sop <= 32'd0; wsel <= 8'd0;
       wcond <= 6'd0; wprev <= 2'b00; whit <= 2'b00; sto <= 32'd0; sto_en <= 2'b00;
-      ldh <= 32'd0; ldq <= 2'b00;
+      ldh <= 32'd0; ldq <= 2'b00; fge <= 2'b00;
     end else begin
       // flags of the owning thread
       if (exec && flag_op) begin
@@ -411,12 +444,14 @@ module tt_um_msf_ctrl (
         nf[cur] <= alu_n;
       end else if (blk_now) begin
         zf[cur] <= 1'b0;
+      end else if (exec && x_put) begin
+        zf[cur] <= ffull;                      // Z = 1: full, the word was dropped
       end else if (rel) begin
-        zf[cur] <= !rel_ok;
+        zf[cur] <= !rel_ok || fge_c;           // a pop of an empty FIFO: Z = 1
       end
 
       for (i = 0; i < 2; i = i + 1) begin
-        ldq[i] <= exec && x_ld && (cur == i);
+        ldq[i] <= exec && (x_ld || x_get) && (cur == i);
         if (ldq[i]) ldh[16*i +: 16] <= b_rd;
         if (st[i]) begin
           if (cur == i && rel) st[i] <= 1'b0;
@@ -432,8 +467,9 @@ module tt_um_msf_ctrl (
           wcond[3*i +: 3]     <= imm8[6:4];
           wprev[i]            <= ent_pin;
           whit[i]             <= 1'b0;
-          sto[16*i +: 16]     <= tmo;
-          sto_en[i]           <= (tmo != 16'd0);
+          sto[16*i +: 16]     <= tmo_c;
+          sto_en[i]           <= (tmo_c != 16'd0);
+          fge[i]              <= x_get && fempty;
         end
       end
 
@@ -444,7 +480,7 @@ module tt_um_msf_ctrl (
   end
 
   // ------------------------------------------------------------------
-  // Shared datapath state: CNT, SR, MEM_W pointer, TMO
+  // Shared datapath state: CNT, SR, MEM_W pointer; per-thread TMO
   // ------------------------------------------------------------------
   wire sr_in  = uio_in[sr_pi];
   wire sr_out = sr_lsb ? sr[0] : sr[15];
@@ -452,7 +488,8 @@ module tt_um_msf_ctrl (
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       cnt <= 16'd0; sr <= 16'd0; sr_po <= 3'd7; sr_pi <= 3'd7; sr_lsb <= 1'b0;
-      waddr <= 9'd128; tmo <= 16'hFFFF;
+      waddr <= 9'd128; tmo <= 32'hFFFF_FFFF;
+      fbase <= 9'd64; fn <= 3'd5; fwp <= 9'd0; frp <= 9'd0; fdrop <= 7'd0;
     end else begin
       cnt <= cnt + 16'd1;
       if (exec) begin
@@ -466,7 +503,17 @@ module tt_um_msf_ctrl (
         end
         if (op == OP_MEMW) waddr <= waddr + 9'd1;
         else if (x_mema)   waddr <= qb[8:0];
-        if (x_tmo) tmo <= qb;
+        if (x_tmo) tmo[16*cur +: 16] <= qb;
+        if (x_tstrt) tmo[31:16] <= tmo_c;      // T1 starts with its starter's TMO
+        if (x_put) begin
+          if (!ffull) fwp   <= fwp + 9'd1;
+          else        fdrop <= fdrop + 7'd1;   // modulo 128
+        end
+        if (x_get && !fempty) frp <= frp + 9'd1;
+        if (x_fcfg) begin
+          fbase <= qb[8:0]; fn <= qb[11:9];
+          fwp <= 9'd0; frp <= 9'd0; fdrop <= 7'd0;
+        end
       end
     end
   end
@@ -517,9 +564,12 @@ module tt_um_msf_ctrl (
   wire do_memw = exec && (op == OP_MEMW);
   wire do_st   = exec && x_st;
   wire do_ld   = exec && x_ld;
-  assign b_en   = do_memw || do_st || do_ld;
-  assign b_we   = do_memw || do_st;
-  assign b_addr = do_memw ? waddr : do_st ? qa[8:0] : qb[8:0];
+  wire do_put  = exec && x_put && !ffull;
+  wire do_get  = exec && x_get && !fempty;
+  assign b_en   = do_memw || do_st || do_ld || do_put || do_get;
+  assign b_we   = do_memw || do_st || do_put;
+  assign b_addr = do_memw ? waddr : do_st ? qa[8:0] : do_put ? faddr_w :
+                  do_get ? faddr_r : qb[8:0];
   assign b_wd   = do_memw ? qa : qb;
 
   wire per_rel = rel && rel_ok && (sk_c == K_TXPUSH || sk_c == K_CRCW);
@@ -529,7 +579,7 @@ module tt_um_msf_ctrl (
   assign rx_pop  = (blk_now && x_rxp) || (rel && rel_ok && sk_c == K_RXPOP);
 
   // ------------------------------------------------------------------
-  // Debug / testbench visibility (no logic depends on these)
+  // Debug / testbench visibility (only the debug view depends on these)
   // ------------------------------------------------------------------
   wire [8:0] pc_p      = pc0;        // v1 name, T0 fetch pointer
   wire       stall     = st[0];
@@ -539,6 +589,43 @@ module tt_um_msf_ctrl (
   wire       dbg_thr   = cur;
   wire [8:0] dbg_pc    = apc1 - 9'd1;
   wire       dbg_rel   = rel;
+
+  // ------------------------------------------------------------------
+  // Debug view: one byte of state chosen by dbg_sel (isa.md §8). The last
+  // issued instruction is held so the view can be read between clock steps.
+  // ------------------------------------------------------------------
+  reg [8:0]  lpc;
+  reg [15:0] lir;
+  reg        lthr;
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      lpc <= 9'd0; lir <= 16'h0; lthr <= 1'b0;
+    end else if (exec) begin
+      lpc <= dbg_pc; lir <= ir; lthr <= cur;
+    end
+  end
+
+  wire [15:0] dbg_reg = dbg_sel[4] ? qc1 : qc0;
+  always @(*) begin
+    if (!dbg_sel[5]) dbg_q = dbg_sel[0] ? dbg_reg[15:8] : dbg_reg[7:0];
+    else case (dbg_sel[4:0])
+      5'h00: dbg_q = lpc[7:0];
+      5'h01: dbg_q = {3'd0, st[1], st[0], dual, lthr, lpc[8]};
+      5'h02: dbg_q = lir[7:0];
+      5'h03: dbg_q = lir[15:8];
+      5'h04: dbg_q = {4'd0, nf[1], zf[1], nf[0], zf[0]};
+      5'h05: dbg_q = cnt[7:0];
+      5'h06: dbg_q = cnt[15:8];
+      5'h07: dbg_q = sr[7:0];
+      5'h08: dbg_q = sr[15:8];
+      5'h09: dbg_q = out_q;
+      5'h0A: dbg_q = oe_q;
+      5'h0B: dbg_q = uo_q;
+      5'h0C: dbg_q = fcount[7:0];
+      5'h0D: dbg_q = {fdrop, fcount[8]};
+      default: dbg_q = 8'h00;
+    endcase
+  end
 
 `ifdef FORMAL
   // ==================================================================
@@ -598,7 +685,7 @@ module tt_um_msf_ctrl (
       end
       always @(posedge clk) begin
         if (cur == t && enter) begin
-          kind <= kind_i; tgt <= qa; tm <= tmo; n <= 17'd0; seen <= 1'b0; single <= !dual;
+          kind <= kind_i; tgt <= qa; tm <= tmo_c; n <= 17'd0; seen <= 1'b0; single <= !dual;
           sel <= imm8[3:0]; cond <= imm8[6:4]; prev <= ent_pin;
         end else if (st[t]) begin
           n <= n + 17'd1;
@@ -652,10 +739,19 @@ module tt_um_msf_ctrl (
   always @(posedge clk) begin
     if (!f_init && !$past(f_init)) begin
       if (zf[0] != $past(zf[0]) || nf[0] != $past(nf[0]))
-        assert(!$past(cur) && ($past(exec && flag_op) || $past(blk_now) || $past(rel)));
+        assert(!$past(cur) && ($past(exec && flag_op) || $past(blk_now) || $past(rel) ||
+                               $past(exec && x_put)));
       if (zf[1] != $past(zf[1]) || nf[1] != $past(nf[1]))
-        assert(($past(cur) && ($past(exec && flag_op) || $past(blk_now) || $past(rel)))
+        assert(($past(cur) && ($past(exec && flag_op) || $past(blk_now) || $past(rel) ||
+                               $past(exec && x_put)))
                || $past(do_tstart));
+      // F8 the FIFO never holds more words than its size, and its pointers
+      //    move only by a push that fits, a pop that finds a word, or a reset
+      assert(fcount <= fsize);
+      if (fwp != $past(fwp))
+        assert($past(exec && x_fcfg) || ($past(exec && x_put && !ffull) && fwp == $past(fwp) + 9'd1));
+      if (frp != $past(frp))
+        assert($past(exec && x_fcfg) || ($past(exec && x_get && !fempty) && frp == $past(frp) + 9'd1));
     end
   end
 
@@ -667,6 +763,8 @@ module tt_um_msf_ctrl (
     cover(rel && sk_c == K_LD && cur);
     cover(dual && exec && cur);
     cover(do_tstop && cur);
+    cover(exec && x_put && ffull);
+    cover(rel && sk_c == K_LD && fge_c);
   end
 `endif
 endmodule

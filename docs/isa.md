@@ -1,5 +1,9 @@
-# ISA Spec — `msfcore` (Protocol Emulator Core) v2.0
+# ISA Spec — `msfcore` (Protocol Emulator Core) v2.1
 
+> v2.1 (2026-10-21, branch `rtl-changes`) adds a timeout register per thread,
+> the peripheral ports `PW`/`PR` with a FIFO between threads (§6.5) and the
+> debug view (§8). v2.0 programs run unchanged unless one thread relies on a
+> `TMO` the other thread set after `TSTART`.
 > v2.0 (2026-10-16) supersedes v1.0. All v1 encodings keep their meaning **except
 > `CALL`** (v1: `R7 ← PC+2`, no jump; v2: `CALL imm11` jumps). v1 history is in git.
 > This document is the contract for the RTL (`src/`), the assembler
@@ -9,14 +13,15 @@
 
 * 16-bit instructions, word addressed, 9-bit PC (0–511, wraps).
 * **Two hardware threads** T0 and T1 (§7). Each thread has its own PC, R0–R7
-  (16-bit), flags `Z`/`N` and blocking-op state. After reset only T0 runs.
+  (16-bit), flags `Z`/`N`, blocking-op state and `TMO`. After reset only T0 runs.
 * **Flags:** `ADDS`, `SUBS`, `INCR`, `DECR` set `Z` (result==0) and `N` (bit 15).
   Every **blocking op** (§5) sets `Z` = 1 if it ended by timeout, else 0, and
-  leaves `N` alone. Nothing else touches flags.
+  leaves `N` alone. `FIFO_PUT` and `FIFO_GET` set `Z` = 1 when the FIFO was
+  full / empty, else 0 (§6.5). Nothing else touches flags.
 * **Cycle counter `CNT`:** 16-bit, free running, reset to 0.
 * **Memory:** one 512×16 address space.
   * Fetch: words 0–127 come from the **boot ROM**, 128–511 from the SRAM.
-  * Data (`LD`/`ST`/`MEM_W`): always the SRAM, all 512 words. SRAM 0–127 is
+  * Data (`LD`/`ST`/`MEM_W`/FIFO): always the SRAM, all 512 words. SRAM 0–127 is
     therefore 128 words of data RAM that never collide with code; 128–511 is
     code (self-modifying writes are allowed but must be ≥ 2 instructions ahead
     of the write in single-thread mode, ≥ 1 slot in dual mode).
@@ -28,8 +33,9 @@
 * **Outputs are registered:** a pin write executed in cycle *t* appears on the
   pad from cycle *t+1*.
 * **Reset:** PC(T0)=0 (boot ROM), T1 stopped, all registers 0, flags 0, `OUT`=
-  `OE`=`UO`=0, `SR`=0, `SER_CFG`=out 7/in 7/MSB-first, `TMO`=0xFFFF,
-  `MEM_W` pointer = 128, peripherals disabled.
+  `OE`=`UO`=0, `SR`=0, `SER_CFG`=out 7/in 7/MSB-first, `TMO`=0xFFFF (both
+  threads), `MEM_W` pointer = 128, FIFO empty at SRAM 64–127, peripherals
+  disabled.
 
 ## 2. Encoding
 
@@ -96,7 +102,7 @@ Reserved bits must be 0 (the assembler enforces this).
 | 7 | `ST ra,rb` | SRAM[ra[8:0]] ← rb |
 | 8 | `SWAP ra,rb` | ra ← {rb[7:0], rb[15:8]} |
 | 9 | `JR rb` | PC ← rb[8:0] |
-| 10 | `TMO rb` | blocking-op timeout ← rb (0 = never time out). Reset 0xFFFF |
+| 10 | `TMO rb` | the executing thread's blocking-op timeout ← rb (0 = never time out). Reset 0xFFFF |
 | 11 | `STAT ra` | ra ← status (§6.4) |
 | 12 | `TX_CFG rb` | §6.1 |
 | 13 | `TX_DIV rb` | TX symbol period in cycles (0 treated as 1) |
@@ -116,7 +122,8 @@ Reserved bits must be 0 (the assembler enforces this).
 | 27 | `TSTART rb` | (re)start T1 at rb[8:0] with cleared T1 state (§7) |
 | 28 | `TSTOP` | stop T1 (§7) |
 | 29 | `TID ra` | ra ← executing thread id (0/1) |
-| 30,31 | — | NOP |
+| 30 | `PW #p,rb` | peripheral port *p* (0–7, in the ra field) ← rb (§6.5) |
+| 31 | `PR ra,#p` | ra ← peripheral port *p* (0–7, in the rb field) (§6.5) |
 
 ## 4. Shift register
 
@@ -132,15 +139,15 @@ register as `PIN_W`, so it appears on the pad next cycle).
 
 ## 5. Blocking ops and timing
 
-Blocking ops: `WAIT_EDGE`, `WAIT_CMP`, `LD`, `TX_PUSH`, `TX_WAIT`, `RX_POP`,
-`CRC_W`, `CRC_RDL`.
+Blocking ops: `WAIT_EDGE`, `WAIT_CMP`, `LD`, `FIFO_GET`, `TX_PUSH`, `TX_WAIT`,
+`RX_POP`, `CRC_W`, `CRC_RDL`.
 
-* `WAIT_*` and `LD` always stall. The others complete in their issue cycle if
+* `WAIT_*`, `LD` and `FIFO_GET` (a load, §6.5) always stall. The others complete in their issue cycle if
   their condition already holds; otherwise they stall.
 * While stalled, the condition is checked every cycle. The op **completes in
   its release cycle** (the stall cycle in which the condition holds, or the
   timeout expires); the next instruction executes in the thread's next slot.
-* Timeout: loaded from `TMO` at issue, decremented every stalled cycle, release
+* Timeout: loaded from the thread's `TMO` at issue, decremented every stalled cycle, release
   with `Z=1` when it reaches 0: a full timeout is exactly `TMO`+1 stalled
   cycles for a stall issued in single-thread mode; in dual mode (also if the
   other thread stops meanwhile) the release is in the thread's first own
@@ -155,14 +162,14 @@ Blocking ops: `WAIT_EDGE`, `WAIT_CMP`, `LD`, `TX_PUSH`, `TX_WAIT`, `RX_POP`,
   completion cycle.
 
 **Cycle costs (single-thread mode):** every instruction 1 cycle; taken branch,
-`JMP`, `CALL`, `RET`, `JR` 2 cycles; `LD` 2 cycles; `WAIT_CMP` with target
+`JMP`, `CALL`, `RET`, `JR` 2 cycles; `LD` and `FIFO_GET` 2 cycles; `WAIT_CMP` with target
 `T` ≥ issue-CNT+2: next instruction executes when `CNT == T+1`; blocking op that
 stalls *k* cycles costs 1+*k*.
 
 **Dual-thread mode:** slots alternate T0, T1. Every instruction costs one slot of
 its thread (branches have **no** penalty). A blocking op that stalls completes in
 a slot of its own thread (it cannot complete in the other thread's slot), so it
-costs ≥ 2 slots. `LD` costs exactly 2 slots. Conditions are still sampled every
+costs ≥ 2 slots. `LD` and `FIFO_GET` cost exactly 2 slots. Conditions are still sampled every
 cycle (an edge or `CNT` match in the other thread's slot is not lost).
 
 ## 6. Peripherals
@@ -216,12 +223,36 @@ POLY=0xA001, init 0xFFFF, send ~CRC. USB CRC5 → reflected, POLY=0x14, init 0x1
 
 ### 6.4 STAT
 bit0 tx_full · bit1 tx_busy · bit2 rx_avail · bit3 rx_overrun · bit4 crc_busy ·
-bit5 T1 running · bit6 executing thread id · others 0.
+bit5 T1 running · bit6 executing thread id · bit7 FIFO not empty · bit8 FIFO
+full · others 0.
+
+### 6.5 Peripheral ports and the FIFO
+`PW #p,rb` writes rb to port *p*, `PR ra,#p` reads port *p* into ra. Unused
+ports: a write does nothing, a read gives 0.
+
+| Port | `PW` (write) | `PR` (read) |
+|---|---|---|
+| 0 | `FIFO_PUT rb`: push rb | `FIFO_GET ra`: pop into ra |
+| 1 | `FIFO_CFG rb`: rb[8:0] base, rb[11:9] *n*: size 2^(*n*+1) words (2–256); empties the FIFO, clears drops | `FIFO_STAT ra`: ra ← drops[6:0] << 9 \| count[8:0] (no side effect) |
+
+The FIFO's words live in the SRAM, in the size-aligned block that contains
+`base` (base's low bits are ignored); the read and write positions are in
+hardware, so either thread can push and pop with one instruction and nothing
+to lock. Reset: base 64, 64 words (SRAM 64–127).
+
+* `FIFO_PUT rb`: 1 cycle (a store). If the FIFO is full the word is dropped,
+  drops counts it (modulo 128: a reader subtracts its last reading), and
+  `Z` = 1; otherwise `Z` = 0.
+* `FIFO_GET ra`: a load from the oldest word, so it costs what `LD` costs
+  (2 cycles, or 2 slots in dual mode). If the FIFO is empty, ra is unchanged
+  and `Z` = 1; otherwise `Z` = 0.
+* Each thread touches the SRAM only in its own cycles, so the FIFO never
+  makes one thread's timing depend on the other's.
 
 ## 7. Threads
 
 * `TSTART rb` (either thread): T1 gets PC=rb, R0–R7=0, flags 0, no pending op,
-  and runs. If T1 was running it is restarted.
+  the starting thread's `TMO`, and runs. If T1 was running it is restarted.
 * `TSTOP` (either thread): T1 stops at the end of the cycle.
 * Single mode (T1 stopped) has exactly the v1 timing. Dual mode: cycles
   alternate between the threads. Transition costs:
@@ -232,5 +263,30 @@ bit5 T1 running · bit6 executing thread id · others 0.
   * T1 executes `TSTOP` (*c*): single mode from *c*+1, T0 issues at *c*+1.
   * T0 executes `TSTOP` (*c*): single mode from *c*+1, one bubble, T0 issues
     at *c*+2.
-* Shared: memory, pins, SR, MEM_W pointer, TMO, peripherals, CNT. A thread's
+* Shared: memory, pins, SR, MEM_W pointer, FIFO, peripherals, CNT. A thread's
   peripheral transfers happen only in its own slots, so they never collide.
+  Each thread has its own `TMO`.
+
+## 8. Debug view
+
+Holding `ui_in[2]` high while `rst_n` is low puts the chip in debug mode
+until the next reset. `uo_out` then shows one byte of internal state chosen
+by `ui_in[7:2]` instead of `UO`; the firmware runs as usual (it still sees
+`ui_in` as inputs). The select acts without a clock edge, so a host that
+clocks the chip one cycle at a time (the demo board's RP2040 can) reads any
+view between steps: halt, single-step, breakpoints on a PC and register
+inspection need nothing more on the chip.
+
+| `ui_in[7:2]` | `uo_out` |
+|---|---|
+| 0x00–0x0F | T0 register R(sel[3:1]), low byte if sel[0]=0, high if 1 |
+| 0x10–0x1F | T1 register, same layout |
+| 0x20 | PC of the last instruction issued, bits 7:0 |
+| 0x21 | bit0 that PC's bit 8 · bit1 its thread · bit2 dual mode · bit3 T0 stalled · bit4 T1 stalled |
+| 0x22, 0x23 | that instruction's word, low / high byte |
+| 0x24 | bit0 Z(T0) · bit1 N(T0) · bit2 Z(T1) · bit3 N(T1) |
+| 0x25, 0x26 | `CNT` low / high byte |
+| 0x27, 0x28 | `SR` low / high byte |
+| 0x29, 0x2A, 0x2B | `OUT`, `OE`, `UO` |
+| 0x2C, 0x2D | FIFO count[7:0]; {drops[6:0], count[8]} |
+| others | 0 |

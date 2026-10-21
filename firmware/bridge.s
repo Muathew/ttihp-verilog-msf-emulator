@@ -1,10 +1,10 @@
 ; UART -> SPI bridge across the two threads (a serial-to-SPI adapter).
-; Thread 0 receives UART bytes (RX engine) and queues them (ring.inc);
+; Thread 0 receives UART bytes (RX engine) and pushes them into the FIFO;
 ; thread 1 takes them off the queue and runs SPI transfers as the
 ; controller: a byte n announces a transfer of n bytes (0 is ignored). CS
 ; goes low, each byte is shifted out on MOSI as soon as it arrives while
 ; MISO is shifted in, each byte read back is sent on the UART TX, and CS
-; goes high after the n-th byte. The queue is the only link between the
+; goes high after the n-th byte. The FIFO is the only link between the
 ; threads: neither waits for the other except for data.
 ;   pins : UART RX uio[1], TX uio[0]; SPI SCK uio[2], MOSI uio[3],
 ;          MISO uio[4] (input), CS uio[5] (active low)
@@ -27,26 +27,23 @@
 .equ MOSI,  0x08
 .equ CS,    0x20
 
-; ---- thread 0: UART bytes -> queue (0x100 | byte: a queue word is never 0)
+; ---- thread 0: UART bytes -> FIFO (with the stop bit in bit 8)
 start:  LDI      R1, BIT
         RX_DIV   R1
         LDI      R1, (RX_EN | RX_CHAR | RX_LSB | (9 - 1) << 8 | RXP)
         RX_CFG   R1                ; 8 data bits + the stop bit
         LDR      R1, #0
         TMO      R1                ; (no timeouts: both threads block on data)
-        CALL     ring_clear
+        LDI      R1, 64 | 5 << FIFO_N
+        FIFO_CFG R1                ; FIFO: SRAM 64..127, empty
         LDI      R1, spi
         TSTART   R1
-        LDR      R6, #RING         ; queue: next slot to write
 rx:     RX_POP   R1
-        LDR      R4, #0xFF
-        AND      R1, R1, R4
-        LDH      R1, #1
-        CALL     put
+        FIFO_PUT R1
         JMP      rx
 
-; ---- thread 1: queue -> SPI transfers, MISO bytes -> UART TX
-; R3 = bytes left in the transfer, R6 = queue slot, R0 = UART stop bit
+; ---- thread 1: FIFO -> SPI transfers, MISO bytes -> UART TX
+; R3 = bytes left in the transfer, R0 = UART stop bit
 spi:    LDR      R1, #(CS | CPOL << 2)
         PIN_W    R1                ; CS high, SCK at its idle level
         OE_SET   (SCK | MOSI | CS | 1 << TXP)
@@ -57,8 +54,7 @@ spi:    LDR      R1, #(CS | CPOL << 2)
         LDR      R1, #(3 | 4 << 3) ; SR out = MOSI, SR in = MISO, MSB first
         SER_CFG  R1
         LDI      R0, 0x200         ; UART stop bit
-        LDR      R6, #RING         ; queue: next slot to read
-len:    CALL     get
+len:    FIFO_GET R1
         JZ       len
         LDR      R4, #0xFF
         AND      R3, R1, R4        ; n
@@ -66,7 +62,7 @@ len:    CALL     get
         JZ       len
         AND      R3, R1, R4
         PIN_CLR  CS
-byte:   CALL     get
+byte:   FIFO_GET R1
         JZ       byte              ; (wait for the UART)
         SWAP     R1, R1            ; byte -> SR[15:8] (MSB first)
         SR_LD    R1
@@ -111,5 +107,3 @@ tx:     TX_PUSH  R5
         NOP
         PIN_SET  CS
         JMP      len
-
-.include "ring.inc"

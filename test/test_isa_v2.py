@@ -54,6 +54,69 @@ async def test_pin_mask_ops(dut):
 
 
 @cocotb.test()
+async def test_fifo_costs(dut):
+    """FIFO_PUT costs 1 cycle like ST, FIFO_GET 2 like LD (isa.md §6.5)."""
+    await run(dut, """
+        LDI  R1, 32 | 2 << 9      ; FIFO in SRAM 32..39, 8 words
+        FIFO_CFG R1
+        LDR  R2, #0x11
+        CNT_R R5
+        FIFO_PUT R2
+        CNT_R R6
+        FIFO_GET R3
+        CNT_R R4
+        SUBS R6, R6, R5
+        SUBS R4, R4, R5
+    """)
+    assert (reg(dut, 6), reg(dut, 4), reg(dut, 3)) == (2, 5, 0x11)
+    assert sram(dut, 32) == 0x11
+
+
+@cocotb.test()
+async def test_fifo_full_empty_drops(dut):
+    """Size-aligned block, Z on a full push and an empty pop, the drop count,
+    STAT bits 7 (not empty) and 8 (full), FIFO_STAT = drops << 9 | count
+    (reading it changes nothing; FIFO_CFG clears it)."""
+    await run(dut, """
+        LDI  R1, 37 | 2 << 9      ; 8 words: block 32..39 (37's low bits ignored)
+        FIFO_CFG R1
+        LDR  R3, #0x77
+        FIFO_GET R3               ; empty: Z = 1, R3 kept
+        LDR  R4, #0
+        JNZ  e1
+        LDR  R4, #1
+    e1: ST   R0, R4               ; [0] = empty-pop Z
+        LDR  R2, #0xA0
+        LDR  R6, #8
+    f:  FIFO_PUT R2
+        INCR R2
+        DECR R6
+        JNZ  f
+        STAT R5                   ; full and not empty
+        FIFO_PUT R2               ; 9th word: dropped, Z = 1
+        LDR  R4, #0
+        JNZ  e2
+        LDR  R4, #1
+    e2: FIFO_STAT R6              ; 1 drop, 8 words
+        FIFO_STAT R1              ; the same: reads have no side effect
+        LDR  R7, #8
+    p:  FIFO_GET R2
+        ST   R7, R2               ; [8..15] = the words in order
+        INCR R7
+        LDR  R2, #16
+        SUBS R2, R7, R2
+        JNZ  p
+        FIFO_PUT R7               ; ends up in slot 0 again: 32
+    """, cycles=200)
+    assert sram(dut, 0) == 1
+    assert reg(dut, 3) == 0x77
+    assert reg(dut, 5) & 0x180 == 0x180
+    assert (reg(dut, 4), reg(dut, 6), reg(dut, 1)) == (1, 1 << 9 | 8, 1 << 9 | 8)
+    assert [sram(dut, 8 + i) for i in range(8)] == list(range(0xA0, 0xA8))
+    assert sram(dut, 32) == 16
+
+
+@cocotb.test()
 async def test_out_w(dut):
     await run(dut, "LDR R1, #0x5A\nOUT_W R1")
     assert int(dut.uo_out.value) == 0x5A

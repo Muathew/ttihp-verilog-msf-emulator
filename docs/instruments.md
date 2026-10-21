@@ -69,17 +69,20 @@ transfer works; with `STRETCH=0` the test sees the late ACK.
 
 The chip listens without driving anything. **Thread 0** captures the bus;
 **thread 1** reports each event to the host as two UART bytes (a code,
-then data) at 1 Mbaud on `uio[0]` (`firmware/report.inc`). Between them is a
-queue in data RAM (`firmware/ring.inc`) where a slot holds 0 while it is
-free: the writer fills a free slot, the reader takes a word and writes the
-0 back, so each slot has one writer at a time and nothing needs locking. A
-full queue drops words and the reporter says how many (`'O'`).
+then data) at 1 Mbaud on `uio[0]` (`firmware/report.inc`). Between them is
+the hardware FIFO (`isa.md` §6.5): its words are in data RAM and its
+positions in hardware, so a push and a pop are one instruction each and
+nothing needs locking. A full FIFO drops words and counts them, and the
+reporter says how many (`'O'`).
 
 One rule shaped all three monitors: thread 0 must be waiting for the next
 edge before it comes, or a bit is lost. With two threads running, every
-instruction takes 2 cycles and a queue write about 22, so thread 0 queues
-as little as possible, never at the moment it matters most, and measures
-every phase from level waits (which cannot miss an edge).
+instruction takes 2 cycles, so thread 0 queues as little as possible,
+never at the moment it matters most, and measures every phase from level
+waits (which cannot miss an edge). The first versions kept the queue in
+data RAM in software (about 22 cycles a write); moving it to the hardware
+FIFO made a push 2 cycles, the monitors 40 to 70 words smaller, and the
+limits below wider (the earlier figures are in `history.md` §9).
 
 ### UART — `firmware/mon_uart.s` (`test_monitors.py`, 3 tests)
 
@@ -105,18 +108,20 @@ each with its length in cycles.
 * **Accuracy.** A high: ±1 cycle (16 for anything shorter). A low: −1 to
   +10 (the +10 when SCL fell between a look at the lines and the wait that
   follows it, on highs over 52 cycles); lows shorter than thread 0's own
-  turnaround read about 40..54, still reported.
+  turnaround read about 38..54, still reported.
 * **Never queue at an SCL fall.** A byte, and a timing word, are queued
-  after the *next* rise, once SDA is sampled; so the first bit of each byte
-  is not timed (its high, nor the low after it when that high is under ~56
-  cycles), and a short phase on a byte's 9th bit is flagged after the byte
-  (`'L'` / `'H'` with data 0) instead of measured.
+  after the *next* rise, once SDA is sampled; so the high of each byte's
+  first bit is not timed (the low after it is, whenever that high lasts at
+  least 36 cycles, which every legal high does), and a short phase on a
+  byte's 9th bit is flagged after the byte (`'L'` / `'H'` with data 0)
+  instead of measured.
 * **One timing event per byte.** After the first short phase thread 0
   decodes the rest of the byte untimed, which bounds both its own work and
   the report rate.
 * **Decode envelope.** With every bit out of spec it still decodes every
-  byte whenever the SCL lows are at least 34 cycles and the bits at least
-  72 (6 µs; the legal minimums are 56 and 104).
+  byte whenever the SCL lows are at least 16 cycles and the bits at least
+  72 (6 µs; the legal minimums are 56 and 104): checked on 196 low / high
+  pairs with lows of 16 to 76 cycles and bits of 72 to 84.
 
 Isolated faults (one short phase per byte, on every bit, at 100 kHz and at
 the legal minimum) are each reported with their length; `test_mon_i2c_*`
@@ -128,18 +133,18 @@ as fine.
 Events per transfer: `'>'` a byte on MOSI then `'<'` the byte on MISO; at
 CS high `'M'` if SCK was not at the mode's idle level when CS fell (the
 controller uses another mode) and `'E'` with the bits of a byte left over.
-Thread 0 keeps up with SCK periods of 28 cycles inside a byte and 60
-between bytes (430 / 200 kHz), with 16 cycles from CS low to the first
+Thread 0 keeps up with SCK periods of 28 cycles inside a byte and 36
+between bytes (430 / 330 kHz), with 16 cycles from CS low to the first
 sampling edge. Sustained traffic is bounded by the report link (two events,
 ~480 cycles a byte); bursts of up to 32 bytes are buffered.
 
 ## 3. UART to SPI bridge — `firmware/bridge.s` (`test_bridge.py`)
 
 A serial-to-SPI adapter on the two threads. Thread 0 receives UART bytes
-(RX engine) and queues them; thread 1 runs the SPI transfers they announce
+(RX engine) and pushes them into the FIFO; thread 1 runs the SPI transfers they announce
 (a length byte *n*, then *n* bytes: CS low, each byte shifted out as it
 arrives, the byte read back sent on the UART TX, CS high after the last).
-The queue is the only link: neither thread waits for the other except for
+The FIFO is the only link: neither thread waits for the other except for
 data. Tested in all four modes against a shift-register device model.
 
 ## 4. Timing-fault injection — `test_faults.py`
@@ -197,7 +202,8 @@ What we would take from PIO next time:
 * **Per-instruction delays** (`[n]`) instead of `NOP` chains and delay
   loops, which also cost code space.
 * **FIFOs between engines** instead of a queue in data RAM: the I2C monitor
-  spends about 22 cycles on each queue write, and its whole design works
-  around that.
+  spent about 22 cycles on each queue write, and its whole design works
+  around that. *Done on the `rtl-changes` branch:* a hardware FIFO (one
+  instruction to push or pop) now carries the monitors' events.
 * **More engines:** PIO has four state machines per block; with two
   threads, a monitor spends one just on reporting.
