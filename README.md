@@ -34,11 +34,13 @@ amounts, and record 8 pins as a logic analyser with a trigger
 ## Documentation
 
 * [Datasheet](docs/info.md) — pinout, boot protocol, how to test
-* [ISA v2.0](docs/isa.md) — encodings, timing model, peripherals, threads
-* [Instruments](docs/instruments.md) — device targets, bus monitors, UART-to-SPI bridge, timing-fault injection, comparison with the RP2040's PIO
+* [ISA v2.2](docs/isa.md) — encodings, timing model, peripherals, threads
+* [Instruments](docs/instruments.md) — device targets, bus monitors, UART-to-SPI bridge, timing-fault injection, logic analyser, JTAG and SWD probes, PS/2 keyboard, comparison with the RP2040's PIO
 * [Verification](docs/verification.md) — reference model, random differential testing, formal, FPGA, CI hardening runs, mutation score, claims and evidence
 * [GDS viewer](https://muathew.github.io/ttihp-verilog-msf-emulator/) — 3D view of the hardened layout
 * [FPGA port](docs/fpga.md) — AUP-ZU3 board mapping, block design, build, status
+* [How AI was used](docs/ai.md) — who did what, the independent checks every AI-written artefact meets, and where the AI was wrong
+* [Plan](docs/plan.md) — what is left before tape-out, with status
 * [FPGA PS software](fpga/ps/README.md) — Zynq loader and the C protocol tests
 * [Test suite](test/README.md) — running the cocotb tests
 * [History](docs/history.md) — decisions, plans and problems so far, as one log

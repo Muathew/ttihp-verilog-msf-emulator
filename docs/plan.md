@@ -31,7 +31,7 @@ so work could continue; Sam can overrule it.
 | 3.2 LATE flag | done, formal pending | *Default* (decision 3): per thread, STAT bit 14, port 7 read/clear, cleared by TSTART; late = 0-255 cycles behind; 2 cycles, Z=1. isa.md v2.2, RTL, model, assembler, random programs, directed tests, F10/F11, mutant B4 |
 | 3.3 unbounded proofs | not started | after 1.3 |
 | 3.4 netlist equals RTL | in progress | Yosys `equiv_*` flow against a local CMOS5L netlist (EQY's partitioner trips over fanout buffers); cells' logic from the liberty |
-| 3.5 AI write-up | not started | |
+| 3.5 AI write-up | draft | `docs/ai.md`: roles (Sam/Muath to confirm), the independent check for each kind of AI work, eight cases where the AI was wrong and what caught them |
 | 3.6 lower priority | not started | |
 | 4 JTAG, SWD, PS/2, CAN, 1-Wire | JTAG, SWD, PS/2 done | `jtag.s`: UART-driven IEEE 1149.1 master (reset, IR/DR scans 1-255 bits), tested against modelled TAPs, single and chained. `swd.s`: ADIv5 SWD host (line reset, JTAG-to-SWD, DP/AP transactions with parity and ACK handling), tested against a modelled SW-DP + MEM-AP (DPIDR, IDR, memory read/write, WAIT, no target). Both in `test_debugports.py`. `ps2_device.s`: keyboard emulation (answers host commands, reports them, inhibit and resend), `test_buses.py` against a modelled PS/2 host |
 | 4 next tier | not started | |

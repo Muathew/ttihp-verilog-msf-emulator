@@ -1,0 +1,68 @@
+# How AI was used, and what checks it
+
+The brief lists "AI-assisted verification" among the methods it wants to
+see. This page says how we used it on msfcore, which checks stand between
+AI-written work and the chip, and where the AI was wrong.
+
+> Draft (23 Oct 2026), written with the AI itself from the repository and
+> its working notes. Sam and Muath to confirm the attributions in §1.
+
+## 1. Who did what
+
+* **People** (Sam, Muath): the architecture (a CPU whose instructions hit
+  exact cycles, rather than a state machine or a RISC-V), the priorities,
+  every decision in `docs/plan.md` §6, the review of v1 that found B1–B9
+  (`history.md` §6), the FPGA block design and every run on the board.
+* **AI** (Claude, Anthropic's model, used as a coding agent in Claude
+  Code): most of the code since v2, under those decisions: RTL changes,
+  the assembler, the ISA model, firmware, tests, device models, the
+  formal properties, the tools in `tools/`, and the documentation. The
+  agent runs the simulators and tools itself, commits, and pushes to the
+  feature branches; nothing is merged to `main` without Sam.
+
+## 2. The rule: every AI artefact meets a check it did not write itself
+
+An AI can write code and its tests in the same breath, and both can share
+the same misunderstanding. So each kind of work is checked against
+something independent of it:
+
+| AI writes | Checked against |
+|---|---|
+| RTL | an ISA model written from `isa.md`, not from the RTL, compared on every issue of random programs (`verification.md` §2); formal properties with free memory and pins (§3) |
+| Formal properties | mutants: known bugs put back into the RTL must each give a counterexample (B1–B4), and every `cover()` must be reached, so a property that is vacuous or too weak shows |
+| Tests | mutation testing (`tools/mutation.py`): seeded RTL faults the tests must catch (§8) |
+| Firmware | device models written from the protocol standards (PS/2, IEEE 1149.1, ADIv5, I2C, SPI, USB, Ethernet), not from the firmware; and the static deadline check (§6b), itself cross-checked against the ISA model |
+| The deadline checker | the ISA model (every observed `WAIT_CMP` must fall in the computed range) and a program that must be rejected |
+| Physical design | LibreLane's DRC, LVS and antenna checks, Tiny Tapeout's precheck, the gate-level test, and reading the timing reports rather than the badge |
+| Claims in the docs | `verification.md` §9 maps each claim to the test that backs it, and lists what is not validated |
+
+The FPGA board is the one check outside software: the same C protocol
+tests passed on the AUP-ZU3 (§5), run by Muath.
+
+## 3. Where the AI was wrong, and what caught it
+
+Taken from the commit history; each is visible in `git log`.
+
+| What went wrong | Caught by |
+|---|---|
+| The chip had been hardened for SG13G2, the process of the Tiny Tapeout template the project started from, while the shuttle is CMOS5L; neither we nor the AI had checked it since | a human question ("what is left to win?") led the AI to re-read the competition page against the flow's settings (23 Oct) |
+| The slow corner was timed with the *typical* SRAM library: overlapping liberty patterns, and LibreLane loads every match. Every slow-corner sign-off before 23 Oct, including "50 MHz with 3.09 ns to spare", was optimistic | comparing the SRAM clock-to-output in the timing report (3.9 ns) with the slow library (6.7 ns), then reading LibreLane's source |
+| The four-thread design was pushed as "green" while the slow corner missed timing by 3.35 ns: the GDS badge does not fail on timing, and the step's notes said the result was pending | an audit of the hardening metrics (23 Oct); a CI check on the slack is planned |
+| The formal harness counted a tool error as a caught mutant, so "B1–B3 caught" could have been errors | moving to SymbiYosys: the covers reported 0 of 9 reached, which was impossible; verdicts are now pass, fail or error |
+| A new property (F10) was too strong: it failed for a thread stopped while waiting | the BMC counterexample; the property now holds only while the thread runs, and mutant B4 is still caught |
+| The deadline checker counted the wait twice after a `WAIT_CMP`, and lost every bound | its own report (−inf..inf where a hand count gave 85..96) and the model cross-check |
+| The JTAG probe returned wrong bits for a partial last byte when the data had more bits set; its test passed by luck | writing the SWD probe with the same code against a stricter model; the JTAG test now sends data that exposes it |
+| The I2C monitor needed three designs before it caught every fault on a legal bus | an instruction-level tracer against the pad edges, and sweeps of legal and faulty buses (`history.md` §8) |
+
+## 4. What we take from it
+
+* The checks matter more than the code. Most of the errors above were in
+  work that looked finished and had passing tests; they were caught by a
+  check written from a different source (a standard, the spec, the
+  liberty file, the competition page).
+* A green badge is not evidence. Every claim names its test, and the
+  numbers come from reports, not summaries.
+* The AI is fast at the parts that are mechanical once decided (a firmware
+  probe, a device model, a proof harness) and at reading tools' source
+  when a result looks wrong. It is no substitute for deciding what to
+  build, or for the board.
