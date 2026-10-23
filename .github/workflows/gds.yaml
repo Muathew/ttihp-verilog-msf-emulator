@@ -37,6 +37,23 @@ jobs:
       - name: GL test
         uses: TinyTapeout/tt-gds-action/gl_test@ihp-cmos5l
 
+  # The GDS job stays green with timing violations: this one does not.
+  signoff:
+    needs: gds
+    runs-on: ubuntu-24.04
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v6
+
+      - name: Download the submission
+        uses: actions/download-artifact@v8
+        with:
+          name: tt_submission
+          path: tt_submission
+
+      - name: Timing, DRC, antenna and LVS sign-off
+        run: python3 tools/check_signoff.py tt_submission
+
   viewer:
     needs: gds
     runs-on: ubuntu-24.04

@@ -18,7 +18,7 @@ so work could continue; Sam can overrule it.
 | Item | Status | Notes |
 |---|---|---|
 | 1.1 CMOS5L port | done locally, CI pending | workflows, GL sources, PDN: `Project.ExtendPowerStripes` (`librelane_plugin_msf_pdn.py`, `odb_sram_stripes.py`) moves the Metal4 stripes onto the SRAM supply columns; macros MX along the bottom; density 45. Local LibreLane run (same image as CI): routed with 0 DRC errors. Found and fixed on the way: the slow corner was timed with the *typical* SRAM library (overlapping lib patterns) |
-| 1.2 slow-corner timing | in progress | with the real slow SRAM library (6.7 ns clock-to-out) the path is ~29 ns at the slow corner. Resizer now sees all corners; a run with timing-driven placement and the post-route resizer is being measured; *Default* (decision 2): sign off at the fastest period that closes at the slow corner |
+| 1.2 slow-corner timing | in progress (CI `signoff` job added) | with the real slow SRAM library (6.7 ns clock-to-out) the path is ~29 ns at the slow corner. Resizer now sees all corners; a run with timing-driven placement and the post-route resizer is being measured; *Default* (decision 2): sign off at the fastest period that closes at the slow corner |
 | 1.3 formal CI | in progress | SymbiYosys + ABC (`--engine abc`): depth-16 BMC passes both targets in ~10 min where YoWASP ran out of memory; CI installs OSS CAD Suite. Fixed: SBY errors had counted as caught mutants |
 | 1.4 tape-out branch | waiting for Sam | |
 | 2.1 record board pass | done (Vivado figures to come) | `fpga.md`, `verification.md` §5/§9 |
@@ -34,7 +34,7 @@ so work could continue; Sam can overrule it.
 | 3.5 AI write-up | draft | `docs/ai.md`: roles (Sam/Muath to confirm), the independent check for each kind of AI work, eight cases where the AI was wrong and what caught them |
 | 3.6 lower priority | not started | |
 | 4 JTAG, SWD, PS/2, CAN, 1-Wire | JTAG, SWD, PS/2 done | `jtag.s`: UART-driven IEEE 1149.1 master (reset, IR/DR scans 1-255 bits), tested against modelled TAPs, single and chained. `swd.s`: ADIv5 SWD host (line reset, JTAG-to-SWD, DP/AP transactions with parity and ACK handling), tested against a modelled SW-DP + MEM-AP (DPIDR, IDR, memory read/write, WAIT, no target). Both in `test_debugports.py`. `ps2_device.s`: keyboard emulation (answers host commands, reports them, inhibit and resend), `test_buses.py` against a modelled PS/2 host |
-| 4 next tier | not started | |
+| 4 next tier | partly there; one not feasible | Device emulation: `i2c_target.s` already plays a 128-byte I2C EEPROM and `spi_target.s` a 64-register SPI device; a 25xx SPI flash (JEDEC ID, READ with a 3-byte address, WREN, PP, RDSR) is still to do. 10BASE-T receive is not feasible at the clocks we sign off: the Manchester receiver needs about 4x oversampling of the 10 MHz half-bits, ~80 MHz (`history.md` §6) |
 | 5 write-up | not started | |
 
 ## 0. Where we are on 23 Oct
