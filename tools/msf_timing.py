@@ -229,6 +229,7 @@ class Analysis:
     def __init__(self, words, base, nthreads, srcmap):
         self.mem = {base + i: w for i, w in enumerate(words)}
         self.live = liveness(self.mem)
+        self.returns = {(pc + 1) & M10 for pc, w in self.mem.items() if w >> 11 == CALL}
         self.base = base
         self.n = nthreads
         self.src = srcmap
@@ -351,8 +352,12 @@ class Analysis:
         elif op == RET:
             t = const(R[7])
             if t is None:
-                self.problem(pc, "RET to an address the analysis cannot follow")
-                return []
+                # R7 unknown (states from several call sites joined): return
+                # to every call site, which over-approximates the real one
+                R[7] = U
+                regs = tuple(R)
+                return [(State(r, regs, z, nf, tmo), *self.jump_cost(), None)
+                        for r in sorted(self.returns)]
             nxt, cost = t & M10, self.jump_cost()
         elif op == WAIT_EDGE:
             cost = self.blocking(tmo, False)
@@ -558,7 +563,8 @@ def report(path, a):
     for pc, msg in a.problems:
         if "not derived from CNT" in msg:
             continue
-        print(f"  {pc:#05x}  {a.src.get(pc, ''):28s} note: {msg}")
+        print(f"  {pc:#05x}  {a.src.get(pc, ''):28s} {msg}")
+        bad = True                     # a path the analysis could not follow
     return bad
 
 

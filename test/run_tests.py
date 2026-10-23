@@ -50,6 +50,7 @@ ALL_MODULES = [
     "test_debug",
     "test_capture",
     "test_debugports",
+    "test_buses",
 ]
 
 

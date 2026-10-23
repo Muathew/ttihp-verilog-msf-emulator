@@ -163,6 +163,7 @@ that runs alone) and the tool also says whether each release is jitter-free.
 | `usb_ls_tx.s` | 1 | 10 | 9 cycles |
 | `ws2812.s` | 1 | 636 | 635 cycles |
 | `thread_demo.s` | 2 | 492..496, release exact | 491 cycles |
+| `ps2_device.s` (10 deadlines) | 2 | 208..472 | 207 cycles |
 | `eth_10baset_tx.s` (link-pulse gap) | 1 | 63988..63995 | 63987 cycles |
 
 Checks on the checker, in CI (`test` workflow): `--check-model` runs each

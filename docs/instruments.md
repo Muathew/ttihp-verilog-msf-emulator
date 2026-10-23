@@ -242,7 +242,31 @@ writes one; gets WAIT and succeeds on the retry; and reads ACK 7 with
 nothing on the wire. A real target for the board is the TI microcontroller
 we already have.
 
-## 7. Compared with the RP2040's PIO
+## 7. Other buses
+
+### PS/2 keyboard — `firmware/ps2_device.s` (`test_buses.py`, 3 tests)
+
+The chip plays a keyboard: bytes from the UART go to the PS/2 host as
+scancodes, the host's commands get a keyboard's answers (`FF` → `FA AA`,
+`EE` → `EE`, `F2` → `FA AB 83`, `ED`/`F3` and their argument → `FA`,
+others `FA`, bad parity `FE`), and every byte the host sends is reported on
+the UART, so the probe also shows what a host asks of a keyboard. CLK
+`uio[2]` and DATA `uio[3]` are open drain (the chip only pulls low). The
+device makes the clock in both directions on `WAIT_CMP` deadlines: low and
+high exactly 2Q each (Q = 240 cycles: 12.5 kHz at 12 MHz). The host comes
+first: a frame it interrupts by holding CLK low before the 11th clock is
+sent again whole. Thread 1 only moves UART bytes into the send queue (the
+FIFO), so scancodes typed faster than PS/2 can send them are not lost.
+
+Tested against a PS/2 host modelled from the protocol: frames decoded on
+falling edges with start, odd parity and stop checked, every clock phase in
+a frame within the standard's 30–50 µs, DATA changing only while CLK is
+high; commands sent with inhibit and request-to-send, each ACKed in the
+11th clock; a frame interrupted after 4 bits arrives whole afterwards.
+`tools/msf_timing.py` certifies its 10 deadlines (two threads, worst slack
+207 cycles).
+
+## 8. Compared with the RP2040's PIO
 
 The RP2040 is on the Tiny Tapeout demo board, and its PIO blocks are the
 best-known programmable I/O. Three examples from the Raspberry Pi
