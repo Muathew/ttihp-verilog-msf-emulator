@@ -220,6 +220,28 @@ with two leading zeros, which is how a host counts a chain. The models also
 check that TDI and TMS change only while TCK is low and settle at least two
 cycles before it rises.
 
+### SWD probe — `firmware/swd.s` (`test_debugports.py`, 3 tests)
+
+An ARM ADIv5 Serial Wire Debug host, also driven over the UART: `L` sends
+a line reset, the JTAG-to-SWD sequence `0xE79E`, another line reset and
+idle cycles; `T h [data]` runs one transaction on the DP or an AP. The
+probe builds the 8-bit request (start, APnDP, RnW, A[3:2], parity, stop,
+park) from the 4-bit header, releases SWDIO for the turnaround, reads the
+ACK, and then reads 32 bits and their parity or writes 32 bits with the
+parity it computes; after WAIT, FAULT or no answer (ACK 7: the pull-up)
+there is no data phase, as the specification requires. SWCLK is `uio[2]`;
+SWDIO `uio[3]` is both the shift register's output and input, driven only
+while the host owns it. The edges follow CMSIS-DAP: the host changes SWDIO
+while SWCLK is high and reads it while low.
+
+Tested against an ADIv5 SW-DP with a MEM-AP modelled from the
+specification (which also flags any cycle where both sides drive SWDIO): it
+reads DPIDR; selects AP bank 0xF and reads the IDR through RDBUFF (AP reads
+are posted); writes CSW and TAR, reads a word of the target's memory and
+writes one; gets WAIT and succeeds on the retry; and reads ACK 7 with
+nothing on the wire. A real target for the board is the TI microcontroller
+we already have.
+
 ## 7. Compared with the RP2040's PIO
 
 The RP2040 is on the Tiny Tapeout demo board, and its PIO blocks are the

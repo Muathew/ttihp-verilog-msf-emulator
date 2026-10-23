@@ -25,7 +25,7 @@ so work could continue; Sam can overrule it.
 | 2.2 stale metadata | done | `info.yaml`, `info.md` |
 | 2.3 wider board tests | not started | |
 | 2.4 `fpga/rtl` sync | done | `tools/check_fpga_sync.py` in the `test` workflow; the repo copies were already identical (CRLF only in this checkout) |
-| 2.5 mutation re-run | not started | after the last RTL change |
+| 2.5 mutation re-run | running | on the v2.2 RTL (LATE flag) |
 | 2.6 GL simulation | not started | optional |
 | 3.1 timing checker | done | `tools/msf_timing.py`: every firmware deadline certified (worst slack 9 cycles, `usb_ls_tx.s`), cross-checked against the model, rejects a too-fast UART; in the `test` workflow |
 | 3.2 LATE flag | done, formal pending | *Default* (decision 3): per thread, STAT bit 14, port 7 read/clear, cleared by TSTART; late = 0-255 cycles behind; 2 cycles, Z=1. isa.md v2.2, RTL, model, assembler, random programs, directed tests, F10/F11, mutant B4 |
@@ -33,7 +33,7 @@ so work could continue; Sam can overrule it.
 | 3.4 netlist equals RTL | in progress | Yosys `equiv_*` flow against a local CMOS5L netlist (EQY's partitioner trips over fanout buffers); cells' logic from the liberty |
 | 3.5 AI write-up | not started | |
 | 3.6 lower priority | not started | |
-| 4 JTAG, SWD, PS/2, CAN, 1-Wire | JTAG done | `jtag.s`: UART-driven IEEE 1149.1 master (reset, IR/DR scans 1-255 bits); `test_debugports.py` against modelled TAPs, single and chained (IDCODE, BYPASS, chain count, pin discipline) |
+| 4 JTAG, SWD, PS/2, CAN, 1-Wire | JTAG, SWD done | `jtag.s`: UART-driven IEEE 1149.1 master (reset, IR/DR scans 1-255 bits), tested against modelled TAPs, single and chained. `swd.s`: ADIv5 SWD host (line reset, JTAG-to-SWD, DP/AP transactions with parity and ACK handling), tested against a modelled SW-DP + MEM-AP (DPIDR, IDR, memory read/write, WAIT, no target). Both in `test_debugports.py` |
 | 4 next tier | not started | |
 | 5 write-up | not started | |
 
