@@ -1,10 +1,10 @@
-# Plan: branch `fixes` (23 Oct 2026 to 18 Jan 2027)
+# Plan: branch `fixes`
 
 Branch `fixes` starts at `c68bd0c`, the head of `rtl-changes` and the build
 that passed on the AUP-ZU3 board on 23 Oct. It covers what has to be fixed
 before msfcore can be taped out, the evidence still to record, the ideas
-worth taking from the 23 Oct look at the other entries, the firmware the
-brief names that we still lack, and a schedule to the 18 Jan 2027 deadline.
+worth taking from the 23 Oct look at the other entries, and the firmware
+the brief names that we still lack.
 
 Order of work: blockers (§1) first, because none of the rest counts if the
 design can't go on the shuttle. Then evidence (§2), then new work (§3–§4),
@@ -357,23 +357,7 @@ and "novel approaches to design and verification".
 * `info.md` (the Tiny Tapeout datasheet) matching the final pinout, clock
   and memory map.
 
-## 6. Schedule
-
-Twelve weeks to 18 Jan 2027. Dates are suggestions.
-
-| Weeks | Dates | Work |
-|---|---|---|
-| 1 | 23 Oct – 2 Nov | §1.1 CMOS5L port, §1.3 formal CI, §2.1–§2.2 records |
-| 2 | 3 – 9 Nov | §1.2 timing on CMOS5L, §1.4 decision, §2.4 sync check |
-| 3–5 | 10 – 30 Nov | §3.2 LATE flag, §3.1 timing checker, §4 JTAG, SWD, CAN, PS/2, 1-Wire |
-| 6–7 | 1 – 14 Dec | §3.3 unbounded proofs, §3.4 netlist equivalence, §2.3 board tests with real parts, §2.5 mutation. **RTL freeze 14 Dec** |
-| 8–10 | 15 Dec – 4 Jan | device emulation, 10BASE-T receive, §3.5 AI write-up, final GDS on the frozen RTL |
-| 11–12 | 5 – 18 Jan | write-up, video, submission (aim for 11 Jan, a week early) |
-
-Every RTL change (§3.2, any RTL timing fix, an optional CAN mode) lands
-before the freeze.
-
-## 7. Decisions needed
+## 6. Decisions needed
 
 1. The tape-out branch, and whether `fixes` may be merged into `main`
    (§1.4).
