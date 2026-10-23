@@ -73,6 +73,8 @@ checking the part.
 | Wrapper: ownership, reset, status, step mode | `sh fpga/tests/run_aup_zu3_io_test.sh` | pass |
 | PS apps compile (Vitis stubs, classic and SDT drivers) | `sh fpga/tests/run_ps_loader_compile_test.sh` | pass |
 | PS C protocol tests against the RTL | `python fpga/tests/run_ps_hil.py` | 14/14 |
+| **PS C protocol tests on the AUP-ZU3 board** | the `hil` app on the PS | **14/14 (23 Oct 2026)** |
+| **Loader on the board** | `loader/blink.s` | **LED0 blinks** |
 
 First Vivado run (19 Oct, Vivado 2024.1): `msf_bd.tcl` created the block
 design, it validated, and its HDL wrapper generated. Out-of-context
@@ -81,9 +83,20 @@ synthesis of the processor system reset then crashed inside Vivado
 error. Things to try: one thread (`set_param general.maxThreads 1`), a
 fresh project at a short ASCII-only path, `-jobs 1`.
 
-Not yet done (needs Vivado, Vitis and the board): synthesis and timing,
-Vitis build against the real drivers, and every on-board check. Confirm
-first that each step request gives exactly one core edge.
+On the board (23 Oct, after `c68bd0c` made the reset button active high):
+all 14 C protocol tests passed, as in simulation: `crc_check_values`,
+`boot_parallel_go`, `boot_bad_crc_then_retry`, `restart_direct_boot`,
+`uart_tx_drift_free`, `spi_all_modes_full_duplex`, `i2c_write_ack`,
+`i2c_address_nack`, `i2c_write_then_read_repeated_start`,
+`i2c_constrained_random_with_stretching`, `usb_ls_tx_packet`,
+`usb_ls_rx_packet`, `eth_10baset_frame_fcs_tpidl_nlp`,
+`threads_blink_and_echo`; and the loader's 1 Hz blink drove LED0. The
+board's core is the four-thread v2.1 RTL: `fpga/rtl` matches `src/` except
+the SRAM wrapper and the boot ROM (`tools/check_fpga_sync.py`, run in CI).
+
+The PS steps the core one clock at a time, so this checks logic and
+protocol behaviour on real hardware, not timing at speed. Still to record:
+the commit that was built, and Vivado's timing and utilisation.
 
 ## Open items
 

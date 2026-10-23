@@ -3,7 +3,7 @@ project:
   title:        "Protocol Emulator"      # Project title
   author:       "Sam"      # Your name
   discord:      ""      # Your discord username, for communication and automatically assigning you a Tapeout role (optional)
-  description:  "Reprogrammable protocol-emulator CPU: 2 deterministic hardware threads, line-code SERDES and CRC unit; UART/SPI/I2C/USB-LS/10BASE-T, device emulation and bus monitors in firmware"      # One line description of what your project does
+  description:  "Reprogrammable protocol-emulator CPU: 4 deterministic hardware threads, line-code SERDES, CRC unit, logic-analyser capture; UART/SPI/I2C/USB-LS/10BASE-T, device emulation and bus monitors in firmware"      # One line description of what your project does
   language:     "Verilog" # other examples include SystemVerilog, Amaranth, VHDL, etc
   clock_hz:     12000000  # 12 MHz (USB low speed = 8 cycles/bit); run at 20 MHz for 10BASE-T
 
@@ -36,13 +36,13 @@ project:
 pinout:
   # Inputs (all firmware-readable via IN_RD / WAIT_EDGE ..., ui)
   ui[0]: "BOOT_DIRECT (1 = run SRAM firmware at reset)"
-  ui[1]: "BOOT_PARALLEL (loader byte source: 0 UART, 1 parallel)"
-  ui[2]: "IN2 / parallel boot data bit 2 / debug view (high at reset)"
-  ui[3]: "IN3 / parallel boot data bit 3"
-  ui[4]: "IN4 / parallel boot data bit 4"
-  ui[5]: "IN5 / parallel boot data bit 5"
-  ui[6]: "IN6 / parallel boot data bit 6"
-  ui[7]: "IN7 / parallel boot data bit 7"
+  ui[1]: "BOOT_PARALLEL (loader byte source: 0 UART, 1 parallel) / debug page"
+  ui[2]: "IN2 / parallel boot data bit 2 / debug view (high at reset), debug select"
+  ui[3]: "IN3 / parallel boot data bit 3 / debug select"
+  ui[4]: "IN4 / parallel boot data bit 4 / debug select"
+  ui[5]: "IN5 / parallel boot data bit 5 / debug select"
+  ui[6]: "IN6 / parallel boot data bit 6 / debug select"
+  ui[7]: "IN7 / parallel boot data bit 7 / debug select"
 
   # Outputs (UO register: OUT_W / UO_SET / UO_CLR / UO_TGL / UO_WI)
   uo[0]: "STATUS0 (boot: waiting for frame)"

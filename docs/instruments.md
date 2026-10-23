@@ -197,7 +197,30 @@ spec: both modes, every *div* tried, level and edge triggers, the ring
 with pre-trigger history, `ui` as the source, and the firmware's UART
 dump decoded back into the samples driven.
 
-## 6. Compared with the RP2040's PIO
+## 6. Debug ports
+
+### JTAG probe — `firmware/jtag.s` (`test_debugports.py`, 3 tests)
+
+An IEEE 1149.1 master a host drives over the UART (115200 at 12 MHz): `R`
+resets the TAP into Run-Test/Idle, and `I n data…` / `D n data…` run IR and
+DR scans of 1–255 bits, starting and ending in Run-Test/Idle; the bits read
+from TDO come back LSB first, a byte at a time. Pins: TCK `uio[2]`, TDI
+`uio[3]`, TDO `uio[4]`, TMS `uio[5]` (the SPI header), UART on `uio[0]`/`uio[1]`.
+The shift register does the data: one `XFER` per bit drives TDI and samples
+TDO while TCK is low, LSB first, and TMS rises with the last bit. TCK is
+high 4 cycles and low at least 13 (about 700 kHz at 12 MHz; `HALF` slows it).
+
+The tests run it against TAP controllers modelled from the standard's
+16-state diagram (4-bit IR capturing `0001`, IDCODE after reset, BYPASS):
+a reset and a 32-bit DR scan read the IDCODE; an IR scan returns the
+capture value and loads BYPASS, after which data comes back one bit late
+(also for a 13-bit scan ending in a partial byte); with two devices a
+64-bit scan reads both IDCODEs and a scan of ones after BYPASS comes back
+with two leading zeros, which is how a host counts a chain. The models also
+check that TDI and TMS change only while TCK is low and settle at least two
+cycles before it rises.
+
+## 7. Compared with the RP2040's PIO
 
 The RP2040 is on the Tiny Tapeout demo board, and its PIO blocks are the
 best-known programmable I/O. Three examples from the Raspberry Pi

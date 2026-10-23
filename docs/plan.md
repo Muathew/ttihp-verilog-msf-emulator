@@ -10,6 +10,33 @@ Order of work: blockers (§1) first, because none of the rest counts if the
 design can't go on the shuttle. Then evidence (§2), then new work (§3–§4),
 then the write-up (§5).
 
+## Status
+
+Updated as work lands. *Default* marks a §6 decision taken provisionally
+so work could continue; Sam can overrule it.
+
+| Item | Status | Notes |
+|---|---|---|
+| 1.1 CMOS5L port | done locally, CI pending | workflows, GL sources, PDN: `Project.ExtendPowerStripes` (`librelane_plugin_msf_pdn.py`, `odb_sram_stripes.py`) moves the Metal4 stripes onto the SRAM supply columns; macros MX along the bottom; density 45. Local LibreLane run (same image as CI): routed with 0 DRC errors. Found and fixed on the way: the slow corner was timed with the *typical* SRAM library (overlapping lib patterns) |
+| 1.2 slow-corner timing | in progress | with the real slow SRAM library (6.7 ns clock-to-out) the path is ~29 ns at the slow corner. Resizer now sees all corners; a run with timing-driven placement and the post-route resizer is being measured; *Default* (decision 2): sign off at the fastest period that closes at the slow corner |
+| 1.3 formal CI | in progress | SymbiYosys + ABC (`--engine abc`): depth-16 BMC passes both targets in ~10 min where YoWASP ran out of memory; CI installs OSS CAD Suite. Fixed: SBY errors had counted as caught mutants |
+| 1.4 tape-out branch | waiting for Sam | |
+| 2.1 record board pass | done (Vivado figures to come) | `fpga.md`, `verification.md` §5/§9 |
+| 2.2 stale metadata | done | `info.yaml`, `info.md` |
+| 2.3 wider board tests | not started | |
+| 2.4 `fpga/rtl` sync | done | `tools/check_fpga_sync.py` in the `test` workflow; the repo copies were already identical (CRLF only in this checkout) |
+| 2.5 mutation re-run | not started | after the last RTL change |
+| 2.6 GL simulation | not started | optional |
+| 3.1 timing checker | done | `tools/msf_timing.py`: every firmware deadline certified (worst slack 9 cycles, `usb_ls_tx.s`), cross-checked against the model, rejects a too-fast UART; in the `test` workflow |
+| 3.2 LATE flag | done, formal pending | *Default* (decision 3): per thread, STAT bit 14, port 7 read/clear, cleared by TSTART; late = 0-255 cycles behind; 2 cycles, Z=1. isa.md v2.2, RTL, model, assembler, random programs, directed tests, F10/F11, mutant B4 |
+| 3.3 unbounded proofs | not started | after 1.3 |
+| 3.4 netlist equals RTL | in progress | Yosys `equiv_*` flow against a local CMOS5L netlist (EQY's partitioner trips over fanout buffers); cells' logic from the liberty |
+| 3.5 AI write-up | not started | |
+| 3.6 lower priority | not started | |
+| 4 JTAG, SWD, PS/2, CAN, 1-Wire | JTAG done | `jtag.s`: UART-driven IEEE 1149.1 master (reset, IR/DR scans 1-255 bits); `test_debugports.py` against modelled TAPs, single and chained (IDCODE, BYPASS, chain count, pin discipline) |
+| 4 next tier | not started | |
+| 5 write-up | not started | |
+
 ## 0. Where we are on 23 Oct
 
 | Area | State |
@@ -320,7 +347,7 @@ board; a real part on the board; a section in `instruments.md`.
 | Firmware | Scope | Hardware used | Model | Real part |
 |---|---|---|---|---|
 | `jtag_master.s` | TAP reset, IR and DR scans of any length, read IDCODE, count devices on a chain via BYPASS | pins, `WAIT_CMP` | TAP model with IDCODE, BYPASS and a boundary register | any JTAG device |
-| `swd_master.s` | line reset and JTAG-to-SWD switch, read DPIDR, debug power-up, MEM-AP read and write, parity, WAIT and FAULT ACKs, turnaround | pins, TX/RX engines | SWD DP/AP model | an STM32 board |
+| `swd_master.s` | line reset and JTAG-to-SWD switch, read DPIDR, debug power-up, MEM-AP read and write, parity, WAIT and FAULT ACKs, turnaround | pins, TX/RX engines | SWD DP/AP model | the TI microcontroller we already have (SWD) |
 | `ps2.s` | device: send scancodes, answer host commands (FF → FA AA, ED LEDs), host inhibit; host: read a keyboard. Parity computed on chip | open drain, `WAIT_EDGE` | PS/2 host and device models | PS/2 keyboard |
 | `can.s` | CAN 2.0A TX and RX: arbitration (read back while sending), CRC-15 (CRC unit, `POLY` 0x4599 left-aligned), stuffing, ACK slot, error-frame detection | CRC unit | CAN node model, two-node arbitration | two transceivers (SN65HVD230) and a second node |
 | `onewire.s` | reset and presence, ROM read and search, CRC-8 (reflected 0x8C), DS18B20 temperature read; target mode emulating a DS18B20 | open drain, `WAIT_EDGE` with timeout | 1-Wire device model | DS18B20 |
@@ -364,7 +391,7 @@ and "novel approaches to design and verification".
 2. The fallback clock if 50 MHz doesn't close: 48 or 40 MHz (§1.2).
 3. LATE flag semantics: per thread or global, and how it clears (§3.2).
 4. Real parts to buy for the board: DS18B20, PS/2 keyboard, two CAN
-   transceivers and a second CAN node, an SPI flash, an I2C EEPROM, an
-   STM32 board for SWD (§2.3, §4).
+   transceivers and a second CAN node, an SPI flash, an I2C EEPROM
+   (§2.3, §4). SWD needs nothing new: we have a TI microcontroller with SWD.
 5. The RTL freeze date (§1.4).
 6. `test/dbg_i2c.py`: keep or delete (§2.2).

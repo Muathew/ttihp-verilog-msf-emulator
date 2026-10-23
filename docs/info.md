@@ -34,8 +34,9 @@ generic building blocks that firmware composes into protocols.
 ### Timing model (what makes bit-banging exact)
 
 * Single-thread mode: every instruction takes 1 cycle; a taken branch, `JMP`,
-  `CALL`, `RET`, `JR` take 2; `LD` takes 2. Dual-thread mode: every
-  instruction takes one slot of its thread (2 cycles), branches included.
+  `CALL`, `RET`, `JR` take 2; `LD` takes 2. Multi-thread mode: every
+  instruction takes one slot of its thread (*n* cycles with *n* threads
+  running), branches included.
 * A pin write executed in cycle *t* is on the pad from *t+1*; a pad change in
   cycle *t* is visible to instructions from *t+2*.
 * `WAIT_CMP R` releases exactly when the 16-bit cycle counter equals `R`, so a
@@ -80,8 +81,9 @@ any clock.
 ### Debug view
 
 Hold `ui_in[2]` high during reset and `uo_out` shows, instead of the
-firmware's outputs, the byte of internal state selected by `ui_in[7:2]`:
-either thread's registers, the PC and word of the last instruction issued,
+firmware's outputs, the byte of internal state selected by `ui_in[7:2]` on
+the page selected by `ui_in[1]`: any thread's registers, the PC and word of
+the last instruction issued,
 flags, stall state, `CNT`, `SR`, the pin registers and the FIFO (full table
 in `docs/isa.md` §8). The select works without a clock edge, so with the
 demo board's RP2040 clocking the chip one cycle at a time you can halt,

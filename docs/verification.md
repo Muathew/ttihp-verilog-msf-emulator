@@ -61,8 +61,13 @@ the first random program fail at its first branch.
 
 ## 3. Formal properties — `formal/run_formal.py`
 
-Properties are in the RTL under `ifdef FORMAL` and checked with Yosys' SAT
-engine (bounded model checking from reset, depth 16). The instruction memory
+Properties are in the RTL under `ifdef FORMAL` and checked by bounded model
+checking from reset, depth 16, with SymbiYosys and ABC's `bmc3` (native
+Yosys from OSS CAD Suite in CI; about 10 minutes for both targets). Until
+the four threads, Yosys' own `sat` engine under YoWASP did this; the
+four-thread design needs more memory than 32-bit WASM has, and `--engine
+sat` remains for smaller runs. A run only counts as passed, failed or caught
+on SymbiYosys's own verdict: a tool error is reported as an error. The instruction memory
 read data, data-RAM read data, pins and peripheral status are **free
 inputs**, so the proofs hold for every program and environment.
 
@@ -77,6 +82,8 @@ inputs**, so the proofs hold for every program and environment.
 | F7 | the fetched word comes from the bank (ROM/SRAM) of the address it was fetched with |
 | F8 | the FIFO never holds more words than its size; its positions move only by a push that fits, a pop that finds a word, or `FIFO_CFG` |
 | F9 | the capture engine never writes SRAM port B in a cycle the core uses it |
+| F10 | a `WAIT_CMP` whose target had passed at issue (an independent ghost of isa.md §5's test) releases in the thread's first own stall slot with Z=1, and no running thread stays stalled on one for more than 3 cycles |
+| F11 | a thread's LATE flag rises only at such a release in that thread, and falls only by `LATE_CLR` naming it or a `TSTART` of it |
 
 Every `cover()` point (WAIT edge/CMP/timeout release, LD release in T1, dual
 issue, TSTOP, all four threads running and issuing, a push to a full FIFO,
@@ -91,6 +98,7 @@ and each must make the proof fail:
 | B1 pc not advanced on stall release | F1/F2 |
 | B2 WAIT_EDGE/WAIT_CMP release conditions mixed | F3 |
 | B3 combinational ROM/SRAM bank select | F7 (needs depth >= 14 to reach the boot ROM's `JMP 128`) |
+| B4 a late `WAIT_CMP` waits for `CNT` to wrap (the v2.1 behaviour) | F10 |
 
 ## 4. Directed and protocol-level tests
 
@@ -121,7 +129,8 @@ lock-step idea as the FPGA harness below.
 The same `test_firmware.py` checks run on the FPGA build: the Zynq PS steps
 the core one clock at a time and C ports of the protocol models act as the
 other end of each bus. In simulation the C runs against the RTL through the
-same EMIO interface (`python fpga/tests/run_ps_hil.py`, 14/14). Details in
+same EMIO interface (`python fpga/tests/run_ps_hil.py`, 14/14), and on the
+AUP-ZU3 board itself the same 14 tests passed (23 Oct 2026). Details in
 [`docs/fpga.md`](fpga.md) and [`fpga/ps/README.md`](../fpga/ps/README.md).
 
 ## 6. Pre-hardening check — `tools/synth_check.py`
@@ -132,6 +141,35 @@ register-to-register logic depth. Current result: 6 893 cells (823 flip-flops),
 93 336 um² + the 88 482 um² SRAM macro = 24 % of the 24-tile area before
 routing; 69 gate levels (+ 6.4 ns SRAM clk->q at the slow corner), hence
 `CLOCK_PERIOD` = 40 ns. Sign-off remains the LibreLane GDS action in CI.
+
+## 6b. Firmware deadlines — `tools/msf_timing.py`
+
+A pin edge scheduled with `WAIT_CMP` is exact only if the program reaches
+the `WAIT_CMP` before its target. Every instruction's cost is fixed by
+`isa.md` §5 and §7, so this is decided before the program runs: the tool
+assembles a program and explores its control flow with abstract registers
+(constants; "now + d" with d an interval, for values read from `CNT`;
+unknown). Counted loops unroll exactly because their counters stay
+constant; registers that are dead at a program point are dropped, and a
+point that collects too many states joins and widens them, so the search
+ends. At each `WAIT_CMP` it reports the range of d (target minus `CNT`) at
+issue over every path; d >= 1 everywhere means the deadline is never missed.
+With *n* threads every instruction costs *n* cycles (conservative for code
+that runs alone) and the tool also says whether each release is jitter-free.
+
+| Firmware | Threads | d at issue | Worst slack |
+|---|---|---|---|
+| `uart_tx.s` (115200 at 12 MHz) | 1 | 85..96 | 84 cycles |
+| `usb_ls_tx.s` | 1 | 10 | 9 cycles |
+| `ws2812.s` | 1 | 636 | 635 cycles |
+| `thread_demo.s` | 2 | 492..496, release exact | 491 cycles |
+| `eth_10baset_tx.s` (link-pulse gap) | 1 | 63988..63995 | 63987 cycles |
+
+Checks on the checker, in CI (`test` workflow): `--check-model` runs each
+program on the ISA model and every `WAIT_CMP` issue observed must lie inside
+the range the analysis computed (the programs that use the SERDES engines,
+which the model does not simulate, are skipped); and `uart_tx.s` assembled
+with 9 cycles a bit must be rejected (its byte-to-byte path is too long).
 
 ## 7. Hardening runs in CI — `tools/gds_metrics.py`
 
@@ -210,7 +248,9 @@ on all 16 pins in turn with the other seven high) was added and kills it:
 | The RTL implements `isa.md` | an independent Python model, RTL and model compared on every issue of 80 random programs per run (§2); every instruction checked by hand-derived tests (§4) |
 | No skipped, repeated or spurious instructions, for any program | formal properties F1-F7 with free memory and pins, all `cover()` points reached; the v1 bugs reinjected are caught (§3) |
 | Bit timing is exact and drift free | `test_core` cycle costs; `test_firmware` and `test_faults` measure edges at the pins (UART bits exactly `BIT` cycles for a whole message) |
-| UART, SPI, I2C, USB LS, 10BASE-T TX run as firmware | `test_firmware` against independent decoders and device models; the same checks in C on the FPGA build (§5) |
+| No firmware deadline is ever missed, on any path | `tools/msf_timing.py` (§6b): every `WAIT_CMP` in the firmware issues at least 9 cycles before its target; cross-checked against the ISA model; rejects a too-fast UART |
+| A missed deadline is never silent | `WAIT_CMP` with a passed target releases at once with Z=1 and sets LATE (isa.md §5): `test_wait_cmp_late_boundaries` (0 and 255 cycles behind are late, 256 behind and 1 ahead are not), `test_late_flags_per_thread`; formal F10, F11 and mutant B4 (§3); random programs with late targets, RTL == model (§2) |
+| UART, SPI, I2C, USB LS, 10BASE-T TX run as firmware | `test_firmware` against independent decoders and device models; the same checks in C on the AUP-ZU3 board, 14/14 (§5) |
 | The chip can be an SPI device at up to 750 kHz with no dummy byte, and an I2C device at 100 kHz (400 kHz with stretching) | `test_targets`: data in all modes, latencies 4 / 5 / 8 / 13 cycles as derived, a 16-cycle SCK works and 14 fails, 400 kHz needs `STRETCH` |
 | A bus monitor never reports a timing fault on a legal I2C bus, and reports the real faults with their lengths | `test_monitors`: random legal buses raise no event; single faults at every data bit, at 100 kHz and the legal minimum, reported once each within the stated accuracy |
 | The I2C monitor keeps decoding a master that is out of spec on every bit (lows ≥ 16 cycles, bits ≥ 72) | `test_mon_i2c_fast_master` at the corners of that envelope; a sweep of 196 points inside it |
@@ -223,13 +263,14 @@ on all 16 pins in turn with the other seven high) was added and kills it:
 | The chip records 8 pins as a logic analyser without changing any thread's timing | `test_capture`: every word checked against the spec's rules; the same loop takes the same cycles recording or not; formal F9 |
 | A host can halt, single-step and read the core's state through the pins | `test_debug.test_debug_single_step`: hand-driven clock, PC trace and register read between edges |
 | Timing faults can be injected by exact amounts | `test_faults`: each knob measured at the pins; a one-cycle step in the UART bit time moves a receiver from pass to fail exactly where its geometry predicts |
-| v2 fits the 6x4 tiles and meets timing at 25 MHz in all corners, and at 50 MHz | the GDS runs above: 23 % utilisation, no setup or hold violations, clean DRC, precheck passed; the 20 ns run on `rtl-changes`: 3.09 ns to spare (§7) |
+| v2.0 fits the 6x4 tiles and meets timing at 25 MHz in all corners, and at 50 MHz, on SG13G2 | the GDS runs above: 23 % utilisation, no setup or hold violations, clean DRC, precheck passed; the 20 ns run on `rtl-changes`: 3.09 ns to spare (§7). The shuttle is CMOS5L, and the four-thread v2.1 build missed 50 MHz at the slow corner: both are being fixed (`docs/plan.md` §1.1-§1.2) |
 | The tests catch a broken design, not only pass a working one | 39 of 40 sampled single-bit mutants killed on v2.0, 38 of 40 on v2.1; every survivor cannot change behaviour (§8) |
 
 What is **not** validated yet:
 
-* Nothing has run on silicon or on the FPGA board: the C tests (§5) have
-  run against the RTL in simulation only.
+* Nothing has run on silicon. On the FPGA board the PS steps the core one
+  clock at a time, so the board run checks logic and protocols, not timing
+  at speed.
 * The other end of every bus is a model written by us from the protocol
   specs, not a real device: no USB host, Ethernet link partner, EEPROM or
   logic analyser has been connected.
