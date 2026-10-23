@@ -9,6 +9,17 @@ jobs:
         with:
           submodules: recursive
 
+      # fpga/rtl must stay a copy of src (except the board's SRAM and boot ROM)
+      - name: FPGA RTL matches src
+        run: python3 tools/check_fpga_sync.py
+
+      # Static deadline check: no WAIT_CMP in the firmware is ever late (and the
+      # analysis agrees with the ISA model); a UART at 9 cycles a bit must fail.
+      - name: Firmware deadlines
+        run: |
+          python3 tools/msf_timing.py --all --check-model 20000
+          ! python3 tools/msf_timing.py firmware/uart_tx.s -D BIT=9 -D STOP=9
+
       - name: Install iverilog
         shell: bash
         run: sudo apt-get update && sudo apt-get install -y iverilog
