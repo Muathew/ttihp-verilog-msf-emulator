@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Behavioural model of RM_IHPSG13_2P_512x16_c2_bm_bist for gate-level sim.
 // Mirrors the IHP SRAM_2P_behavioral_bm_bist core (ihp-sg13g2/libs.ref/
-// sg13g2_sram/verilog): per port, a write happens when MEN&WEN, a read when
+// sg13g2_sram/verilog; CMOS5L's sg13cmos5l_sram links to it): per port, a
+// write happens when MEN&WEN, a read when
 // MEN&REN, reads are registered (data valid the cycle after the edge) and
 // DOUT HOLDS its value when the port is not reading. Bit masks honoured,
 // BIST ports ignored, A_DLY/B_DLY must be tied high (as in the real macro).

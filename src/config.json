@@ -8,13 +8,22 @@
   "//": "Here are some of the variables you may want to change:",
   "//": "PL_TARGET_DENSITY_PCT - You can increase this if Global Placement fails with error GPL-0302.",
   "//": "Users have reported that values up to 160 worked well for them.",
-  "PL_TARGET_DENSITY_PCT": 60,
+  "//": "msfcore on CMOS5L: Metal3 is the only horizontal signal layer, so at 60",
+  "//": "the logic clumped and global routing overflowed (2,790); at 45 it spreads",
+  "//": "over the free area (overflow 38, detailed routing clean).",
+  "PL_TARGET_DENSITY_PCT": 45,
   "//": "CLOCK_PERIOD - Increase this in case you are getting setup time violations.",
   "//": "The value is in nanoseconds, so 20ns == 50MHz.",
-  "//": "msfcore: 20 ns (50 MHz). At 40 ns the slow corner had 23 ns of setup",
-  "//": "slack (worst path ~17 ns: SRAM clk->q ~6.4 ns plus decode/ALU), so 50 MHz",
-  "//": "is signed off; the demo board can clock the design up to 66.5 MHz.",
+  "//": "msfcore: 20 ns (50 MHz) is the target, not yet signed off on CMOS5L: the",
+  "//": "slow corner's worst path is SRAM read (6.7 ns clock-to-out with the slow",
+  "//": "SRAM library) -> decode -> ALU -> register file (docs/plan.md section 1.2).",
   "CLOCK_PERIOD": 20,
+  "//": "Timing repair: the resizer must see the slow corner (unset, it optimises",
+  "//": "only for the typical corner and the slow corner is never repaired).",
+  "RSZ_CORNERS": ["nom_slow_1p08V_125C", "nom_typ_1p20V_25C", "nom_fast_1p32V_m40C"],
+  "//": "Unset, LibreLane 3.1.0.dev3 passes '-threads None' and OpenROAD runs on",
+  "//": "one thread; 4 is a GitHub runner's core count.",
+  "OPENROAD_THREADS": 4,
   "//": "Hold slack margin - Increase them in case you are getting hold violations.",
   "PL_RESIZER_HOLD_SLACK_MARGIN": 0.1,
   "GRT_RESIZER_HOLD_SLACK_MARGIN": 0.05,
@@ -25,26 +34,37 @@
   "//": "https://tinytapeout.com/faq/#how-can-i-map-an-additional-external-clock-to-one-of-the-gpios",
   "CLOCK_PORT": "clk",
   "//": "SRAM macro integration: two instances, one per 512-word bank, side by",
-  "//": "side on the left (each 219.8 x 402.6 um rotated). sram1 sits exactly 7",
-  "//": "stripe pitches (7 x 38.87 um) right of sram0, so the stripes over it line",
-  "//": "up with the power grid as sram0's do; at x = 300 a short VGND segment",
-  "//": "over it failed the precheck pin check (power port not near the edges).",
+  "//": "side along the bottom (each 402.6 x 219.8 um), MX so their Metal2 pins",
+  "//": "face up into the logic. The 43 tile pins are at the top left. On CMOS5L",
+  "//": "the stripes are Metal4, the layer of the macros' supply columns, which",
+  "//": "only stay vertical in R0 or MX. Project.ExtendPowerStripes (see",
+  "//": "librelane_plugin_msf_pdn.py) moves the stripes crossing each macro onto",
+  "//": "its columns, so the macros need not line up with the stripe pitch.",
+  "meta": {
+    "flow": "Classic",
+    "substituting_steps": {
+      "+OpenROAD.GeneratePDN": "Project.ExtendPowerStripes"
+    }
+  },
+  "//": "Macro liberty per corner: LibreLane loads every pattern that matches a",
+  "//": "corner, so the patterns must not overlap (until 23 Oct 2026 \"nom_*\" and",
+  "//": "\"*\" gave the slow corner the typical SRAM timing).",
   "MACROS": {
     "RM_IHPSG13_2P_512x16_c2_bm_bist": {
       "instances": {
         "u_sram.sram0": {
           "location": [
             42,
-            160
+            37.8
           ],
-          "orientation": "R90"
+          "orientation": "MX"
         },
         "u_sram.sram1": {
           "location": [
-            314.09,
-            160
+            490,
+            37.8
           ],
-          "orientation": "R90"
+          "orientation": "MX"
         }
       },
       "gds": [
@@ -54,16 +74,13 @@
         "dir::../macro/RM_IHPSG13_2P_512x16_c2_bm_bist/RM_IHPSG13_2P_512x16_c2_bm_bist.lef"
       ],
       "lib": {
-        "nom_*": [
-          "dir::../macro/RM_IHPSG13_2P_512x16_c2_bm_bist/RM_IHPSG13_2P_512x16_c2_bm_bist_typ_1p20V_25C.lib"
-        ],
-        "min_*": [
-          "dir::../macro/RM_IHPSG13_2P_512x16_c2_bm_bist/RM_IHPSG13_2P_512x16_c2_bm_bist_fast_1p32V_m55C.lib"
-        ],
-        "max_*": [
+        "*_slow_*": [
           "dir::../macro/RM_IHPSG13_2P_512x16_c2_bm_bist/RM_IHPSG13_2P_512x16_c2_bm_bist_slow_1p08V_125C.lib"
         ],
-        "*": [
+        "*_fast_*": [
+          "dir::../macro/RM_IHPSG13_2P_512x16_c2_bm_bist/RM_IHPSG13_2P_512x16_c2_bm_bist_fast_1p32V_m55C.lib"
+        ],
+        "*_typ_*": [
           "dir::../macro/RM_IHPSG13_2P_512x16_c2_bm_bist/RM_IHPSG13_2P_512x16_c2_bm_bist_typ_1p20V_25C.lib"
         ]
       },
@@ -110,7 +127,12 @@
   "GRT_ALLOW_CONGESTION": 1,
   "FP_IO_HLENGTH": 2,
   "FP_IO_VLENGTH": 2,
-  "FP_PDN_VPITCH": 38.87,
+  "FP_PDN_VPITCH": 50.0,
+  "FP_PDN_VWIDTH": 2.1,
+  "//": "The SRAM supply columns are connected after GeneratePDN (see above), so",
+  "//": "GeneratePDN's own check would see unpowered macros; odb_sram_stripes.py",
+  "//": "checks the rewritten grid itself, and LVS checks the connections.",
+  "ERROR_ON_PDN_VIOLATIONS": 0,
   "//": "Clock",
   "RUN_CTS": 1,
   "//": "Don't generate power rings",
