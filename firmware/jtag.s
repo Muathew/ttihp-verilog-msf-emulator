@@ -111,6 +111,8 @@ d2:     DECR     R6
         JNZ      bit
         SR_RD    R1                ; the k bits read are SR[15:16-k]
         SWAP     R1, R1            ; ... now bits 7:8-k
+        LDR      R2, #0xFF
+        AND      R1, R1, R2        ; drop SR[7:0] before shifting down
         LDR      R2, #8
         SUBS     R2, R2, R5
         JZ       aligned
@@ -118,8 +120,7 @@ al:     SHR      R1, R1, #1
         DECR     R2
         JNZ      al
 aligned:
-        LDR      R2, #0xFF
-        AND      R5, R1, R2
+        MOV      R5, R1
         CALL     tx_byte
         ADDS     R2, R3, R3
         JNZ      byte
