@@ -11,15 +11,16 @@ jobs:
       - name: checkout repo
         uses: actions/checkout@v6
 
-      - name: Setup python
-        uses: actions/setup-python@v6
+      # Native Yosys, SymbiYosys and ABC. Since the four threads the top-level
+      # BMC is too big for YoWASP (32-bit WASM) Yosys, which ran out of memory.
+      - name: Install OSS CAD Suite
+        uses: YosysHQ/setup-oss-cad-suite@v4
         with:
-          python-version: '3.11'
+          version: '2026-10-01'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Yosys (YoWASP)
-        run: pip install yowasp-yosys
-
-      # BMC of properties F1-F7 (all inputs free), cover reachability, and the
-      # mutation check (re-introduced review bugs B1-B3 must be caught).
-      - name: Formal (yosys sat)
-        run: python formal/run_formal.py --yosys yowasp-yosys --depth 16
+      # BMC of the properties (all inputs free) with ABC bmc3, cover
+      # reachability, and the mutation check (re-introduced bugs B1-B4 must
+      # each give a counterexample; a tool error never counts as caught).
+      - name: Formal (SymbiYosys + ABC)
+        run: python3 formal/run_formal.py --engine abc --depth 16

@@ -373,3 +373,82 @@ async def test_reserved_ext_is_nop(dut):
     await ClockCycles(dut.clk, 40)
     assert (reg(dut, 1), reg(dut, 2)) == (9, 8)
     assert int(dut.uio_out.value) == 0 and int(dut.uio_oe.value) == 0 and int(dut.uo_out.value) == 0
+
+
+# ---- v2.2: late WAIT_CMP targets and the LATE flags (isa.md §5, §6.4, §6.5) ----
+
+async def wait_cmp_at(dut, delta, tmo=50):
+    """Issue WAIT_CMP with its target `delta` cycles after its issue cycle
+    (negative: before). Returns (cost in cycles, Z, STAT bit 14, LATE_RD)."""
+    op, d = ("ADDS", delta + 4) if delta + 4 >= 0 else ("SUBS", -(delta + 4))
+    await run(dut, f"""
+        LDI      R7, {tmo}
+        TMO      R7
+        CNT_R    R0             ; x
+        LDI      R2, {d}        ; x+1, x+2
+        {op}     R1, R0, R2     ; x+3: target = issue + delta
+        WAIT_CMP R1             ; issue at x+4
+        CNT_R    R3             ; x+4+cost
+        LDR      R4, #0
+        JNZ      nz
+        LDR      R4, #1
+    nz: STAT     R5
+        LATE_RD  R6
+    """, cycles=200)
+    cost = (reg(dut, 3) - reg(dut, 0) - 4) & 0xFFFF
+    return cost, reg(dut, 4), (reg(dut, 5) >> 14) & 1, reg(dut, 6)
+
+
+@cocotb.test()
+async def test_wait_cmp_late_boundaries(dut):
+    """A target 0-255 cycles at or before CNT releases at once (2 cycles) with
+    Z=1 and LATE; 256 behind waits (here until TMO), 1 and 2 ahead are on time."""
+    # (delta, cost, Z, LATE): cost 2 = issue + one stall cycle
+    cases = [(0, 2, 1, 1), (-1, 2, 1, 1), (-255, 2, 1, 1),
+             (-256, 1 + 51, 1, 0),        # not late: full timeout, TMO+1 stalled cycles
+             (1, 2, 0, 0), (2, 3, 0, 0), (40, 41, 0, 0)]
+    for delta, cost, z, late in cases:
+        got = await wait_cmp_at(dut, delta)
+        assert got == (cost, z, late, late), f"delta {delta}: (cost, Z, STAT14, LATE_RD) = {got}"
+
+
+@cocotb.test()
+async def test_late_flags_per_thread(dut):
+    """LATE is per thread: T1's late WAIT_CMP sets bit 1 only; LATE_CLR clears
+    the bits named; TSTART clears the restarted thread's flag."""
+    await run(dut, """
+        LDI      R1, late1
+        TSTART   R1
+        LDR      R7, #30
+    w1: DECR     R7
+        JNZ      w1
+        STAT     R2             ; T0's own LATE: 0
+        LATE_RD  R3             ; T1 late: 0b0010
+        LDR      R4, #2
+        LATE_CLR R4
+        LATE_RD  R5             ; 0
+        LDI      R1, late1
+        TSTART   R1             ; T1 late again
+        LDR      R7, #30
+    w2: DECR     R7
+        JNZ      w2
+        LATE_RD  R6             ; 0b0010
+        LDI      R1, spin1
+        TSTART   R1             ; restart clears it
+        LATE_RD  R0             ; 0
+        JMP      halt
+    late1:
+        CNT_R    R1
+        WAIT_CMP R1             ; target already passed: late
+        STAT     R2             ; T1's own view: bit 14, kept in data RAM 100
+        LDR      R3, #100
+        ST       R3, R2
+    spin1:
+        JMP      spin1
+    """, cycles=400)
+    assert (reg(dut, 2) >> 14) & 1 == 0
+    assert reg(dut, 3) == 0b0010, f"LATE_RD after T1 late: {reg(dut, 3):#06b}"
+    assert reg(dut, 5) == 0
+    assert reg(dut, 6) == 0b0010
+    assert reg(dut, 0) == 0
+    assert (sram(dut, 100) >> 14) & 1 == 1

@@ -15,7 +15,7 @@
 ; never underruns. Transmit only: receiving 10BASE-T needs >= 4x
 ; oversampling (80 MHz); no CSMA/CD, collision detect or auto-negotiation.
 .include "msf.inc"
-.equ NLP_CHUNK,  64000        ; 3.2 ms at 20 MHz (WAIT_CMP spans < 65536)
+.equ NLP_CHUNK,  64000        ; 3.2 ms at 20 MHz (a WAIT_CMP target must be < 65280 ahead)
 .equ NLP_CHUNKS, 5            ; 5 x 3.2 ms = 16 ms between link pulses
 
 start:

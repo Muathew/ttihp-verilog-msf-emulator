@@ -93,7 +93,7 @@ module tt_um_msf_ctrl (
                    X_TSTOP = 5'd28, X_TID = 5'd29, X_PW = 5'd30, X_PR = 5'd31;
 
   // peripheral ports (PW #p, rb / PR ra, #p)
-  localparam [2:0] P_FIFO = 3'd0, P_FCFG = 3'd1;
+  localparam [2:0] P_FIFO = 3'd0, P_FCFG = 3'd1, P_LATE = 3'd7;
 
   localparam [2:0] K_EDGE = 3'd0, K_CMP = 3'd1, K_LD = 3'd2, K_TXPUSH = 3'd3,
                    K_TXWAIT = 3'd4, K_RXPOP = 3'd5, K_CRCW = 3'd6, K_CRCRD = 3'd7;
@@ -142,10 +142,13 @@ module tt_um_msf_ctrl (
   reg  [3:0]  ldq;            // LD issued by this thread last cycle
   reg  [63:0] tmo;            // blocking-op timeout reload (0 = none)
   reg  [3:0]  fge;            // the pending LD is a FIFO pop of an empty FIFO
+  reg  [3:0]  wlate;          // the pending WAIT_CMP's target had passed at issue
+  reg  [3:0]  late;           // sticky LATE flags (STAT bit 14, port 7)
 
   wire        st_c   = st[cur];
   wire [15:0] tmo_c  = tmo[16*cur +: 16];
   wire        fge_c  = fge[cur];
+  wire        wlate_c = wlate[cur];
   wire [2:0]  sk_c   = sk[3*cur +: 3];
   wire [2:0]  srd_c  = srd[3*cur +: 3];
   wire [15:0] sop_c  = sop[16*cur +: 16];
@@ -308,6 +311,11 @@ module tt_um_msf_ctrl (
   end
 
   wire ent_pin = imm8[3] ? ui_in[imm8[2:0]] : uio_in[imm8[2:0]];
+  // WAIT_CMP whose target is 0-255 cycles at or before CNT: the deadline has
+  // passed, so release in the first stall slot (Z=1, LATE) instead of waiting
+  // for CNT to wrap. Latched at entry, so the subtract ends at a flop.
+  wire [15:0] cmp_behind = cnt - qa;
+  wire        ent_late   = (op == OP_WCMP) && (cmp_behind[15:8] == 8'd0);
 
   // per-thread release conditions, evaluated every cycle
   wire [3:0] cond_now;       // condition true this cycle (incl. sticky event)
@@ -346,14 +354,14 @@ module tt_um_msf_ctrl (
     end
   endgenerate
 
-  wire rel    = st_c && (cond_now[cur] || tmo_now[cur]);   // release this cycle
+  wire rel    = st_c && (cond_now[cur] || tmo_now[cur] || wlate_c);  // release this cycle
   wire rel_ok = cond_now[cur];                             // released by its condition
   wire [15:0] ld_data = ldq[cur] ? b_rd : ldh_c;
 
   // ------------------------------------------------------------------
   // Register write-back (always for the thread that owns the cycle)
   // ------------------------------------------------------------------
-  wire [15:0] stat = {2'd0, cur[1], run[3], run[2], cap_stat[13], cap_stat[15], ffull,
+  wire [15:0] stat = {1'b0, late[cur], cur[1], run[3], run[2], cap_stat[13], cap_stat[15], ffull,
                       !fempty, cur[0], run[1], crc_busy, rx_overrun, rx_avail, tx_busy,
                       tx_full};
 
@@ -382,6 +390,7 @@ module tt_um_msf_ctrl (
             wbx_en = !x_get;
             case (f_b)
               P_FCFG:  wbx_d = {fdrop, fcount};
+              P_LATE:  wbx_d = {12'd0, late};
               3'd2:    wbx_d = cap_stat;
               3'd3:    wbx_d = {6'd0, cap_tpos};
               default: wbx_d = 16'd0;
@@ -470,7 +479,7 @@ module tt_um_msf_ctrl (
       zf <= 4'b0; nf <= 4'b0;
       st <= 4'b0; sk <= 12'd0; srd <= 12'd0; sop <= 64'd0; wsel <= 16'd0;
       wcond <= 12'd0; wprev <= 4'b0; whit <= 4'b0; sto <= 64'd0; sto_en <= 4'b0;
-      ldh <= 64'd0; ldq <= 4'b0; fge <= 4'b0;
+      ldh <= 64'd0; ldq <= 4'b0; fge <= 4'b0; wlate <= 4'b0; late <= 4'b0;
     end else begin
       // flags of the owning thread
       if (exec && flag_op) begin
@@ -504,11 +513,17 @@ module tt_um_msf_ctrl (
           sto[16*i +: 16]     <= tmo_c;
           sto_en[i]           <= (tmo_c != 16'd0);
           fge[i]              <= x_get && fempty;
+          wlate[i]            <= ent_late;
         end
       end
 
+      // LATE: set by a late WAIT_CMP's release, cleared by PW #7 (one bit per thread)
+      if (exec && x_pw && f_a == P_LATE) late <= late & ~qb[3:0];
+      if (rel && wlate_c) late[cur] <= 1'b1;
+
       if (do_tstart) begin               // a fresh thread (wins over the above)
         zf[tt] <= 1'b0; nf[tt] <= 1'b0; st[tt] <= 1'b0; whit[tt] <= 1'b0; ldq[tt] <= 1'b0;
+        late[tt] <= 1'b0;
       end
     end
   end
@@ -710,7 +725,7 @@ module tt_um_msf_ctrl (
 
   // ---- ghost: per-thread blocking-op witnesses (independent re-statement
   //      of isa.md section 5, not shared with the design's own logic) ----
-  wire [3:0]  f_seen_w, f_evt_w, f_single_w;
+  wire [3:0]  f_seen_w, f_evt_w, f_single_w, f_late_w;
   wire [67:0] f_cnt_w;       // 17 bits per thread
   wire [63:0] f_tmo_w;
   generate
@@ -718,6 +733,7 @@ module tt_um_msf_ctrl (
       reg [15:0] tgt, tm;
       reg [16:0] n;
       reg        seen, prev, single;   // single: issued in single-thread mode
+      reg        glate;                // WAIT_CMP target at or up to 255 before CNT
       reg [2:0]  kind, cond;
       reg [3:0]  sel;
       wire p = sel[3] ? ui_in[sel[2:0]] : uio_in[sel[2:0]];
@@ -735,6 +751,9 @@ module tt_um_msf_ctrl (
       always @(posedge clk) begin
         if (cur == t && enter) begin
           kind <= kind_i; tgt <= qa; tm <= tmo_c; n <= 17'd0; seen <= 1'b0; single <= !multi;
+          glate <= (kind_i == K_CMP) &&
+                   ((cnt >= qa) ? ({1'b0, cnt} - {1'b0, qa} <= 17'd255)
+                                : ({1'b0, cnt} + 17'h10000 - {1'b0, qa} <= 17'd255));
           sel <= imm8[3:0]; cond <= imm8[6:4]; prev <= ent_pin;
         end else if (st[t]) begin
           n <= n + 17'd1;
@@ -744,6 +763,7 @@ module tt_um_msf_ctrl (
       end
       assign f_seen_w[t]        = seen;
       assign f_single_w[t]      = single;
+      assign f_late_w[t]        = glate;
       assign f_evt_w[t]         = ev;
       assign f_cnt_w[17*t +: 17] = n;
       assign f_tmo_w[16*t +: 16] = tm;
@@ -751,6 +771,7 @@ module tt_um_msf_ctrl (
   endgenerate
   wire [16:0] f_cnt_c = f_cnt_w[17*cur +: 17];
   wire [15:0] f_tmo_c = f_tmo_w[16*cur +: 16];
+  wire        f_late_c = f_late_w[cur];
 
   always @(*) begin
     if (!f_init) begin
@@ -763,7 +784,21 @@ module tt_um_msf_ctrl (
       //    event, or by timeout after exactly TMO+1 stalled cycles
       if (rel && (sk_c == K_EDGE || sk_c == K_CMP) && rel_ok)
         assert(f_seen_w[cur] || f_evt_w[cur]);
-      if (rel && !rel_ok) begin
+      // F10 a WAIT_CMP whose target had passed at issue releases in the
+      //     thread's first own stall slot with Z=1 (never after waiting)
+      if (rel && f_late_c) begin
+        assert(!rel_ok && sk_c == K_CMP);
+        if (f_single_w[cur]) assert(f_cnt_c == 17'd0);
+        else assert(f_cnt_c <= 17'd3);
+      end
+      // ... and no running thread stays stalled on a late target (no wait for
+      // the wrap). A thread stopped by TSTOP gets no slots; only TSTART runs
+      // it again, and that clears the stall.
+      if (st[0] && run[0] && f_late_w[0]) assert(f_cnt_w[16:0]  <= 17'd3);
+      if (st[1] && run[1] && f_late_w[1]) assert(f_cnt_w[33:17] <= 17'd3);
+      if (st[2] && run[2] && f_late_w[2]) assert(f_cnt_w[50:34] <= 17'd3);
+      if (st[3] && run[3] && f_late_w[3]) assert(f_cnt_w[67:51] <= 17'd3);
+      if (rel && !rel_ok && !f_late_c) begin
         assert(f_tmo_c != 16'd0);
         // f_cnt = stalled cycles before this one; release in stall cycle TMO+1
         // exactly when the whole stall is in single-thread mode (a single-mode
@@ -784,6 +819,21 @@ module tt_um_msf_ctrl (
       if (exec && rel) assert(0);
     end
   end
+
+  // F11 a LATE flag rises only at a late WAIT_CMP's release in its thread,
+  //     and falls only by PW #7 or TSTART of that thread
+  generate
+    for (t = 0; t < 4; t = t + 1) begin : g_f11
+      always @(posedge clk)
+        if (!f_init && !$past(f_init)) begin
+          if (late[t] && !$past(late[t]))
+            assert($past(rel) && $past(cur) == t && $past(f_late_c));
+          if (!late[t] && $past(late[t]))
+            assert(($past(exec && x_pw) && $past(f_a) == P_LATE && $past(qb[t])) ||
+                   ($past(do_tstart) && $past(tt) == t));
+        end
+    end
+  endgenerate
 
   // F6 flags change only through the owning thread's flag ops / blocking ops
   wire f_flagev = exec && flag_op || blk_now || rel || exec && x_put;
@@ -813,6 +863,7 @@ module tt_um_msf_ctrl (
   always @(*) if (!f_init) begin
     cover(rel && sk_c == K_EDGE && rel_ok);
     cover(rel && sk_c == K_CMP && rel_ok);
+    cover(rel && f_late_c);
     cover(rel && !rel_ok);
     cover(rel && sk_c == K_LD && cur != 2'd0);
     cover(multi && exec && cur == 2'd1);

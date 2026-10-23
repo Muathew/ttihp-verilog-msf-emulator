@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Independent ISA-level reference model of msfcore v2.0.
+"""Independent ISA-level reference model of msfcore v2.2.
 
 Written from docs/isa.md, NOT from the RTL: there is no fetch pipeline,
 no flush flag and no pc-hold trick here -- only instruction semantics plus the
@@ -43,7 +43,7 @@ PIN_W, PIN_R, SETM, CLRM, CNT_R, INCR, DECR, IN_RD, CALL, RET, WAIT_EDGE, WAIT_C
  X_STAT, X_TXCFG, X_TXDIV, X_TXPUSH, X_TXWAIT, X_RXCFG, X_RXDIV, X_RXPOP, X_CRCCFG,
  X_CRCW, X_CRCRDL, X_CRCRDH, X_CRCSETL, X_CRCSETH, X_POLL, X_POLH, X_TSTART, X_TSTOP,
  X_TID, X_PW, X_PR) = range(32)
-P_FIFO, P_FCFG = 0, 1           # peripheral ports
+P_FIFO, P_FCFG, P_LATE = 0, 1, 7   # peripheral ports
 P_CAPTURE = {2, 3, 4, 5, 6}     # capture engine, glitch filter: not modelled
 
 BLOCKING_EXT = {X_LD, X_TXPUSH, X_TXWAIT, X_RXPOP, X_CRCW, X_CRCRDL}
@@ -60,6 +60,7 @@ class Thread:
         self.tmo = 0xFFFF       # blocking-op timeout reload (per thread)
         self.ready_at = 0       # earliest cycle the next instruction may issue
         self.blk = None         # pending blocking op (dict) or None
+        self.late = 0           # sticky: a WAIT_CMP found its target already passed
 
 
 class IsaModel:
@@ -252,7 +253,10 @@ class IsaModel:
             ok = b.get("hit", False) or b.get("now", False)
         else:
             ok = self._resource_ready(b["kind"])
-        if ok or b["tmo_now"]:
+        if b.get("late"):                   # target passed at issue: release now, Z=1
+            ok = False
+            t.late = 1
+        if ok or b["tmo_now"] or b.get("late"):
             if ok:
                 self._complete(t, b)
             t.z = b.get("z", 0) if ok else 1
@@ -340,7 +344,9 @@ class IsaModel:
             p = ((self.ui(c) if bank else self.uio(c)) >> pin) & 1
             self._block(t, c, kind="edge", bank=bank, pin=pin, cond=(imm8 >> 4) & 7, prev=p)
         elif op == WAIT_CMP:
-            self._block(t, c, kind="cmp", target=R[fa])
+            # isa.md section 5: a target 0-255 cycles at or before CNT is late
+            self._block(t, c, kind="cmp", target=R[fa],
+                        late=((self.cnt - R[fa]) & M16) < 256)
         elif op == SHIFT_OUT:
             self._sr_out()
             self.sr = (((R[fa] & 1) << 15) | (self.sr >> 1)) if self.sr_lsb else \
@@ -401,7 +407,7 @@ class IsaModel:
         elif sub == X_TMO:
             t.tmo = R[rb]
         elif sub == X_STAT:
-            R[ra] = ((t.tid >> 1) << 13) | (int(self.running(3)) << 12) | \
+            R[ra] = (t.late << 14) | ((t.tid >> 1) << 13) | (int(self.running(3)) << 12) | \
                 (int(self.running(2)) << 11) | \
                 (int(self.fcount() == self.fsize()) << 8) | (int(self.fcount() > 0) << 7) | \
                 ((t.tid & 1) << 6) | (int(self.running(1)) << 5) | (int(self.crc_busy()) << 4)
@@ -418,6 +424,10 @@ class IsaModel:
             elif port == P_FCFG:
                 self.fbase, self.fn = R[rb] & M10, (R[rb] >> 10) & 7
                 self.fwp = self.frp = self.fdrop = 0
+            elif port == P_LATE:            # clear the LATE flag of each thread named
+                for k in range(4):
+                    if (R[rb] >> k) & 1:
+                        self.th[k].late = 0
             elif port in P_CAPTURE:
                 raise NotImplementedError("capture engine not modelled")
         elif sub == X_PR:
@@ -430,6 +440,8 @@ class IsaModel:
                     self._block(t, c, kind="ld", rd=ra, data=None, z=1)
             elif port == P_FCFG:
                 R[ra] = (self.fdrop << 9) | self.fcount()
+            elif port == P_LATE:
+                R[ra] = sum(self.th[k].late << k for k in range(4))
             elif port in P_CAPTURE:
                 raise NotImplementedError("capture engine not modelled")
             else:
@@ -464,6 +476,7 @@ class IsaModel:
             target = R[rb] & M10
             th.regs = [0] * 8
             th.z = th.n = 0
+            th.late = 0
             th.blk = None
             th.tmo = t.tmo                  # the starter's TMO
             if self.running(tt):

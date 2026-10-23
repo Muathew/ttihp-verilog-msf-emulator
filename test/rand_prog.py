@@ -129,8 +129,14 @@ class Gen:
         if r.random() < 0.5:
             self.L(f"CNT_R {a}")
             self.L(f"LDR {b}, #{r.randrange(2, 60) if r.random() < 0.85 else 255}")
-            self.L(f"ADDS {a}, {a}, {b}")
+            # a target behind CNT: late (released at once, LATE set) or, if far
+            # enough behind, a long wait ending by timeout
+            self.L(f"{'SUBS' if r.random() < 0.15 else 'ADDS'} {a}, {a}, {b}")
             self.L(f"WAIT_CMP {a}")
+            if r.random() < 0.3:
+                self.L(f"{r.choice(['LATE_RD', 'STAT'])} {b}")
+            if r.random() < 0.2:
+                self.L(f"LATE_CLR {b}")
         else:
             self.L(f"WAIT_EDGE {r.randrange(8)}, {r.choice(CONDS)}, {r.choice(['uio', 'ui'])}")
         if r.random() < 0.5:

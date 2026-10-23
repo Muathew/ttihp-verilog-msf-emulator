@@ -1,4 +1,4 @@
-# ISA Spec — `msfcore` (Protocol Emulator Core) v2.1
+# ISA Spec — `msfcore` (Protocol Emulator Core) v2.2
 
 > v2.1 (2026-10-21, branch `rtl-changes`) adds a timeout register per thread,
 > the peripheral ports `PW`/`PR` with a FIFO between threads (§6.5), the
@@ -8,6 +8,10 @@
 > (§7: `TSTART` / `TSTOP` name the thread; with no name, T1 as before).
 > v2.0 programs run unchanged unless one thread relies on a `TMO` the other
 > thread set after `TSTART`, or on an address wrapping at 512.
+> v2.2 (2026-10-23, branch `fixes`): a `WAIT_CMP` whose target has already
+> passed releases at once with `Z=1` and sets the thread's LATE flag (§5,
+> `STAT` bit 14, port 7) instead of waiting 65,536 cycles for `CNT` to wrap.
+> Programs that wait more than 65,280 cycles ahead must split the wait.
 > v2.0 (2026-10-16) supersedes v1.0. All v1 encodings keep their meaning **except
 > `CALL`** (v1: `R7 ← PC+2`, no jump; v2: `CALL imm11` jumps). v1 history is in git.
 > This document is the contract for the RTL (`src/`), the assembler
@@ -163,14 +167,20 @@ Blocking ops: `WAIT_EDGE`, `WAIT_CMP`, `LD`, `FIFO_GET`, `TX_PUSH`, `TX_WAIT`,
   cycle (the first comparison is against the value at issue). Level conditions
   release in the first stall cycle where the level holds.
 * `WAIT_CMP` releases in the stall cycle where `CNT == rs` (rs latched at issue).
+  **Late targets:** if at issue the target is 0–255 cycles at or before
+  `CNT` (`(CNT - rs) mod 2^16 < 256`), the deadline has already passed:
+  instead of waiting for `CNT` to wrap (65,536 cycles), the op releases in
+  the thread's first stall slot with `Z=1`, like a timeout, and sets the
+  thread's sticky **LATE** flag (`STAT` bit 14, port 7, §6.5). So a target
+  can be at most 65,280 cycles ahead of the issue cycle.
 * `LD` releases in the cycle after issue; the destination is written then.
 * A completed `TX_PUSH`/`RX_POP`/`CRC_W`/`CRC_RDL` performs its transfer in its
   completion cycle.
 
 **Cycle costs (single-thread mode):** every instruction 1 cycle; taken branch,
 `JMP`, `CALL`, `RET`, `JR` 2 cycles; `LD` and `FIFO_GET` 2 cycles; `WAIT_CMP` with target
-`T` ≥ issue-CNT+2: next instruction executes when `CNT == T+1`; blocking op that
-stalls *k* cycles costs 1+*k*.
+`T` ≥ issue-CNT+2: next instruction executes when `CNT == T+1`; a late `WAIT_CMP`
+2 cycles; blocking op that stalls *k* cycles costs 1+*k*.
 
 **Multi-thread mode** (§7): the running threads take cycles in turn. Every
 instruction costs one slot of its thread (branches have **no** penalty). A
@@ -243,7 +253,9 @@ POLY=0xA001, init 0xFFFF, send ~CRC. USB CRC5 → reflected, POLY=0x14, init 0x1
 bit0 tx_full · bit1 tx_busy · bit2 rx_avail · bit3 rx_overrun · bit4 crc_busy ·
 bit5 T1 running · bit6 executing thread id, bit 0 · bit7 FIFO not empty ·
 bit8 FIFO full · bit9 capture recording · bit10 capture done · bit11 T2
-running · bit12 T3 running · bit13 executing thread id, bit 1 · others 0.
+running · bit12 T3 running · bit13 executing thread id, bit 1 · bit14 LATE
+of the executing thread (§5: one of its `WAIT_CMP`s found its target already
+passed) · bit15 0.
 
 ### 6.5 Peripheral ports and the FIFO
 `PW #p,rb` writes rb to port *p*, `PR ra,#p` reads port *p* into ra. Unused
@@ -258,6 +270,7 @@ ports: a write does nothing, a read gives 0.
 | 4 | `CAP_TRIG rb` | 0 |
 | 5 | `CAP_CTL rb` | 0 |
 | 6 | `FILTER rb` (§6.7) | 0 |
+| 7 | `LATE_CLR rb`: clear the LATE flag of each thread *t* with rb[*t*] = 1 | `LATE_RD ra`: ra ← LATE flags of T3..T0 in bits 3:0 |
 
 The FIFO's words live in the SRAM, in the size-aligned block that contains
 `base` (base's low bits are ignored); the read and write positions are in
@@ -324,8 +337,8 @@ Four threads, T0–T3. T0 always runs; T1–T3 are started and stopped by any
 running thread. `TSTART` and `TSTOP` name the thread in the ra field (1–3;
 0 means T1, so the v2.0 encodings `TSTART rb` / `TSTOP` keep their meaning).
 
-* `TSTART #t,rb`: thread *t* gets PC=rb, R0–R7=0, flags 0, no pending op,
-  the starting thread's `TMO`, and runs. If it was running it is
+* `TSTART #t,rb`: thread *t* gets PC=rb, R0–R7=0, flags 0, LATE 0, no
+  pending op, the starting thread's `TMO`, and runs. If it was running it is
   restarted (a thread may restart itself).
 * `TSTOP #t`: thread *t* stops at the end of the cycle (a thread may stop
   itself; stopping a thread that is not running does nothing).
