@@ -5,10 +5,11 @@ suite catches.
 
 Yosys (`mutate -list`) samples N single-point mutations evenly over the
 logic (an inverted bit, a constant-0 or constant-1 bit, two bits swapped)
-of every module but the SRAM macro and its wrapper. Each mutant is written
-back as Verilog in place of its module, built once with Icarus, and run
-against a list of test modules ordered fastest first; the first failing
-module kills it. A mutant Icarus cannot build is reported and left out of
+of every module but the SRAM macro and its wrapper. The tests are first run
+on the unmutated design, and the run stops if any fails (a failing test
+would otherwise "kill" every mutant). Each mutant is written back as
+Verilog in place of its module, built once with Icarus, and run against
+the test modules, fastest first; the first failing module kills it. A mutant Icarus cannot build is reported and left out of
 the score. Survivors are listed with their source location, to be read by
 hand: some mutate logic that cannot change behaviour (equivalent mutants),
 the rest are gaps in the tests.
@@ -18,7 +19,7 @@ Usage (from the repository root, project venv active):
                              [--tests test_core,test_isa_v2,...] [--out DIR]
                              [--src tt_um_msf_serdes.v:137.45-137.51]
 (--src re-runs only the sampled mutants at that location, e.g. a survivor
-after a test was added for it.)
+after a test was added for it; --no-baseline skips the unmutated run.)
 """
 import argparse
 import os
@@ -39,8 +40,11 @@ import run_tests  # noqa: E402  (source list, DLL path fix-up)
 # under `SYNTHESIS` (which Yosys defines), so its written-back mutant would
 # be the bare macro instance, not the simulation model the tests need
 SKIP = ("RM_IHPSG13", "tt_um_msf_sram")
-DEFAULT_TESTS = ["test_core", "test_isa_v2", "test_threads", "test_peripherals",
-                 "test_firmware", "test_regressions", "test_boot", "test_random_diff"]
+# the fast modules first, then every other one (a mutant that only one
+# protocol's firmware exercises survives the fast list: 10 of 40 did on v2.2)
+FAST_TESTS = ["test_core", "test_isa_v2", "test_threads", "test_peripherals",
+              "test_firmware", "test_regressions", "test_boot", "test_random_diff"]
+DEFAULT_TESTS = FAST_TESTS + [m for m in run_tests.ALL_MODULES if m not in FAST_TESTS]
 NOT_BUILT = "(not built)"
 
 
@@ -112,7 +116,9 @@ def main():
     ap.add_argument("--yosys", default=os.environ.get("YOSYS", "yowasp-yosys"))
     ap.add_argument("--tests", default=",".join(DEFAULT_TESTS))
     ap.add_argument("--out", default=os.path.join(tempfile.gettempdir(), "msf_mutants"))
-    ap.add_argument("--src", help="only the sampled mutants at this source location")
+    ap.add_argument("--src", help="only the sampled mutants at these source locations (comma-separated)")
+    ap.add_argument("--no-baseline", action="store_true",
+                    help="do not run the tests on the unmutated design first")
     a = ap.parse_args()
     run_tests.fix_dll_path()
     ycmd, tests = a.yosys.split(), a.tests.split(",")
@@ -137,8 +143,15 @@ def main():
     muts = [ln.strip() for ln in open(os.path.join(work, "list.txt"))
             if ln.startswith("mutate") and "$meminit" not in ln][:a.n]
     if a.src:
-        muts = [m for m in muts if f"-src {a.src} " in m + " "]
+        muts = [m for m in muts if any(f"-src {loc} " in m + " " for loc in a.src.split(","))]
     print(f"{len(muts)} mutants over {len(mods)} modules; tests: {', '.join(tests)}", flush=True)
+    if not a.no_baseline:
+        t0 = time.time()
+        by = run_mutant(run_tests.SRC, tests)
+        if by:
+            raise SystemExit(f"the unmutated design fails {by}: fix that first")
+        print(f"baseline: every test passes on the unmutated design ({time.time() - t0:.0f} s)",
+              flush=True)
 
     killed, survivors, unbuilt, t0 = 0, [], [], time.time()
     for i, mut in enumerate(muts):

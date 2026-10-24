@@ -207,13 +207,15 @@ The sections above show that the tests pass; this measures whether they
 would fail on a broken design. Yosys (`mutate -list`, seed 1) samples 40
 single-bit faults spread over the eight logic modules: a bit inverted, tied
 to 0 or 1, or inverted only while another bit is set. The SRAM macro is left
-out, and so is its wrapper, which in silicon is only port wiring. Each
-mutant replaces its module and runs against `test_core`, `test_isa_v2`,
-`test_threads`, `test_peripherals`, `test_firmware`, `test_regressions`,
-`test_boot` and `test_random_diff` in that order; the first module to fail
-kills it. A test that reads an internal signal Yosys renamed in the
-mutant's netlist cannot judge it, so only real failures count. A run takes
-about 20 minutes.
+out, and so is its wrapper, which in silicon is only port wiring. The
+tests are first run on the unmutated design, and the run stops if any of
+them fails. Each mutant replaces its module and runs against `test_core`,
+`test_isa_v2`, `test_threads`, `test_peripherals`, `test_firmware`,
+`test_regressions`, `test_boot` and `test_random_diff`, then every other
+module; the first module to fail kills it. A test that reads an internal
+signal Yosys renamed in the mutant's netlist cannot judge it, so only real
+failures count. (Until 24 Oct only the eight modules listed ran, and there
+was no baseline run; the v2.0 and v2.1 results below are from that setup.)
 
 Result (21 Oct): **38 of 40 killed**. The first module to fail was
 `test_core` for 14, `test_peripherals` 14, `test_isa_v2` 4,
@@ -242,6 +244,27 @@ bank were high. `test_wait_edge_every_pin_both_threads` (each thread waits
 on all 16 pins in turn with the other seven high) was added and kills it:
 38 of 40, the other two equivalent.
 
+On `fixes` (v2.2 RTL with the LATE flag; a fresh sample of 40, seed 1),
+the eight modules killed 30 of 40. The ten survivors were re-run against
+every module. `test_capture` killed four, all in the capture engine, which
+has its own test module that the old list left out. The first re-run also
+reported six kills by `test_buses` that were not real: a 1-Wire test was
+failing on the unmutated design (it sent the next command while a 64-bit
+read was still running), so every mutant failed it too. That is why the
+tool now has the baseline run and the full module list. Of those six:
+
+| Mutant | Verdict |
+|---|---|
+| bit 6 of `a + k` forced to 0 (`tt_um_msf_ctrl.v:122`) | equivalent: the sum is cut to 2 bits |
+| bit 31 of the constant 16 in `16*cur` forced to 0 (`tt_um_msf_ctrl.v:154`) | equivalent: it is already 0 |
+| a bit of `-(10*tt)` inverted when bit 24 is 0 (`tt_um_msf_ctrl.v:452`) | equivalent: `tt` is 1-3, so the value is negative and bit 24 is 1 |
+| `~rx_pop` read as 1 (`tt_um_msf_serdes.v:229`) | a gap: an `RX_POP` on the very cycle the next word lands was flagged as an overrun. `test_rx_pop_as_a_word_lands` moves the pop a cycle at a time across that moment and kills it |
+| the filter's bypass for uio pin 1 always on (`tt_um_msf_filt.v:56`) | a gap: only uio2 was ever filtered. `test_filter_every_pin` kills it |
+| a bit of the capture tick counter inverted (`tt_um_msf_cap.v:116`) | a gap: the capture tests used `DIV` 1-3, where the counter never has bit 3 set. `test_cap_divisor_sizes` (9 to 4099) kills it |
+
+With the three tests, **37 of 40 are killed**, and the other three cannot
+change behaviour.
+
 ## 9. Claims and evidence
 
 | Claim | Evidence |
@@ -265,7 +288,7 @@ on all 16 pins in turn with the other seven high) was added and kills it:
 | A host can halt, single-step and read the core's state through the pins | `test_debug.test_debug_single_step`: hand-driven clock, PC trace and register read between edges |
 | Timing faults can be injected by exact amounts | `test_faults`: each knob measured at the pins; a one-cycle step in the UART bit time moves a receiver from pass to fail exactly where its geometry predicts |
 | v2.0 fits the 6x4 tiles and meets timing at 25 MHz in all corners, and at 50 MHz, on SG13G2 | the GDS runs above: 23 % utilisation, no setup or hold violations, clean DRC, precheck passed; the 20 ns run on `rtl-changes`: 3.09 ns to spare (§7). The shuttle is CMOS5L, and the four-thread v2.1 build missed 50 MHz at the slow corner: both are being fixed (`docs/plan.md` §1.1-§1.2) |
-| The tests catch a broken design, not only pass a working one | 39 of 40 sampled single-bit mutants killed on v2.0, 38 of 40 on v2.1; every survivor cannot change behaviour (§8) |
+| The tests catch a broken design, not only pass a working one | 39 of 40 sampled single-bit mutants killed on v2.0, 38 of 40 on v2.1, 37 of 40 on v2.2; every survivor cannot change behaviour (§8) |
 
 What is **not** validated yet:
 

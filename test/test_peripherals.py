@@ -313,6 +313,50 @@ async def test_rx_overrun_flag(dut):
     assert reg(dut, 3) == 0x22
 
 
+@cocotb.test()
+async def test_rx_pop_as_a_word_lands(dut):
+    """RX_POP on the very cycle the next word lands loses nothing, so it is
+    not an overrun. Two back-to-back UART bytes; the pop is timed from the
+    first start bit (WAIT_EDGE, then WAIT_CMP) and moved a cycle at a time
+    across the second byte's arrival: up to and including that cycle it
+    gets byte 1 and byte 2 stays waiting; after it, byte 2 has replaced
+    byte 1 and rx_overrun is set."""
+    a, b, div = 0x5A, 0xC3, 8
+    late = []
+    for d in range(120, 181):
+        await boot_asm(dut, f"""
+            LDI R1, {div}
+            RX_DIV R1
+            LDI R1, {rx_cfg(pin=1, char=True, width=8, lsb=True)}
+            RX_CFG R1
+            LDR R1, #0
+            TMO R1
+            UO_WI 1
+            WAIT_EDGE 1, fall
+            CNT_R R5
+            LDI R1, {d}
+            ADDS R5, R5, R1
+            WAIT_CMP R5
+            RX_POP R3
+            LDI R1, 200
+            ADDS R5, R5, R1
+            WAIT_CMP R5             ; byte 2 has arrived by now
+            STAT R4
+            UO_WI {DONE}
+        h:  JMP h
+        """, uio_in=2)
+        await wait_uo(dut, 1)
+        await ClockCycles(dut.clk, 10)
+        for x in (a, b):
+            await uart_send(dut, x, bit_cycles=div)
+        await wait_uo(dut, DONE, 400)
+        got, st = reg(dut, 3), reg(dut, 4)
+        res = (got, st >> 2 & 1, st >> 3 & 1)          # word, rx_avail, rx_overrun
+        assert res in ((a, 1, 0), (b, 0, 1)), f"d={d}: {res}"
+        late.append(got == b)
+    assert not late[0] and late[-1] and late == sorted(late), late
+
+
 async def drive_levels(dut, pin, levels, period, ppm=0, jitter=0, seed=0):
     """Drive uio_in[pin] with per-symbol levels like a real transmitter: symbol
     k starts at round(k*period*(1+ppm/1e6)) + j_k, j_k in [-jitter, jitter]
@@ -379,6 +423,35 @@ async def test_filter_removes_short_pulses(dut):
         await ClockCycles(dut.clk, 40)
     await wait_uo(dut, DONE, 2000)
     assert (reg(dut, 3), reg(dut, 3, 1)) == (3, 6)
+
+
+@cocotb.test()
+async def test_filter_every_pin(dut):
+    """FILTER on all eight uio pins (len 4): on each pin, of pulses 1, 2, 3,
+    4, 5 and 8 cycles wide, only the three of 4 cycles or more get through."""
+    for pin in range(8):
+        await boot_asm(dut, f"""
+            LDI R1, 300
+            TMO R1
+            LDI R1, 0xFF | 4 << 8
+            FILTER R1
+            LDR R3, #0
+            UO_WI 1
+        c:  WAIT_EDGE {pin}, rise
+            JZ  d
+            INCR R3
+            JMP c
+        d:  UO_WI {DONE}
+        h:  JMP h
+        """)
+        await wait_uo(dut, 0x01)
+        for w in (1, 2, 3, 4, 5, 8):
+            dut.uio_in.value = 0xFF
+            await ClockCycles(dut.clk, w)
+            dut.uio_in.value = 0
+            await ClockCycles(dut.clk, 40)
+        await wait_uo(dut, DONE, 2000)
+        assert reg(dut, 3) == 3, f"uio{pin}: {reg(dut, 3)} rises got through"
 
 
 @cocotb.test()

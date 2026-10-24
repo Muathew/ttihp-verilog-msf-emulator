@@ -136,6 +136,17 @@ async def test_cap_sample_mode(dut):
 
 
 @cocotb.test()
+async def test_cap_divisor_sizes(dut):
+    """Sample mode at divisors 9 to 4099, where the sample tick counts
+    through values with high bits set (DIV 1..3 never do). The pin pattern
+    uses the counter's high bits too, so a sample 4096 cycles out is seen."""
+    for div in (9, 10, 16, 33, 100, 4099):
+        words, tw, _ = await capture(dut, lambda t: t + (t >> 8), 512, 4, div, post=3,
+                                     cycles=8 * div + 400)
+        assert (len(words), tw) == (4, 0)
+
+
+@cocotb.test()
 async def test_cap_pretrigger_ring(dut):
     """A level trigger on a pin value long after arming: the ring keeps the
     words before it (16-word buffer, 160 words recorded, 6 after)."""
