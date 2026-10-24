@@ -240,6 +240,168 @@ async def test_spi_target_cs_rules(dut):
 
 
 # ============================================================================
+# SPI flash: firmware/spi_flash.s
+# ============================================================================
+FLASH, FSIZE = 512, 512
+FLASH_ID = (0xEF, 0x40, 0x09)
+
+
+def flash_ref(mem, transfers, status=0):
+    """The 25xx flash of spi_flash.s, from its header comment: the MISO
+    bytes of each transfer (None where they are undefined), the store
+    after, and the status. Erases finish before the next transfer."""
+    mem, out = list(mem), []
+    for tr in transfers:
+        cmd, n = tr[0], len(tr)
+        miso = [0x00] + [None] * (n - 1)          # zeros during the command byte
+        a = ((tr[2] & 1) << 8 | tr[3]) if n >= 4 else None
+        if cmd in (0x9F, 0x9E):
+            miso[1:] = [FLASH_ID[i % 3] for i in range(n - 1)]
+        elif cmd == 0x05:
+            miso[1:] = [status] * (n - 1)
+        elif cmd in (0x03, 0x0B) and a is not None:
+            first = 4 if cmd == 0x03 else 5
+            for i in range(first, n):
+                miso[i] = mem[(a + i - first) % FSIZE]
+        elif cmd == 0x06:
+            status |= 0x02
+        elif cmd == 0x04:
+            status &= ~0x02
+        elif cmd == 0x02 and a is not None and status & 0x02:
+            for d in tr[4:]:
+                mem[a] &= d
+                a = (a & 0x100) | ((a + 1) & 0xFF)
+            status &= ~0x02
+        elif cmd in (0x20, 0x52, 0xD8, 0x60, 0xC7) and status & 0x02:
+            mem = [0xFF] * FSIZE
+            status &= ~0x02
+        out.append(miso)
+    return out, mem, status
+
+
+async def flash_run(dut, mode, transfers, mem, **timing):
+    timing.setdefault("gap", 64)          # CS high: room for the CS-high work
+    await fw_boot(dut, "spi_flash.s", data={FLASH + i: b for i, b in enumerate(mem)},
+                  defines={"MODE": mode})
+    bench = Bench(dut)
+    ctl = bench.add(SpiController(mode, transfers, **timing))
+    ctl.bench = bench
+    await bench.run(ctl.end + 20)
+    return ctl, [sram(dut, FLASH + i) for i in range(FSIZE)]
+
+
+def flash_check(ctl, want):
+    got = ctl.bytes_read()
+    bad = [(t, i, g[i], w[i]) for t, (g, w) in enumerate(zip(got, want))
+           for i in range(len(w)) if w[i] is not None and g[i] != w[i]]
+    assert not bad, f"MISO differs (transfer, byte, got, want): {bad[:6]}"
+    assert min(s for *_, s in ctl.timing(ctl.bench)) >= 1, "MISO changed at a sampling edge"
+
+
+def flash_reads(rng):
+    return [
+        [0x9F] + [0] * 6,                                  # ID, then again
+        [0x9E] + [0] * 3,
+        [0x05, 0, 0],
+        [0x03, 0x12, 0x01, 0xFC] + [0] * 7,                # across the 512 wrap
+        [0x03, 0xFF, 0x00, rng.randrange(256)] + [0] * 3,  # high bits ignored
+        [0x0B, 0x00, 0x00, 0x7F, 0xA5] + [0] * 4,          # FAST_READ: a dummy byte
+        [0x03, 0x00, 0x01],                                # cut short in the address
+        [0x77, 0x11, 0x22],                                # not a command
+        [0x03, 0x00, 0x01, 0x00, 0],
+    ]
+
+
+@cocotb.test()
+async def test_flash_id_status_read(dut):
+    """JEDEC ID (9F and 9E, repeating), status, READ across the 512-byte
+    wrap and with address bits 23..9 set, FAST_READ, a transfer cut short
+    and an unknown command, in every mode at SCK = clk/28 (the fastest) and
+    clk/80 (every SCK wait times out and re-checks CS)."""
+    rng = random.Random(3)
+    for mode, half in [(m, 14) for m in range(4)] + [(0, 40), (3, 40)]:
+        mem = [rng.randrange(256) for _ in range(FSIZE)]
+        transfers = flash_reads(rng)
+        ctl, after = await flash_run(dut, mode, transfers, mem, half=half, lead=16)
+        want, want_mem, _ = flash_ref(mem, transfers)
+        flash_check(ctl, want)
+        assert after == want_mem, f"mode {mode}: a read changed the store"
+
+
+@cocotb.test()
+async def test_flash_program(dut):
+    """Page program: ignored without WREN; WREN sets WEL (seen in the
+    status), program ANDs into the store and wraps inside its 256-byte
+    page, and CS high clears WEL; WRDI clears WEL; the result reads back."""
+    rng = random.Random(4)
+    mem = [rng.randrange(256) for _ in range(FSIZE)]
+    data = [rng.randrange(256) for _ in range(6)]
+    transfers = [
+        [0x02, 0, 0x00, 0x10, 0x00, 0x00],                 # no WEL: ignored
+        [0x05, 0],
+        [0x06], [0x05, 0, 0],                              # WEL on
+        [0x02, 0, 0x01, 0xFD] + data,                      # 1FD..1FF, then 100..102
+        [0x05, 0],                                         # WEL off again
+        [0x06], [0x04], [0x05, 0],                         # WRDI
+        [0x02, 0, 0x00, 0x20, 0x00],                       # no WEL: ignored
+        [0x06], [0x02, 0, 0x00, 0x40, 0xF0], [0x06],
+        [0x02, 0, 0x00, 0x40, 0x3C],                       # 40 = old & F0 & 3C
+        [0x03, 0, 0x01, 0xFD] + [0] * 3,
+        [0x03, 0, 0x01, 0x00] + [0] * 3,
+        [0x03, 0, 0x00, 0x3F] + [0] * 3,
+    ]
+    for mode in (0, 3):
+        ctl, after = await flash_run(dut, mode, transfers, mem, half=16, lead=16)
+        want, want_mem, _ = flash_ref(mem, transfers)
+        flash_check(ctl, want)
+        assert after == want_mem, f"mode {mode}: the store differs at " \
+            f"{[i for i in range(FSIZE) if after[i] != want_mem[i]][:8]}"
+
+
+@cocotb.test()
+async def test_flash_erase(dut):
+    """Each erase command (20, 52, D8 with an address; 60, C7) is ignored
+    without WREN; with it, status polled at once reads WIP | WEL until the
+    erase ends, then 00 (the erase pauses for each poll), and every byte
+    reads back FF."""
+    rng = random.Random(5)
+    for cmd in (0x20, 0x52, 0xD8, 0x60, 0xC7):
+        mem = [rng.randrange(256) for _ in range(FSIZE)]
+        er = [cmd, 0, 0, 0] if cmd in (0x20, 0x52, 0xD8) else [cmd]
+        polls = [[0x05, 0, 0]] * 16
+        transfers = [er, [0x03, 0, 0, 0, 0], [0x06], er] + polls + \
+            [[0x03, 0, 0x01, 0xF0] + [0] * 4, [0x03, 0, 0, 0] + [0] * 4]
+        ctl, after = await flash_run(dut, 0, transfers, mem, half=16, lead=32, gap=800)
+        got = ctl.bytes_read()
+        assert got[1][4] == mem[0], f"{cmd:#x} without WREN erased"
+        st = [p[1] for p in got[4:4 + len(polls)]]
+        assert all(p[1] == p[2] for p in got[4:4 + len(polls)]), st
+        busy = [s == 0x03 for s in st]
+        assert busy[0] and not busy[-1] and busy == sorted(busy, reverse=True) \
+            and set(st) == {0x03, 0x00}, f"{cmd:#x}: status polls {[hex(s) for s in st]}"
+        assert got[-2][4:] == [0xFF] * 4 and got[-1][4:] == [0xFF] * 4
+        assert after == [0xFF] * FSIZE, f"{cmd:#x}: not all erased"
+
+
+@cocotb.test()
+async def test_flash_speed_limit(dut):
+    """SCK period 28 cycles works in every mode and 26 fails: the longest
+    path, from a READ's last address bit to the wait for the first data
+    bit, must fit in one SCK period."""
+    rng = random.Random(6)
+    for mode in range(4):
+        for half, ok in ((14, True), (13, False)):
+            mem = [rng.randrange(256) for _ in range(FSIZE)]
+            transfers = flash_reads(rng)
+            ctl, after = await flash_run(dut, mode, transfers, mem, half=half, lead=16)
+            want, _, _ = flash_ref(mem, transfers)
+            got = ctl.bytes_read()
+            good = all(w[i] is None or g[i] == w[i]
+                       for g, w in zip(got, want) for i in range(len(w)))
+            assert good == ok, f"mode {mode}, SCK period {2 * half}: works={good}, expected {ok}"
+
+
+# ============================================================================
 # I2C
 # ============================================================================
 SDA, SCL = 5, 6

@@ -47,6 +47,41 @@ register loads and the guess that must fit between the last two command
 bits; the test also shows 14 fails. CS low to the first edge ≥ 8, CS high ≥
 32; CS high ends a transfer anywhere, a byte cut short is not stored.
 
+### SPI flash — `firmware/spi_flash.s` (`test_targets.py`, 4 tests)
+
+The chip answers as a small 25xx-style serial NOR flash, so a host that
+boots from or programs a flash can be run against it and watched. It
+implements the commands such hosts use: JEDEC ID (`9F`, `9E`; the ID is a
+define), read status (`05`), write enable and disable (`06`, `04`), `READ`
+(`03`) and `FAST_READ` (`0B`) with a 3-byte address, page program (`02`:
+each byte is ANDed in, as programming only clears bits, and the address
+wraps inside its 256-byte page) and the erases (`20`, `52`, `D8`, `60`,
+`C7`). The store is 512 bytes, one byte a word in SRAM 512-1023, mirrored
+over the 24-bit address space. An erase runs while CS is high and pauses
+while it is low, so a host polling the status sees WIP set and then clear,
+as from a real part; WEL clears when a program or erase ends.
+
+As in the SPI target, the reply to `05` or `9F` starts in the byte right
+after the command: the firmware guesses it from the command's first seven
+bits and puts its first bit out with the eighth. Commands are dispatched
+through a 16-entry jump table on the low nibble, so every command takes the
+same path. The longest path is from a `READ`'s last address bit to the wait
+for the first data bit, which sets the shortest SCK period: **28 cycles**
+(430 kHz at 12 MHz) in every mode; the test also shows 26 fails. Writing it
+showed one more limit: the SCK waits time out to check CS, and a timeout's
+check (7 cycles) on that path made it miss an edge, so the timeout (24) is
+longer than half the fastest SCK. CS low to the first edge ≥ 16 (≥ 32 while
+an erase runs), CS high ≥ 64.
+
+Tested against an SPI controller model and a reference model written from
+the firmware's header: ID, status, reads across the 512-byte wrap and with
+the high address bits set, `FAST_READ`, a transfer cut short and an unknown
+command, in all four modes at the fastest SCK and at one where every wait
+times out; program with and without WEL, the page wrap and the AND; each
+erase command with and without WEL, with the status polled during it.
+Not modelled: commands other than these, write protection (BP bits, `01`
+write status), power-down, and refusing commands while WIP is set.
+
 ### I2C target — `firmware/i2c_target.s` (`test_targets.py`)
 
 A 128-byte EEPROM-style device at a configurable address: pointer writes,
