@@ -44,10 +44,11 @@ async def par_send(dut, b, level, idle):
 
 
 async def gl_boot(dut, name, data=(), uio_idle=0):
-    """Load firmware/<name> and `data` [(address, words)] through the
-    parallel loader and run it. The stream has an odd number of bytes, so
-    the strobe (uio[1]) is left high, as a UART RX line idles."""
-    words = assemble_file(os.path.join(FW, name), base_addr=128)
+    """Load firmware/<name> (or a list of words for 128 on) and `data`
+    [(address, words)] through the parallel loader and run it. The stream
+    has an odd number of bytes, so the strobe (uio[1]) is left high, as a
+    UART RX line idles."""
+    words = name if isinstance(name, list) else         assemble_file(os.path.join(FW, name), base_addr=128)
     stream = []
     for addr, ws in data:
         stream += frame(CMD_WRITE, addr, ws)

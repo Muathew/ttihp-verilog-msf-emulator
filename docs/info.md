@@ -30,6 +30,7 @@ generic building blocks that firmware composes into protocols.
 | CRC unit | any CRC up to 32 bits, normal or reflected, 1-16 bits per write, bit-serial in the background (CRC-8, CRC-5/16 USB, CRC-32 Ethernet ...) |
 | Capture engine | a logic analyser: records 8 pins into an SRAM ring buffer every *n* cycles (two samples a word, or a word per change with its time), level or edge trigger with pre-trigger history, using only data-RAM cycles the core leaves free |
 | Pins | `uio[7:0]` with per-bit set/clear/toggle/write of OUT and OE (open drain = OE), `uo_out[7:0]` written by firmware, `ui_in[7:0]` readable; all inputs pass a 2-flip-flop synchroniser; an optional glitch filter per `uio` pin removes pulses shorter than 1-15 cycles |
+| Power | about 1.8-2.1 mW at 12.5 MHz (typical corner, estimated from the routed netlist with a gate-level workload; `docs/verification.md` §7b) |
 
 ### Timing model (what makes bit-banging exact)
 

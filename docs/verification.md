@@ -208,6 +208,28 @@ nets at the slow corner; they are design-rule warnings, not timing
 violations, and do not fail sign-off. v1 never hardened: the runs before
 17 Oct failed (`history.md` §5).
 
+## 7b. Power per workload — `tools/power.py`
+
+The routed CMOS5L netlist (CI run 40079395684) runs each workload in a
+gate-level simulation, booted through the parallel loader as on silicon. A
+VCD of 2 080 cycles in steady state gives the activity of every pin (all
+54 758 are annotated), and OpenSTA computes the power from it with the
+extracted parasitics and the typical-corner libraries (1.20 V, 25 °C). At
+12.5 MHz:
+
+| Workload | Total | Flops | Clock tree | SRAM | Logic |
+|---|---|---|---|---|---|
+| `uart_tx.s` sending | 1.77 mW | 1.07 | 0.42 | 0.24 | 0.03 |
+| `thread_demo.s` (two threads) | 2.14 mW | 1.08 | 0.42 | 0.24 | 0.39 |
+| a `JMP` to itself | 1.89 mW | 1.07 | 0.42 | 0.24 | 0.16 |
+
+Most of it is the same whatever the program does: the clock pins of the
+1 596 flops (there is no clock gating), the clock tree, and the code bank
+of the SRAM, read every cycle. Dynamic power scales with the clock, so
+about four times this at 50 MHz; leakage is 31 µW. The simulation has no
+delays, so glitches are not counted: these are estimates from the layout,
+not measurements.
+
 ## 8. Mutation score — `tools/mutation.py`
 
 The sections above show that the tests pass; this measures whether they
