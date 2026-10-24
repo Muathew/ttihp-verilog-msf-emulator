@@ -152,7 +152,12 @@ assembles a program and explores its control flow with abstract registers
 unknown). Counted loops unroll exactly because their counters stay
 constant; registers that are dead at a program point are dropped, and a
 point that collects too many states joins and widens them, so the search
-ends. At each `WAIT_CMP` it reports the range of d (target minus `CNT`) at
+ends. Widening moves a bound that keeps growing to the next of a fixed set
+of thresholds (16 apart between -2048 and 2048, powers of two beyond), not
+to infinity. With coarser thresholds `can.s` could not be certified at any
+bit time: its deadline register is up to ~175 cycles behind "now" just
+before the period is added, and rounding that to -256 made the next
+deadline look late. At each `WAIT_CMP` it reports the range of d (target minus `CNT`) at
 issue over every path; d >= 1 everywhere means the deadline is never missed.
 With *n* threads every instruction costs *n* cycles (conservative for code
 that runs alone) and the tool also says whether each release is jitter-free.
@@ -164,6 +169,8 @@ that runs alone) and the tool also says whether each release is jitter-free.
 | `ws2812.s` | 1 | 636 | 635 cycles |
 | `thread_demo.s` | 2 | 492..496, release exact | 491 cycles |
 | `ps2_device.s` (10 deadlines) | 2 | 208..472 | 207 cycles |
+| `onewire.s` (8 deadlines) | 1 | 64..5756 | 63 cycles |
+| `can.s` (6 deadlines, BT = 480) | 2 | 28..444 | 27 cycles |
 | `eth_10baset_tx.s` (link-pulse gap) | 1 | 63988..63995 | 63987 cycles |
 
 Checks on the checker, in CI (`test` workflow): `--check-model` runs each

@@ -250,3 +250,46 @@ only. Ways to narrow that gap without switching:
 If a future version needs a general host processor, PRISM's split (a
 RISC-V host plus a deterministic timing engine) is the model to follow,
 with msfcore as the timing engine.
+
+## Update of 23 Oct 2026
+
+About 20 repositories have appeared since 18 Oct. The old leaders (PRISM,
+TeslaCoilerOW, TejasDasa, umerimran, ProtocolGremlin) had not pushed since.
+The new strong entries are all on IHP SG13CMOS5L at 6x4 tiles, and they
+share one theme we lacked: **timing you can prove**, not only test. As
+before, the claims are as the entrants state them (read 23 Oct), not
+checked by us.
+
+| Entry | Approach | What stands out |
+|---|---|---|
+| [MarcosAsh/protocol-emulator](https://github.com/MarcosAsh/protocol-emulator) | Hardcaml; two cores, three SRAM macros; 48 MHz with +3.49 ns at the slow corner | the assembler's timing analyser certifies each program's deadlines, with the analyser's kernel proved sound against the RTL; a CI job proving the hardened netlist equals the RTL; formal "teeth" (weakened copies must fail); 47 firmware images, among them PS/2, JTAG, SWD, CAN, 10BASE-T, 1-Wire, DShot600, SENT and CEC; an ECP5 board demo |
+| [parthDOOM/escapement](https://github.com/parthDOOM/escapement) | a four-context barrel processor whose hardware admits or refuses each timed event | an event it cannot meet is refused, never late, with an unbounded proof over every program; the gate-level netlist proved sequentially equivalent to the RTL; a capture "tape" in SRAM; power per workload (3.0 mW sending UART); an execution digest; device emulation (24C02 EEPROM, 25xx flash); JTAG, SWD, CAN, PS/2, 1-Wire, NEC IR |
+| mrnathanhumphrey-droid | five lanes with earliest-deadline-first scheduling | worst-case response times from a real-time analysis, cross-checked with pyRTA; FPGA tests with real parts |
+| ArkaKhorchidian (Polyglot) | three cores and a programmable line coder (any CRC, stuffing, NRZI, Manchester) | CAN TX, a pin crossbar, breakpoints, single step and fault injection |
+| 2AMLogic | the whole repository built by an AI agent | `docs/submission/ai-use.md`, an account of how AI was used |
+| mcranny | | unbounded proofs; a results page |
+| Kanishk234 (TRIPWIRE) | | over 100 commits in five days, but the README is still the template |
+
+What we have taken since, on branch `fixes` (`docs/plan.md` §3–§4):
+
+* **A static deadline checker**, `tools/msf_timing.py`: every `WAIT_CMP` in
+  our firmware is certified on every path, cross-checked against the ISA
+  model, in CI (`verification.md` §6b). Ours is checked against the model,
+  not proved sound against the RTL as MarcosAsh's is.
+* **A missed deadline is never silent:** `WAIT_CMP` to a passed target now
+  releases at once and sets a per-thread LATE flag (ISA v2.2), with formal
+  properties F10/F11 and a mutant that must fail. Escapement goes further
+  and refuses the event; we report it.
+* **JTAG, SWD, PS/2, CAN and 1-Wire firmware**, each against an independent
+  model of the other end (`instruments.md` §6–§7).
+* **Mutation testing re-run** on the final RTL, with a baseline run so a
+  failing test can no longer fake a kill (`verification.md` §8).
+* **Netlist equals RTL**, unbounded proofs and the AI write-up are in
+  progress (`plan.md` §3.3–§3.5).
+
+Not taken: earliest-deadline-first or other dynamic scheduling (it breaks
+the fixed timing that is the point of msfcore), 8x4 designs, latch
+memories, a RISC-V host. Still open from this survey: 25xx SPI flash
+emulation, power per workload, an execution digest, a results page.
+10BASE-T receive is out of reach at the clocks we can sign off: the
+Manchester receiver needs about 80 MHz.

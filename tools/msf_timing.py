@@ -71,7 +71,7 @@ INF = None
 WRITES_RA = {X_SRRD, X_LD, X_SWAP, X_STAT, X_RXPOP, X_CRCRDL, X_CRCRDH, X_TID, X_PR}
 
 MAX_STATES = 256      # distinct states kept per program point before joining
-WIDEN_AFTER = 8       # joins at a point before growing bounds go to infinity
+WIDEN_AFTER = 8       # joins at a point before growing bounds are widened
 
 
 def signed16(v):
@@ -118,10 +118,25 @@ def join(a, b):
     return U
 
 
+# Widening with thresholds: a bound that keeps moving snaps to the next of
+# these instead of to infinity, so the search still ends, and a lower bound
+# that stays >= 1 (never late) is never widened below 1. Between -2048 and
+# 2048 they are 16 apart: a deadline register is often far behind "now"
+# just before its period is added (can.s: up to ~175 cycles), and snapping
+# that to the next power of two made the next deadline look late.
+_FINE = list(range(-2048, 2049, 16))
+TH_LO = sorted(set([1 << i for i in range(16)] + [0] + [-(1 << i) for i in range(17)]
+                   + _FINE), reverse=True)
+TH_HI = sorted(set([1 << i for i in range(16)] + [65280, 65536] + _FINE))
+
+
 def widen(old, new):
     if old[0] == "t" and new[0] == "t":
-        lo = old[1] if old[1] is not None and new[1] is not None and new[1] >= old[1] else None
-        hi = old[2] if old[2] is not None and new[2] is not None and new[2] <= old[2] else None
+        lo, hi = old[1], old[2]
+        if lo is not None and (new[1] is None or new[1] < lo):
+            lo = None if new[1] is None else next((t for t in TH_LO if t <= new[1]), None)
+        if hi is not None and (new[2] is None or new[2] > hi):
+            hi = None if new[2] is None else next((t for t in TH_HI if t >= new[2]), None)
         return ("t", lo, hi)
     return join(old, new)
 
@@ -474,27 +489,32 @@ class Analysis:
                 live = self.live.get(st.pc, ALL_REGS)
                 regs = tuple(x if i in live else U for i, x in enumerate(regs))
                 ns = State(st.pc, regs, st.z, st.n, st.tmo)
-                pcs = seen.setdefault(ns.pc, set())
+                # states are only joined within one calling context: the
+                # same program point and the same return addresses, in R7 or
+                # saved in another register around a nested call
+                ctx = (ns.pc, tuple(x[1] if x[0] == "c" and x[1] in self.returns else None
+                                    for x in ns.regs))
+                pcs = seen.setdefault(ctx, set())
                 k = ns.key()
                 if k in pcs:
                     continue
-                if len(pcs) < MAX_STATES and ns.pc not in joined:
+                if len(pcs) < MAX_STATES and ctx not in joined:
                     pcs.add(k)
                     work.append(ns)
                     continue
                 # too many states here: keep one joined state and widen it
-                old = joined.get(ns.pc)
+                old = joined.get(ctx)
                 if old is None:
                     merged = ns
                     for kk in pcs:
                         merged = self._join(merged, State(*kk))
                 else:
-                    j = joins.get(ns.pc, 0) + 1
-                    joins[ns.pc] = j
+                    j = joins.get(ctx, 0) + 1
+                    joins[ctx] = j
                     merged = self._join(old, ns, widen_=j > WIDEN_AFTER)
                     if merged.key() == old.key():
                         continue
-                joined[ns.pc] = merged
+                joined[ctx] = merged
                 pcs.add(merged.key())
                 work.append(merged)
 

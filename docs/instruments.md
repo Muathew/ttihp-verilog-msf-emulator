@@ -266,6 +266,59 @@ high; commands sent with inhibit and request-to-send, each ACKed in the
 `tools/msf_timing.py` certifies its 10 deadlines (two threads, worst slack
 207 cycles).
 
+### 1-Wire master — `firmware/onewire.s` (`test_buses.py`, 2 tests)
+
+A UART-driven master for Maxim/Dallas 1-Wire parts (temperature sensors,
+ID chips, EEPROMs) at standard speed. DQ is `uio[3]`, open drain with a
+pull-up. Commands: `R` resets the bus and answers `P` if a device sent a
+presence pulse, `N` if not; `W n b…` writes n bytes; `r n` reads n bytes and
+returns them; `S` runs SEARCH ROM (Maxim application note 187) and returns
+`D` and the 8 ROM bytes of every device on the bus, then `E`. Every slot
+edge is a `WAIT_CMP` deadline from the slot's falling edge: reset 480 µs
+low, presence sampled at 70 µs; write 1 is 6 µs low and write 0 60 µs, in
+a 70 µs slot; a read is 6 µs low and sampled at 15 µs.
+
+Tested against 1-Wire devices modelled from the specification (presence
+pulse 30 µs after the reset, a device bit read 30 µs into each slot, ROM
+commands READ, MATCH, SKIP and SEARCH, READ SCRATCHPAD with its CRC-8):
+reset with and without a device, READ ROM with a correct CRC-8, SKIP ROM
+then READ SCRATCHPAD, and SEARCH ROM finding each of three devices (two
+of the same family with consecutive serial numbers) exactly once. A host has to wait
+for each command's reply before sending the next: the UART receive buffer
+holds one byte, and a read of n bytes takes n × 0.56 ms. `tools/msf_timing.py`
+certifies its 8 deadlines (worst slack 63 cycles).
+
+### CAN 2.0A node — `firmware/can.s` (`test_buses.py`, 3 tests)
+
+A classic CAN node (11-bit identifiers) behind a transceiver: TXD on
+`uio[2]` (0 = dominant), RXD on `uio[7]`. `T idh idl dlc d0…` sends a data
+frame once the bus has been idle for 11 bits, with arbitration: a node that
+loses goes on receiving and sends again after the other frame; with no ACK
+or an error it tries 8 times in all, then replies `N` (`K` when sent and
+ACKed). Every frame on the bus with a good CRC is ACKed and reported as
+`R idh idl dlc d0…`; a bad CRC is reported as `E C` and not ACKed. One bit
+engine runs whether the node is sending or not, as in a CAN controller: it
+drives TXD at each bit start and samples the bus at the sample point, both
+on `WAIT_CMP` deadlines; it removes stuff bits and checks the stuffing
+rule, and the CRC unit computes CRC-15 (0x4599) one bit at a time. A second
+thread only moves UART bytes into the command queue (the FIFO). The bit
+time is a define: 480 cycles (50 kbit/s at 24 MHz, 25 kbit/s at 12 MHz) is
+the smallest that `tools/msf_timing.py` certifies (6 deadlines, worst slack
+27 cycles). With two threads each instruction takes 2 cycles, and the
+longest path from a sample point to the next bit start is 84 instructions.
+Hard synchronisation on SOF only, no resynchronisation (fine for one frame
+at crystal accuracy); no error frames, error counters, remote-frame
+answers or 29-bit identifiers.
+
+Tested against CAN nodes modelled from the specification (bus integration,
+stuffing, CRC-15, arbitration, ACK): two good frames received, ACKed and
+reported, and a bad-CRC frame reported and not ACKed; an 8-byte frame sent
+and received by the node with a good CRC; arbitration lost in the
+identifier to a node joining the same SOF, its frame reported, then ours
+sent again and ACKed; and with no node to ACK, 8 tries and `N`. The chip
+reports a frame over the UART at 115200 baud, so a frame that starts while
+it is still reporting the last one is missed.
+
 ## 8. Compared with the RP2040's PIO
 
 The RP2040 is on the Tiny Tapeout demo board, and its PIO blocks are the
