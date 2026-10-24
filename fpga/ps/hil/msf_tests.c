@@ -602,6 +602,127 @@ static int test_threads_blink_and_echo(void)
 }
 
 /* ======================================================================== */
+/* Debug ports and buses: the probes are driven over the UART like a PC
+ * would (one command, then its reply), against the C device models.       */
+
+#define PROBE_BIT 104U
+
+/* Run `img`; send each command once the previous one's replies are in.
+ * cmds: a list of {length, bytes...} entries, nrep[i] the replies each
+ * expects. Returns the replies in u->rx. */
+static int probe_run(const msf_image *img, msf_uart_host *u, const uint8_t *cmds,
+                     const uint8_t *nrep, int ncmd, uint8_t pull,
+                     uint8_t (*dev)(void *, msf_pins), void *ctx, uint32_t limit)
+{
+    uint32_t c, want = 0;
+    uint8_t uio = (uint8_t)(0x02U | pull);
+    int i = 0;
+    const uint8_t *cp = cmds;
+
+    if (fw_boot(img, 0, 0, uio))
+        return -1;
+    msf_uart_host_init(u, PROBE_BIT);
+    for (c = 0; c < limit; ++c) {
+        msf_pins p;
+        uint8_t devin;
+
+        /* (the first command after 400 cycles, once the firmware is set up) */
+        if (c >= 400U && i < ncmd && msf_uart_host_idle(u) && u->nrx >= want) {
+            msf_uart_host_send(u, cp + 1, cp[0]);
+            want += nrep[i];
+            cp += 1 + cp[0];
+            ++i;
+        }
+        p = cycle(uio);
+        devin = dev ? dev(ctx, p) : pull;
+        uio = (uint8_t)((msf_uart_host_cycle(u, p) << 1) | devin);
+        if (i == ncmd && u->nrx >= want && msf_uart_host_idle(u))
+            break;
+    }
+    CHECK(c < limit, "only %d of %d reply bytes", (int)u->nrx, (int)want);
+    return 0;
+}
+
+static uint8_t jtag_dev(void *ctx, msf_pins p)
+{
+    return msf_jtag_cycle((msf_jtag_chain *)ctx, p);
+}
+
+static uint8_t ow_dev(void *ctx, msf_pins p)
+{
+    return msf_ow_bus_cycle((msf_ow_bus *)ctx, p);
+}
+
+/* test_debugports.test_jtag_idcode, _ir_bypass_and_partial_bytes, _chain */
+static int test_jtag_probe(void)
+{
+    static const uint8_t cmds1[] = {1, 'R', 6, 'D', 32, 0, 0, 0, 0, 3, 'I', 4, 0x0F,
+                                    3, 'D', 8, 0xA5, 4, 'D', 13, 0xFF, 0xFF};
+    static const uint8_t rep1[] = {1, 4, 1, 1, 2};
+    static const uint8_t exp1[] = {'R', 0x79, 0x56, 0x34, 0x12, 0x01, 0x4A, 0xFE, 0x1F};
+    static const uint8_t cmds2[] = {1, 'R', 10, 'D', 64, 0, 0, 0, 0, 0, 0, 0, 0, 3, 'I', 8, 0xFF,
+                                    4, 'D', 16, 0xFF, 0xFF};
+    static const uint8_t rep2[] = {1, 8, 1, 2};
+    static const uint8_t exp2[] = {'R', 0x77, 0x04, 0xA0, 0x4B, 0x77, 0x04, 0xA0, 0x0B,
+                                   0x11, 0xFC, 0xFF};
+    uint32_t one = 0x12345679U, two[2] = {0x0BA00477U, 0x4BA00477U};
+    msf_jtag_chain ch;
+    msf_uart_host u;
+
+    msf_jtag_init(&ch, &one, 1);
+    if (probe_run(&img_jtag, &u, cmds1, rep1, 5, 0, jtag_dev, &ch, 400000U))
+        return -1;
+    CHECK(u.nrx == sizeof exp1 && memcmp(u.rx, exp1, sizeof exp1) == 0,
+          "one TAP: replies %02x %02x %02x %02x %02x ...", u.rx[0], u.rx[1], u.rx[2], u.rx[3],
+          u.rx[4]);
+    CHECK(ch.errors == 0, "TDI/TMS changed while TCK was high, or too close to its rise");
+    msf_jtag_init(&ch, two, 2);
+    if (probe_run(&img_jtag, &u, cmds2, rep2, 4, 0, jtag_dev, &ch, 600000U))
+        return -1;
+    CHECK(u.nrx == sizeof exp2 && memcmp(u.rx, exp2, sizeof exp2) == 0,
+          "two TAPs: replies %02x %02x %02x ... %02x %02x", u.rx[0], u.rx[1], u.rx[2], u.rx[9],
+          u.rx[10]);
+    return 0;
+}
+
+/* test_buses.test_onewire_reset_read_rom_scratchpad and _search_rom */
+static int test_onewire_probe(void)
+{
+    static const uint8_t cmds1[] = {1, 'R', 3, 'W', 1, 0x33, 2, 'r', 8};
+    static const uint8_t rep1[] = {1, 1, 8};
+    static const uint8_t cmds2[] = {1, 'S'};
+    static const uint8_t rep2[] = {3 * 9 + 1};
+    msf_ow_dev devs[3];
+    msf_ow_bus bus;
+    msf_uart_host u;
+    int i, j, found[3] = {0, 0, 0};
+
+    msf_ow_dev_init(&devs[0], 0x28, 0x0000123456ABULL);
+    msf_ow_bus_init(&bus, devs, 1);
+    if (probe_run(&img_onewire, &u, cmds1, rep1, 3, 0x08U, ow_dev, &bus, 400000U))
+        return -1;
+    CHECK(u.rx[0] == 'P' && u.rx[1] == 'W' && memcmp(u.rx + 2, devs[0].rom, 8U) == 0,
+          "READ ROM: replies %02x %02x %02x ...", u.rx[0], u.rx[1], u.rx[2]);
+    CHECK(msf_crc8_maxim(u.rx + 2, 7U) == u.rx[9], "ROM CRC-8");
+    msf_ow_dev_init(&devs[0], 0x28, 0x0000123456ABULL);
+    msf_ow_dev_init(&devs[1], 0x28, 0x0000123456ACULL);
+    msf_ow_dev_init(&devs[2], 0x10, 0x00000000BEEFULL);
+    msf_ow_bus_init(&bus, devs, 3);
+    if (probe_run(&img_onewire, &u, cmds2, rep2, 1, 0x08U, ow_dev, &bus, 3000000U))
+        return -1;
+    CHECK(u.rx[27] == 'E', "SEARCH ROM did not end with E");
+    for (i = 0; i < 3; ++i) {
+        CHECK(u.rx[9 * i] == 'D', "SEARCH ROM: device %d not reported", i);
+        for (j = 0; j < 3; ++j)
+            if (memcmp(u.rx + 9 * i + 1, devs[j].rom, 8U) == 0)
+                ++found[j];
+    }
+    CHECK(found[0] == 1 && found[1] == 1 && found[2] == 1, "SEARCH ROM found %d %d %d",
+          found[0], found[1], found[2]);
+    return 0;
+}
+
+/* ======================================================================== */
 
 typedef struct {
     const char *name;
@@ -623,6 +744,8 @@ static const msf_test tests[] = {
     {"usb_ls_rx_packet", test_usb_ls_rx_packet},
     {"eth_10baset_frame_fcs_tpidl_nlp", test_eth_10baset_frame_fcs_tpidl_nlp},
     {"threads_blink_and_echo", test_threads_blink_and_echo},
+    {"jtag_probe", test_jtag_probe},
+    {"onewire_probe", test_onewire_probe},
 };
 
 #define NTESTS ((int)(sizeof tests / sizeof tests[0]))

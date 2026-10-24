@@ -92,4 +92,62 @@ uint32_t msf_usb_levels(const uint8_t *pkt, uint32_t n, int corrupt, uint8_t *lv
 int      msf_eth_decode(const msf_trace *t, uint8_t *bytes, uint32_t max,
                         uint32_t *nbytes, uint32_t *end);
 
+/* ---- UART host: a PC on a probe firmware's UART (RX uio1, TX uio0) ------ */
+/* Sends queued bytes 8N1 (one idle bit between bytes) and decodes the
+ * probe's replies. Each cycle: pass the pins, apply the returned level to
+ * uio_in[1]. */
+typedef struct {
+    uint32_t bit;
+    uint8_t tx[64];
+    uint32_t ntx, itx, tcycle;
+    int tbit;                      /* -1 idle, 0..9 frame bit, 10 the gap */
+    uint8_t rx[64];
+    uint32_t nrx, rcycle;
+    int rbit, rprev;
+    unsigned rbyte;
+} msf_uart_host;
+void msf_uart_host_init(msf_uart_host *u, uint32_t bit_cycles);
+void msf_uart_host_send(msf_uart_host *u, const uint8_t *b, uint32_t n);
+int  msf_uart_host_idle(const msf_uart_host *u);           /* all sent */
+int  msf_uart_host_cycle(msf_uart_host *u, msf_pins p);    /* level for uio_in[1] */
+
+/* ---- JTAG: up to two IEEE 1149.1 TAPs, TDI -> tap 0 -> tap 1 -> TDO;
+ *      TCK uio2, TDI uio3, TDO uio4, TMS uio5 (test_debugports.Chain) ------- */
+typedef struct {
+    uint32_t idcode;
+    int state, tdo;
+    uint32_t sh, ir;
+    int n;
+} msf_jtag_tap;
+typedef struct {
+    msf_jtag_tap tap[2];
+    int ntaps, tck, tms, tdi;
+    uint32_t last_change, k, errors;
+} msf_jtag_chain;
+void    msf_jtag_init(msf_jtag_chain *c, const uint32_t *idcodes, int n);
+uint8_t msf_jtag_cycle(msf_jtag_chain *c, msf_pins p);     /* uio_in TDO bit */
+
+/* ---- 1-Wire: devices with 64-bit ROMs on DQ uio3, open drain
+ *      (test_buses.OneWireDevice / OneWireBus) -------------------------------- */
+typedef struct {
+    uint8_t rom[8];
+    uint8_t scratch[9];
+    int state, si;
+    uint8_t out[80];               /* bits still to send in read slots */
+    uint32_t nout, iout;
+    uint8_t bits[64];
+    uint32_t nbits;
+    uint32_t pull_from, pull_to;
+} msf_ow_dev;
+typedef struct {
+    msf_ow_dev *dev;
+    int ndev, chip_prev;
+    uint32_t k, fall_at;
+    int have_fall;
+} msf_ow_bus;
+uint8_t msf_crc8_maxim(const uint8_t *d, uint32_t n);
+void    msf_ow_dev_init(msf_ow_dev *d, uint8_t family, uint64_t serial);
+void    msf_ow_bus_init(msf_ow_bus *b, msf_ow_dev *devs, int n);
+uint8_t msf_ow_bus_cycle(msf_ow_bus *b, msf_pins p);       /* uio_in DQ level (with pull-up) */
+
 #endif

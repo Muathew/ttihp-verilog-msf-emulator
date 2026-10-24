@@ -3,6 +3,8 @@
 // ports; keep the two in step when either changes.
 #include "msf_proto.h"
 
+#include <string.h>
+
 /* ---- CRCs ---------------------------------------------------------------- */
 
 uint16_t msf_usb_crc16(const uint8_t *d, uint32_t n)
@@ -422,4 +424,331 @@ int msf_eth_decode(const msf_trace *t, uint8_t *bytes, uint32_t max,
     }
     *end = i;
     return nbits % 8U == 0U ? 0 : -3;
+}
+
+/* ======================================================================== */
+/* UART host                                                                */
+
+void msf_uart_host_init(msf_uart_host *u, uint32_t bit_cycles)
+{
+    memset(u, 0, sizeof *u);
+    u->bit = bit_cycles;
+    u->tbit = -1;
+    u->rbit = -1;
+    u->rprev = 1;
+}
+
+void msf_uart_host_send(msf_uart_host *u, const uint8_t *b, uint32_t n)
+{
+    uint32_t i;
+
+    for (i = 0; i < n && u->ntx < sizeof u->tx; ++i)
+        u->tx[u->ntx++] = b[i];
+}
+
+int msf_uart_host_idle(const msf_uart_host *u)
+{
+    return u->itx == u->ntx && u->tbit < 0;
+}
+
+int msf_uart_host_cycle(msf_uart_host *u, msf_pins p)
+{
+    /* the probe's TX (uio0) idles high through the line's pull-up until
+     * the firmware drives it */
+    int level = 1, line = (p.oe & 1U) ? (int)(p.out & 1U) : 1;
+
+    /* receive the probe TX: sample mid-bit after a falling edge */
+    if (u->rbit < 0) {
+        if (u->rprev && !line) {
+            u->rbit = 0;
+            u->rcycle = 0;
+            u->rbyte = 0;
+        }
+    } else if (++u->rcycle == u->bit / 2U + u->bit * (uint32_t)u->rbit) {
+        if (u->rbit >= 1 && u->rbit <= 8)
+            u->rbyte |= (unsigned)line << (u->rbit - 1);
+        if (u->rbit == 9) {
+            if (u->nrx < sizeof u->rx)
+                u->rx[u->nrx++] = (uint8_t)u->rbyte;
+            u->rbit = -1;
+        } else {
+            ++u->rbit;
+        }
+    }
+    u->rprev = line;
+    /* send: start bit, 8 data bits LSB first, stop bit, one idle bit */
+    if (u->tbit < 0 && u->itx < u->ntx) {
+        u->tbit = 0;
+        u->tcycle = 0;
+    }
+    if (u->tbit >= 0) {
+        unsigned v = u->tx[u->itx];
+        level = u->tbit == 0 ? 0 : u->tbit <= 8 ? (int)((v >> (u->tbit - 1)) & 1U) : 1;
+        if (++u->tcycle == u->bit) {
+            u->tcycle = 0;
+            if (++u->tbit == 11) {
+                u->tbit = -1;
+                ++u->itx;
+            }
+        }
+    }
+    return level;
+}
+
+/* ======================================================================== */
+/* JTAG: IEEE 1149.1 TAP controller (test_debugports.Tap)                   */
+
+enum { TLR, RTI, SDR, CDR, SHDR, E1DR, PDR, E2DR, UDR, SIR, CIR, SHIR, E1IR, PIR, E2IR, UIR };
+static const uint8_t tap_next[16][2] = {
+    {RTI, TLR}, {RTI, SDR}, {CDR, SIR}, {SHDR, E1DR}, {SHDR, E1DR}, {PDR, UDR}, {PDR, E2DR},
+    {SHDR, UDR}, {RTI, SDR}, {CIR, TLR}, {SHIR, E1IR}, {SHIR, E1IR}, {PIR, UIR}, {PIR, E2IR},
+    {SHIR, UIR}, {RTI, SDR},
+};
+#define TAP_IDCODE 0x1U
+
+static void tap_rise(msf_jtag_tap *t, int tms, int tdi)
+{
+    int s = t->state;
+
+    if (s == CDR) {
+        if (t->ir == TAP_IDCODE) {
+            t->sh = t->idcode;
+            t->n = 32;
+        } else {
+            t->sh = 0;
+            t->n = 1;
+        }
+    } else if (s == CIR) {
+        t->sh = 0x1U;
+        t->n = 4;
+    } else if (s == SHDR || s == SHIR) {
+        t->sh = (t->sh >> 1) | ((uint32_t)tdi << (t->n - 1));
+    }
+    t->state = tap_next[s][tms];
+}
+
+static void tap_fall(msf_jtag_tap *t)
+{
+    if (t->state == SHDR || t->state == SHIR)
+        t->tdo = (int)(t->sh & 1U);
+    else if (t->state == UIR)
+        t->ir = t->sh;
+    else if (t->state == TLR)
+        t->ir = TAP_IDCODE;
+}
+
+void msf_jtag_init(msf_jtag_chain *c, const uint32_t *idcodes, int n)
+{
+    int i;
+
+    memset(c, 0, sizeof *c);
+    c->ntaps = n;
+    for (i = 0; i < n; ++i) {
+        c->tap[i].idcode = idcodes[i];
+        c->tap[i].state = TLR;
+        c->tap[i].ir = TAP_IDCODE;
+        c->tap[i].n = 1;
+    }
+}
+
+uint8_t msf_jtag_cycle(msf_jtag_chain *c, msf_pins p)
+{
+    int tck = (p.out >> 2) & 1, tms = (p.out >> 5) & 1, tdi = (p.out >> 3) & 1, i;
+
+    if (tms != c->tms || tdi != c->tdi) {
+        if (tck || c->tck)
+            ++c->errors;                 /* TDI/TMS changed while TCK high */
+        c->last_change = c->k;
+    }
+    if (tck && !c->tck) {
+        int in[2];
+
+        if (c->k - c->last_change < 2U)
+            ++c->errors;                 /* TCK rose too soon after TDI/TMS */
+        in[0] = tdi;
+        in[1] = c->tap[0].tdo;
+        for (i = 0; i < c->ntaps; ++i)
+            tap_rise(&c->tap[i], tms, in[i]);
+    } else if (!tck && c->tck) {
+        for (i = 0; i < c->ntaps; ++i)
+            tap_fall(&c->tap[i]);
+    }
+    c->tck = tck;
+    c->tms = tms;
+    c->tdi = tdi;
+    ++c->k;
+    return (uint8_t)(c->tap[c->ntaps - 1].tdo << 4);
+}
+
+/* ======================================================================== */
+/* 1-Wire (Maxim), standard speed, 12 cycles per microsecond                */
+/* (test_buses.OneWireDevice and OneWireBus)                                */
+
+#define OW_US 12U
+
+uint8_t msf_crc8_maxim(const uint8_t *d, uint32_t n)
+{
+    uint8_t crc = 0;
+    uint32_t i;
+    int b;
+
+    for (i = 0; i < n; ++i) {
+        uint8_t byte = d[i];
+        for (b = 0; b < 8; ++b) {
+            int mix = (crc ^ byte) & 1;
+            crc >>= 1;
+            if (mix)
+                crc ^= 0x8CU;
+            byte >>= 1;
+        }
+    }
+    return crc;
+}
+
+enum { OW_IDLE, OW_ROM, OW_FUNC, OW_MATCH, OW_SEARCH, OW_SEARCH_DIR };
+
+void msf_ow_dev_init(msf_ow_dev *d, uint8_t family, uint64_t serial)
+{
+    static const uint8_t sp[8] = {0x50, 0x05, 0x4B, 0x46, 0x7F, 0xFF, 0x0C, 0x10};
+    int i;
+
+    memset(d, 0, sizeof *d);
+    d->rom[0] = family;
+    for (i = 0; i < 6; ++i)
+        d->rom[1 + i] = (uint8_t)(serial >> (8 * i));
+    d->rom[7] = msf_crc8_maxim(d->rom, 7U);
+    memcpy(d->scratch, sp, 8U);
+    d->scratch[8] = msf_crc8_maxim(sp, 8U);
+    d->state = OW_IDLE;
+}
+
+static int ow_rombit(const msf_ow_dev *d, int i)
+{
+    return (d->rom[i / 8] >> (i % 8)) & 1;
+}
+
+static void ow_send_bits(msf_ow_dev *d, const uint8_t *bytes, int nbits)
+{
+    int i;
+
+    d->nout = 0;
+    d->iout = 0;
+    for (i = 0; i < nbits && i < (int)sizeof d->out; ++i)
+        d->out[d->nout++] = (uint8_t)((bytes[i / 8] >> (i % 8)) & 1);
+}
+
+static void ow_search_pair(msf_ow_dev *d)
+{
+    int b = ow_rombit(d, d->si);
+
+    d->out[0] = (uint8_t)b;
+    d->out[1] = (uint8_t)(1 - b);
+    d->nout = 2;
+    d->iout = 0;
+    d->state = OW_SEARCH;
+}
+
+/* 30 us into a slot: a read slot's bit went out, or a write slot's bit is `line` */
+static void ow_slot(msf_ow_dev *d, int line)
+{
+    if (d->state == OW_IDLE)
+        return;
+    if (d->iout < d->nout) {
+        if (++d->iout == d->nout && d->state == OW_SEARCH)
+            d->state = OW_SEARCH_DIR;
+        return;
+    }
+    if (d->state == OW_SEARCH_DIR) {
+        if (line != ow_rombit(d, d->si)) {
+            d->state = OW_IDLE;
+        } else if (++d->si == 64) {
+            d->state = OW_FUNC;
+        } else {
+            ow_search_pair(d);
+        }
+        return;
+    }
+    d->bits[d->nbits++] = (uint8_t)line;
+    if ((d->state == OW_ROM || d->state == OW_FUNC) && d->nbits == 8U) {
+        unsigned c = 0, i;
+        for (i = 0; i < 8U; ++i)
+            c |= (unsigned)d->bits[i] << i;
+        d->nbits = 0;
+        if (d->state == OW_ROM) {
+            if (c == 0x33U) {
+                ow_send_bits(d, d->rom, 64);
+                d->state = OW_FUNC;
+            } else if (c == 0xCCU) {
+                d->state = OW_FUNC;
+            } else if (c == 0x55U) {
+                d->state = OW_MATCH;
+            } else if (c == 0xF0U) {
+                d->si = 0;
+                ow_search_pair(d);
+            } else {
+                d->state = OW_IDLE;
+            }
+        } else if (c == 0xBEU) {
+            ow_send_bits(d, d->scratch, 72);
+        }
+    } else if (d->state == OW_MATCH && d->nbits == 64U) {
+        int i, same = 1;
+        for (i = 0; i < 64; ++i)
+            same &= d->bits[i] == ow_rombit(d, i);
+        d->state = same ? OW_FUNC : OW_IDLE;
+        d->nbits = 0;
+    }
+}
+
+void msf_ow_bus_init(msf_ow_bus *b, msf_ow_dev *devs, int n)
+{
+    memset(b, 0, sizeof *b);
+    b->dev = devs;
+    b->ndev = n;
+}
+
+static int ow_pulling(const msf_ow_bus *b, uint32_t k)
+{
+    int i;
+
+    for (i = 0; i < b->ndev; ++i)
+        if (b->dev[i].pull_from <= k && k < b->dev[i].pull_to)
+            return 1;
+    return 0;
+}
+
+uint8_t msf_ow_bus_cycle(msf_ow_bus *b, msf_pins p)
+{
+    int chip = ((p.oe >> 3) & 1) && !((p.out >> 3) & 1), i;
+    uint32_t k = b->k;
+
+    if (chip && !b->chip_prev) {          /* a slot starts */
+        b->fall_at = k;
+        b->have_fall = 1;
+        for (i = 0; i < b->ndev; ++i) {
+            msf_ow_dev *d = &b->dev[i];
+            if (d->state != OW_IDLE && d->iout < d->nout && d->out[d->iout] == 0) {
+                d->pull_from = k;
+                d->pull_to = k + 30U * OW_US;
+            }
+        }
+    }
+    if (!chip && b->chip_prev && k - b->fall_at >= 480U * OW_US) {
+        for (i = 0; i < b->ndev; ++i) {   /* a reset: presence pulses */
+            msf_ow_dev *d = &b->dev[i];
+            d->state = OW_ROM;
+            d->nbits = 0;
+            d->nout = d->iout = 0;
+            d->pull_from = k + 30U * OW_US;
+            d->pull_to = k + 150U * OW_US;
+        }
+    }
+    if (b->have_fall && k == b->fall_at + 30U * OW_US) {
+        int line = (chip || ow_pulling(b, k)) ? 0 : 1;
+        for (i = 0; i < b->ndev; ++i)
+            ow_slot(&b->dev[i], line);
+    }
+    b->chip_prev = chip;
+    ++b->k;
+    return ow_pulling(b, k) ? 0 : 0x08U;
 }

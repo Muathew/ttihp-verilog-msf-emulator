@@ -26,6 +26,8 @@ IMAGES = [
     ("usb_ls_rx", REPO / "firmware" / "usb_ls_rx.s", {}),
     ("eth_10baset_tx", REPO / "firmware" / "eth_10baset_tx.s", ETH_NLP),
     ("thread_demo", REPO / "firmware" / "thread_demo.s", {}),
+    ("jtag", REPO / "firmware" / "jtag.s", {}),
+    ("onewire", REPO / "firmware" / "onewire.s", {}),
     ("boot_probe", HERE / "firmware" / "boot_probe.s", {}),
     ("dump_ram", HERE / "firmware" / "dump_ram.s", {}),
 ]
