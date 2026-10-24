@@ -72,9 +72,11 @@ takes over `uo_out`, so the loader's status bits and the parallel loader's
 acknowledge would not be seen. In parallel mode that means the data bus
 must not leave bit 2 high while `rst_n` is low.
 
-The demos' timing constants are set for the clock in the table below. The
-design is signed off up to 50 MHz; at a faster clock, scale each program's
-timing defines (e.g. `BIT`). The boot ROM's UART loader is 115200 baud only
+The demos' timing constants are set for the clock in the table below; at
+another clock, scale each program's timing defines (e.g. `BIT`). No demo
+needs more than 20 MHz. The design meets 50 MHz at the typical corner; the
+clock it is signed off at for the slow corner (1.08 V, 125 °C) is being
+settled (`docs/plan.md` §1.2). The boot ROM's UART loader is 115200 baud only
 at 12 MHz (its rate scales with the clock); the parallel loader works at
 any clock.
 

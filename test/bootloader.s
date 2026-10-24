@@ -113,10 +113,10 @@ check:
         TX_WAIT                     ; ACK fully on the wire
         UO_SET   0x08
         LDR      R2, #0
-        RX_CFG   R2                 ; give the pins back to the firmware
-        TX_CFG   R2
-        OE_CLR   1
-        JR       R4
+        RX_CFG   R2                 ; give the pins back to the firmware:
+        OE_CLR   1                  ; TX released while the engine holds it high,
+        TX_CFG   R2                 ; then stopped (the other way round, uio[0]
+        JR       R4                 ; drove its OUT bit, 0, for one cycle)
 
 bad:
         LDI      R2, NAKW

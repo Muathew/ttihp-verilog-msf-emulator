@@ -27,8 +27,8 @@ REPO = HERE.parent
 SRC = REPO / "src"
 BUILD_DIR = HERE / "sim_build" / "rtl"
 
-# Every RTL test module. GL-only modules (test_gl_smoke) are run by the
-# Makefile with GATES=yes.
+# Every RTL test module. GL-only modules (test_gl_smoke, test_gl_firmware)
+# are run by the Makefile with GATES=yes.
 ALL_MODULES = [
     "test_core",
     "test_regressions",
