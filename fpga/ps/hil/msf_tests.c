@@ -723,6 +723,185 @@ static int test_onewire_probe(void)
 }
 
 /* ======================================================================== */
+/* Device emulation: the chip as an SPI target or SPI flash, clocked by the */
+/* C SPI controller.                                                        */
+
+/* uio_in while deselected: CS high, SCK at its idle level */
+#define SPI_IDLE(mode) ((uint8_t)((((mode) & 2) ? 0x04U : 0U) | 0x20U))
+
+static int spi_ctl_run(msf_spi_ctl *ctl, int mode)
+{
+    uint8_t uio = SPI_IDLE(mode);
+    uint32_t c;
+
+    for (c = 0; c < MSF_SPI_WAVE + 100U && !msf_spi_ctl_done(ctl); ++c)
+        uio = msf_spi_ctl_cycle(ctl, cycle(uio));
+    CHECK(msf_spi_ctl_done(ctl), "the SPI controller did not finish");
+    return 0;
+}
+
+/* test_targets.test_spi_target_all_modes (modes 0 and 3, SCK = clk/20) */
+static int test_spi_target_regs(void)
+{
+    static msf_spi_ctl ctl;
+    static const int modes[2] = {0, 3};
+    const msf_image *imgs[2] = {&img_spi_target_m0, &img_spi_target_m3};
+    msf_rng rng;
+    int m;
+
+    msf_rng_seed(&rng, 7U);
+    for (m = 0; m < 2; ++m) {
+        uint16_t data[65];
+        uint8_t regs[64], bytes[64], lens[12], want[64];
+        uint32_t ntr = 0, nb = 0, k = 0, off = 0, i, t;
+
+        for (i = 0; i < 64U; ++i) {
+            regs[i] = (uint8_t)msf_rng_next(&rng);
+            data[i] = regs[i];
+        }
+        data[64] = 0xA5U;
+        /* random_spi_case: a write across the wrap, its read-back, a command
+         * alone, then random reads and writes (bit 6 of the address ignored) */
+        lens[ntr++] = 6U;
+        bytes[nb++] = 0x3DU;
+        for (i = 0; i < 5U; ++i)
+            bytes[nb++] = (uint8_t)msf_rng_next(&rng);
+        lens[ntr++] = 6U;
+        bytes[nb++] = 0xBDU;
+        for (i = 0; i < 5U; ++i)
+            bytes[nb++] = 0U;
+        lens[ntr++] = 1U;
+        bytes[nb++] = (uint8_t)(0x80U | msf_rng_range(&rng, 0U, 64U));
+        for (t = 0; t < 6U; ++t) {
+            uint32_t n = msf_rng_range(&rng, 1U, 5U);
+
+            bytes[nb++] = (uint8_t)((msf_rng_next(&rng) & 0xC0U) | msf_rng_range(&rng, 0U, 64U));
+            for (i = 0; i < n; ++i)
+                bytes[nb++] = (uint8_t)msf_rng_next(&rng);
+            lens[ntr++] = (uint8_t)(n + 1U);
+        }
+        /* spi_ref: the status during the command byte, then the registers */
+        for (t = 0; t < ntr; ++t) {
+            unsigned addr = bytes[off] & 0x3FU, rd = bytes[off] >> 7;
+
+            want[k++] = 0xA5U;
+            for (i = 1; i < lens[t]; ++i) {
+                want[k++] = regs[addr];
+                if (!rd)
+                    regs[addr] = bytes[off + i];
+                addr = (addr + 1U) & 0x3FU;
+            }
+            off += lens[t];
+        }
+        if (fw_boot(imgs[m], data, 65U, SPI_IDLE(modes[m])))
+            return -1;
+        CHECK(msf_spi_ctl_init(&ctl, modes[m], bytes, lens, ntr, 10U, 8U, 40U) == 0,
+              "SPI waveform too long");
+        if (spi_ctl_run(&ctl, modes[m]))
+            return -1;
+        for (i = 0; i < k; ++i)
+            CHECK(msf_spi_ctl_byte(&ctl, i) == want[i], "mode %d: MISO byte %d = %02x, want %02x",
+                  modes[m], (int)i, msf_spi_ctl_byte(&ctl, i), want[i]);
+    }
+    return 0;
+}
+
+/* fw_boot with a 512-byte flash store loaded at SRAM 512 */
+static int flash_boot(const msf_image *img, const uint8_t *store, uint8_t uio)
+{
+    static const uint16_t zeros[128];
+    uint16_t w[128];
+    uint32_t i, j;
+
+    TRY(msf_boot_enter(0));
+    TRY(msf_boot_write(0, zeros, 128));
+    for (j = 0; j < 4U; ++j) {
+        for (i = 0; i < 128U; ++i)
+            w[i] = store[128U * j + i];
+        TRY(msf_boot_write((uint16_t)(512U + 128U * j), w, 128));
+    }
+    TRY(msf_boot_write(img->addr, img->words, img->count));
+    TRY(msf_reset(MSF_BOOT_DIRECT, uio, 1));
+    TRY(msf_run());
+    msf_trace_init(&tr, trace_buf, TRACE_CAP);
+    return 0;
+}
+
+/* test_targets.test_flash_id_status_read, _program and _erase, in short
+ * (modes 0 and 3, SCK = clk/32, CS high 800 cycles so the erase advances) */
+static int test_spi_flash(void)
+{
+    static msf_spi_ctl ctl;
+    static const int modes[2] = {0, 3};
+    static const uint8_t bytes[] = {
+        0x9F, 0, 0, 0, 0, 0, 0,                   /*  0: ID, twice */
+        0x05, 0,                                  /*  1: status */
+        0x03, 0x12, 0x01, 0xFC, 0, 0, 0, 0, 0, 0, 0, /* 2: READ across the 512 wrap */
+        0x06,                                     /*  3: WREN */
+        0x02, 0, 0x00, 0x40, 0xF0, 0x3C, 0x5A,    /*  4: page program 40..42 */
+        0x03, 0, 0x00, 0x40, 0, 0, 0,             /*  5: read it back */
+        0x05, 0,                                  /*  6: WEL off again */
+        0x06,                                     /*  7: WREN */
+        0x20, 0, 0, 0,                            /*  8: sector erase */
+        0x05, 0, 0x05, 0, 0x05, 0, 0x05, 0, 0x05, 0, 0x05, 0, /* 9-20: polls */
+        0x05, 0, 0x05, 0, 0x05, 0, 0x05, 0, 0x05, 0, 0x05, 0,
+        0x03, 0, 0x01, 0xF0, 0, 0, 0, 0,          /* 21: erased */
+    };
+    static const uint8_t lens[] = {7, 2, 11, 1, 7, 7, 2, 1, 4, 2, 2, 2, 2, 2, 2,
+                                   2, 2, 2, 2, 2, 2, 8};
+    static const uint8_t id[3] = {0xEF, 0x40, 0x09}, prog[3] = {0xF0, 0x3C, 0x5A};
+    const msf_image *imgs[2] = {&img_spi_flash_m0, &img_spi_flash_m3};
+    uint32_t start[sizeof lens];
+    msf_rng rng;
+    int m;
+
+    msf_rng_seed(&rng, 11U);
+    start[0] = 0;
+    for (m = 1; m < (int)sizeof lens; ++m)
+        start[m] = start[m - 1] + lens[m - 1];
+    for (m = 0; m < 2; ++m) {
+        uint8_t store[512], st[12];
+        uint32_t i;
+        int busy = 1;
+
+        for (i = 0; i < 512U; ++i)
+            store[i] = (uint8_t)msf_rng_next(&rng);
+        if (flash_boot(imgs[m], store, SPI_IDLE(modes[m])))
+            return -1;
+        CHECK(msf_spi_ctl_init(&ctl, modes[m], bytes, lens, sizeof lens, 16U, 32U, 800U) == 0,
+              "SPI waveform too long");
+        if (spi_ctl_run(&ctl, modes[m]))
+            return -1;
+#define FB(t, i) msf_spi_ctl_byte(&ctl, start[t] + (i))
+        for (i = 0; i < 6U; ++i)
+            CHECK(FB(0, 1U + i) == id[i % 3U], "mode %d: ID byte %d = %02x", modes[m], (int)i,
+                  FB(0, 1U + i));
+        CHECK(FB(1, 1) == 0x00U, "mode %d: status %02x at reset", modes[m], FB(1, 1));
+        for (i = 0; i < 7U; ++i)
+            CHECK(FB(2, 4U + i) == store[(0x1FCU + i) % 512U], "mode %d: READ byte %d = %02x",
+                  modes[m], (int)i, FB(2, 4U + i));
+        for (i = 0; i < 3U; ++i)
+            CHECK(FB(5, 4U + i) == (store[0x40U + i] & prog[i]),
+                  "mode %d: programmed byte %d = %02x", modes[m], (int)i, FB(5, 4U + i));
+        CHECK(FB(6, 1) == 0x00U, "mode %d: WEL still set after the program", modes[m]);
+        for (i = 0; i < 12U; ++i) {
+            st[i] = FB(9U + i, 1);
+            CHECK(st[i] == 0x03U || st[i] == 0x00U, "mode %d: status poll %d = %02x", modes[m],
+                  (int)i, st[i]);
+            CHECK(!(st[i] == 0x03U && !busy), "mode %d: WIP set again at poll %d", modes[m],
+                  (int)i);
+            busy = st[i] == 0x03U;
+        }
+        CHECK(st[0] == 0x03U && st[11] == 0x00U, "mode %d: polls %02x .. %02x", modes[m], st[0],
+              st[11]);
+        for (i = 0; i < 4U; ++i)
+            CHECK(FB(21, 4U + i) == 0xFFU, "mode %d: not erased: %02x", modes[m], FB(21, 4U + i));
+#undef FB
+    }
+    return 0;
+}
+
+/* ======================================================================== */
 
 typedef struct {
     const char *name;
@@ -746,6 +925,8 @@ static const msf_test tests[] = {
     {"threads_blink_and_echo", test_threads_blink_and_echo},
     {"jtag_probe", test_jtag_probe},
     {"onewire_probe", test_onewire_probe},
+    {"spi_target_regs", test_spi_target_regs},
+    {"spi_flash", test_spi_flash},
 };
 
 #define NTESTS ((int)(sizeof tests / sizeof tests[0]))

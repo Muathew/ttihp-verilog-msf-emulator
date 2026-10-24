@@ -28,6 +28,10 @@ IMAGES = [
     ("thread_demo", REPO / "firmware" / "thread_demo.s", {}),
     ("jtag", REPO / "firmware" / "jtag.s", {}),
     ("onewire", REPO / "firmware" / "onewire.s", {}),
+    ("spi_target_m0", REPO / "firmware" / "spi_target.s", {"MODE": 0}),
+    ("spi_target_m3", REPO / "firmware" / "spi_target.s", {"MODE": 3}),
+    ("spi_flash_m0", REPO / "firmware" / "spi_flash.s", {"MODE": 0}),
+    ("spi_flash_m3", REPO / "firmware" / "spi_flash.s", {"MODE": 3}),
     ("boot_probe", HERE / "firmware" / "boot_probe.s", {}),
     ("dump_ram", HERE / "firmware" / "dump_ram.s", {}),
 ]

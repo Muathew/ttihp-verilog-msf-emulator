@@ -752,3 +752,82 @@ uint8_t msf_ow_bus_cycle(msf_ow_bus *b, msf_pins p)
     ++b->k;
     return ow_pulling(b, k) ? 0 : 0x08U;
 }
+
+/* ======================================================================== */
+/* SPI controller (test_targets.SpiController)                              */
+
+#define SPI_SCK    0x04U
+#define SPI_MOSI   0x08U
+#define SPI_CS     0x20U
+#define SPI_SAMPLE 0x80U
+
+static int spi_put(msf_spi_ctl *c, uint8_t v, uint32_t n)
+{
+    while (n--) {
+        if (c->n >= MSF_SPI_WAVE)
+            return -1;
+        c->wave[c->n++] = v;
+    }
+    return 0;
+}
+
+int msf_spi_ctl_init(msf_spi_ctl *c, int mode, const uint8_t *bytes, const uint8_t *lens,
+                     uint32_t ntr, uint32_t half, uint32_t lead, uint32_t gap)
+{
+    uint8_t idle = (mode & 2) ? SPI_SCK : 0U, act = (mode & 2) ? 0U : SPI_SCK;
+    int cpha = mode & 1, err = 0;
+    uint32_t t, off = 0;
+
+    memset(c, 0, sizeof *c);
+    err |= spi_put(c, (uint8_t)(idle | SPI_CS), 30U);
+    for (t = 0; t < ntr; ++t) {
+        uint32_t nb = 8U * lens[t], b;
+        uint8_t mosi = 0;
+
+#define SPI_BIT(b) ((bytes[off + (b) / 8U] >> (7U - (b) % 8U)) & 1U)
+        if (!cpha && nb)
+            mosi = SPI_BIT(0U) ? SPI_MOSI : 0U;
+        err |= spi_put(c, (uint8_t)(idle | mosi), lead);
+        for (b = 0; b < nb; ++b) {
+            if (cpha) {               /* shift on the leading edge, sample on the trailing */
+                mosi = SPI_BIT(b) ? SPI_MOSI : 0U;
+                err |= spi_put(c, (uint8_t)(act | mosi), half);
+                err |= spi_put(c, (uint8_t)(idle | mosi | SPI_SAMPLE), 1U);
+                err |= spi_put(c, (uint8_t)(idle | mosi), half - 1U);
+            } else {                  /* sample on the leading edge, shift on the trailing */
+                err |= spi_put(c, (uint8_t)(act | mosi | SPI_SAMPLE), 1U);
+                err |= spi_put(c, (uint8_t)(act | mosi), half - 1U);
+                mosi = (b + 1U < nb && SPI_BIT(b + 1U)) ? SPI_MOSI : 0U;
+                err |= spi_put(c, (uint8_t)(idle | mosi), half);
+            }
+        }
+#undef SPI_BIT
+        err |= spi_put(c, (uint8_t)(idle | SPI_CS), gap);
+        off += lens[t];
+    }
+    err |= spi_put(c, (uint8_t)(idle | SPI_CS), 20U);
+    return err ? -1 : 0;
+}
+
+uint8_t msf_spi_ctl_cycle(msf_spi_ctl *c, msf_pins p)
+{
+    /* the chip's output in the cycle the last edge went in (SpiController.step) */
+    if (c->i > 0 && (c->wave[c->i - 1U] & SPI_SAMPLE) && c->nbits < 8U * sizeof c->miso) {
+        if ((p.out >> 4) & 1U)
+            c->miso[c->nbits / 8U] |= (uint8_t)(0x80U >> (c->nbits % 8U));
+        ++c->nbits;
+    }
+    if (c->i >= c->n)
+        return (uint8_t)(c->wave[c->n - 1U] & 0x7FU);
+    return (uint8_t)(c->wave[c->i++] & 0x7FU);
+}
+
+int msf_spi_ctl_done(const msf_spi_ctl *c)
+{
+    return c->i >= c->n;
+}
+
+uint8_t msf_spi_ctl_byte(const msf_spi_ctl *c, uint32_t k)
+{
+    return k < sizeof c->miso ? c->miso[k] : 0U;
+}

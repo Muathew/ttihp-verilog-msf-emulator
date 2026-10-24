@@ -150,4 +150,22 @@ void    msf_ow_dev_init(msf_ow_dev *d, uint8_t family, uint64_t serial);
 void    msf_ow_bus_init(msf_ow_bus *b, msf_ow_dev *devs, int n);
 uint8_t msf_ow_bus_cycle(msf_ow_bus *b, msf_pins p);       /* uio_in DQ level (with pull-up) */
 
+/* ---- SPI controller, modes 0-3, for the chip as a target: SCK uio2, MOSI
+ *      uio3, CS uio5 driven, MISO uio4 sampled (test_targets.SpiController) */
+#define MSF_SPI_WAVE 65536U
+typedef struct {
+    uint8_t wave[MSF_SPI_WAVE];    /* uio_in per cycle; bit 7: sample MISO here */
+    uint32_t n, i;
+    uint8_t miso[512];             /* the bits sampled, all transfers, MSB first */
+    uint32_t nbits;
+} msf_spi_ctl;
+/* One CS-low frame per transfer: lens[t] bytes, back to back in `bytes`.
+ * half = SCK half period, lead = CS low -> first edge, gap = CS high, in
+ * core cycles. -1 if the waveform does not fit. */
+int     msf_spi_ctl_init(msf_spi_ctl *c, int mode, const uint8_t *bytes, const uint8_t *lens,
+                         uint32_t ntr, uint32_t half, uint32_t lead, uint32_t gap);
+uint8_t msf_spi_ctl_cycle(msf_spi_ctl *c, msf_pins p);     /* uio_in for the next cycle */
+int     msf_spi_ctl_done(const msf_spi_ctl *c);
+uint8_t msf_spi_ctl_byte(const msf_spi_ctl *c, uint32_t k); /* k-th byte read, in order */
+
 #endif
