@@ -69,19 +69,24 @@ claim to its evidence):
    core, stepped by the Zynq.
 7. **Sign-off in CI**: a job that fails on any setup or hold violation, DRC,
    antenna or LVS error, because the GDS badge alone does not.
+8. **The routed netlist equals the RTL**, proved formally
+   ([`formal/netlist_equiv.py`](formal/netlist_equiv.py)): from reset, on
+   every cycle and for any inputs, so the checks above apply to the layout.
 
 ## Limits, honestly
 
-* The clock is not signed off yet: at the slow corner (1.08 V, 125 °C) the
-  worst path, SRAM read to register file, is about 28 ns, so 50 MHz is met
-  only at the typical corner ([plan](docs/plan.md) §1.2). Every firmware we
-  ship needs 20 MHz or less.
+* The clock is signed off at 33 MHz (30 ns) in every corner. At the slow
+  corner (1.08 V, 125 °C) the worst path, SRAM read to register file, is
+  about 28 ns; 50 MHz is met only at the typical corner
+  ([verification](docs/verification.md) §7). Every firmware we ship needs
+  20 MHz or less.
 * The board tests step the core one clock at a time: they check logic and
   protocols on real hardware, not timing at speed.
 * Firmware is written in assembly.
 * 10BASE-T is transmit only: receiving needs about 80 MHz.
-* That the hardened netlist equals the RTL, and the properties for all
-  time, are being proved ([plan](docs/plan.md) §3.3, §3.4).
+* Most formal properties are proved for all time, but four of the
+  controller's (F3's timeout bounds, part of F10) only to depth 16
+  ([verification](docs/verification.md) §3).
 
 ## Documentation
 

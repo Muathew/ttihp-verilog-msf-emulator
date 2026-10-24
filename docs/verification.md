@@ -81,9 +81,10 @@ inputs**, so the proofs hold for every program and environment.
 | F6 | flags change only through the owning thread's flag ops / blocking ops (or T1's TSTART) |
 | F7 | the fetched word comes from the bank (ROM/SRAM) of the address it was fetched with |
 | F8 | the FIFO never holds more words than its size; its positions move only by a push that fits, a pop that finds a word, or `FIFO_CFG` |
-| F9 | the capture engine never writes SRAM port B in a cycle the core uses it |
+| F9 | the capture engine never writes SRAM port B in a cycle the core uses it (also checked in the capture module alone, with the core's use of port B free) |
 | F10 | a `WAIT_CMP` whose target had passed at issue (an independent ghost of isa.md §5's test) releases in the thread's first own stall slot with Z=1, and no running thread stays stalled on one for more than 3 cycles |
 | F11 | a thread's LATE flag rises only at such a release in that thread, and falls only by `LATE_CLR` naming it or a `TSTART` of it |
+| F12 | the rotation skips no running thread: each owns at least one cycle in any four |
 
 Every `cover()` point (WAIT edge/CMP/timeout release, LD release in T1, dual
 issue, TSTOP, all four threads running and issuing, a push to a full FIFO,
@@ -99,6 +100,29 @@ and each must make the proof fail:
 | B2 WAIT_EDGE/WAIT_CMP release conditions mixed | F3 |
 | B3 combinational ROM/SRAM bank select | F7 (needs depth >= 14 to reach the boot ROM's `JMP 128`) |
 | B4 a late `WAIT_CMP` waits for `CNT` to wrap (the v2.1 behaviour) | F10 |
+| a push into a full FIFO moves its write position | F8 (alone, at depth 7) |
+| the capture engine writes port B while the core uses it | F9, in the capture module (at the top level a program cannot start a capture within depth 16: the boot ROM runs first) |
+| the rotation skips the thread after the owner | F1 first (depth 4); F12 alone catches it too (depth 6) |
+
+A mutant stops at its first counterexample, so the cheap targets go first
+(controller, capture module, top level).
+
+**For all time** (`--prove`, ABC `pdr`, which proves each assertion
+separately): on the controller, 31 of its 35 assertions are proved for
+every reachable state, not just to depth 16. 30 of them took under 7
+minutes; F8's `fcount <= fsize` took 3.4 hours. Proved: F1, F2, F3 for
+event releases, F4, F5, F6, F8, F11, and F10's bounds on when a late
+`WAIT_CMP` releases and that no running thread stays stalled on one. Still
+open after 5 hours, and only bounded so far: F3's three timeout
+assertions (a timeout releases after exactly TMO+1 stalled cycles, or
+within 3 of it with several threads) and F10's first (a late release is a
+`WAIT_CMP` release, not a timeout or an event). All four relate the 17-bit
+ghost stall counter to the 16-bit timeout; PDR would need an invariant
+tying the two. `--prove-timeout S` stops each target after S seconds and
+lists which assertions were proved and which are open. The top level (F7,
+F9 and the controller inside the whole design) has not been run for all
+time yet: `--prove` reaches it only after the controller, which does not
+finish; `--top top` runs it alone.
 
 ## 4. Directed and protocol-level tests
 
@@ -179,34 +203,66 @@ the range the analysis computed (the programs that use the SERDES engines,
 which the model does not simulate, are skipped); and `uart_tx.s` assembled
 with 9 cycles a bit must be rejected (its byte-to-byte path is too long).
 
-## 7. Hardening runs in CI — `tools/gds_metrics.py`
+## 7. Hardening and sign-off — `tools/check_signoff.py`
 
-Every push runs the Tiny Tapeout GDS action (LibreLane on IHP SG13G2, then
-precheck and a gate-level test). `tools/gds_metrics.py` downloads each
-run's metrics with the GitHub CLI and tabulates them. The v2 RTL has
-hardened in every run since it landed, with the same result each time (the
-later commits changed firmware, tests and docs only):
+Every push runs the Tiny Tapeout GDS action: LibreLane on IHP SG13CMOS5L
+(the shuttle's process), then TT's precheck, a gate-level test and our
+sign-off check. The action stays green with timing violations, so
+`tools/check_signoff.py` reads LibreLane's metrics and fails unless setup
+and hold slack are at least 0 in all three corners (slow 1.08 V 125 °C,
+typical 1.20 V 25 °C, fast 1.32 V −40 °C), with no setup or hold
+violations and no routing DRC, antenna or LVS errors. Max-slew and max-cap
+violations are printed as warnings.
 
-| Run | Date | Branch | Commit | Std cells | Util. | Setup slack, slow corner | Hold slack, fast corner | Setup / hold violations | Route DRC | Antenna |
-|---|---|---|---|---|---|---|---|---|---|---|
-| 39164070033 | 18 Oct | FPGA | 0646361 | 8 666 | 23.2 % | 23.09 ns | 0.11 ns | 0 / 0 | 0 | 0 |
-| 39163726286 | 18 Oct | FPGA | 71bd90a | 8 666 | 23.2 % | 23.09 ns | 0.11 ns | 0 / 0 | 0 | 0 |
-| 39160768857 | 18 Oct | FPGA | 4f14cf5 | 8 666 | 23.2 % | 23.09 ns | 0.11 ns | 0 / 0 | 0 | 0 |
-| 39157643790 | 18 Oct | FPGA | 662398d | 8 666 | 23.2 % | 23.09 ns | 0.11 ns | 0 / 0 | 0 | 0 |
-| 39148468747 | 18 Oct | FPGA | 492507e | 8 666 | 23.2 % | 23.09 ns | 0.11 ns | 0 / 0 | 0 | 0 |
-| 39022166820 | 17 Oct | main | a7a9b86 | 8 666 | 23.2 % | 23.09 ns | 0.11 ns | 0 / 0 | 0 | 0 |
-| 39017713663 | 17 Oct | ethernet | a7a9b86 | 8 666 | 23.2 % | 23.09 ns | 0.11 ns | 0 / 0 | 0 | 0 |
+**The clock is signed off at 30 ns (33 MHz) in every corner**
+(`src/signoff.sdc`), while placement and routing aim at 20 ns
+(`src/pnr.sdc`). The worst path is an SRAM read (6.7 ns clock-to-output in
+the slow library) through decode and the ALU into the register file.
+Aiming at 30 ns, the tools left it at 33.2 ns; aiming at 20 ns, they make
+it 27.5–28.4 ns, which meets 30 ns. At the typical corner the same layout
+has about 10.7 ns to spare at 30 ns (a path of about 19.3 ns, so 50 MHz on
+typical silicon), but only the slow corner is promised.
 
-The clock is 40 ns (25 MHz), so the slow corner has 23 ns to spare. On the
-`rtl-changes` branch the same RTL was hardened at 20 ns (50 MHz, run
-39633377026): the same 8 666 cells, 3.09 ns of setup slack at the slow
-corner, 0.11 ns of hold slack at the fast corner, no violations, no
-routing DRC or antenna errors. The constraint stays at 20 ns there. The
-precheck (KLayout SG13G2 DRC, pin, boundary, layer and cell-name checks)
-passed in each run. LibreLane also warns of 16 max-slew and 58 max-fanout
-nets at the slow corner; they are design-rule warnings, not timing
-violations, and do not fail sign-off. v1 never hardened: the runs before
-17 Oct failed (`history.md` §5).
+| Run | Commit | Std cells | Util. | Setup slack at 30 ns, slow / typical | Hold slack, fast | Setup / hold violations | Max-slew / max-cap warnings | Route DRC, antenna, LVS | Signed off |
+|---|---|---|---|---|---|---|---|---|---|
+| CI 40079395684 | 1cc1b5b | 16 620 | 45.2 % | −3.21 / +9.51 ns | 0.11 ns | 331 / 0 | 131 / 27 | 0, 0, 0 | no: placed and routed at 30 ns |
+| CI 40084290148 | 44a7d31 | 16 662 | 45.3 % | +1.61 / +9.37 ns | 0.11 ns | 0 / 0 | 113 / 28 | 0, 0, 0 | yes |
+| CI 40085473871 | 6ea46bd | 16 605 | 45.3 % | +2.17 / +10.72 ns | 0.11 ns | 0 / 0 | 114 / 32 | 0, 0, 0 | yes |
+| local S | 44a7d31 + design repair | 18 023 | 47.0 % | +2.49 / +10.64 ns | 0.07 ns | 0 / 0 | 6 / 2 | 0, 0, 0 | yes |
+
+Design repair (local run S: repair again after global routing, wires at
+most 300 µm, 30 % margin on slew and capacitance; not yet in
+`src/config.json`) adds about 1 400 buffers and removes almost all the
+warnings. The 6 max-slew
+warnings left are SRAM address and data inputs at the slow corner (worst
+0.76 ns against a 0.60 ns limit) and the 2 max-cap warnings are SRAM data
+outputs at the fast corner (0.099 pF against 0.064 pF): the macro's
+timing there is extrapolated beyond its tables. A slower input edge
+costs setup time, which the 2.5 ns covers; a heavier output load slows
+the output, which only adds hold margin. The 107 max-fanout warnings are
+clock-tree leaf buffers driving 17 or 18 flops (the limit is 8); the
+timing above includes them.
+
+**Gate-level tests** (`test_gl_smoke`, `test_gl_firmware`; the action's
+`gl_test` job runs them on the routed netlist, with zero delays). The
+netlist elaborates with no X on its outputs and recovers from reset; it
+boots firmware through the parallel loader as the chip will, then sends
+UART with every bit exactly `BIT` cycles for a whole message
+(`uart_tx.s`), runs two threads at once (`thread_demo.s`), and answers as
+a SPI flash (`spi_flash.s`) at a 14-cycle SCK half period. All five pass
+on the netlist of run 40085473871. The UART test found a real bug: the
+boot ROM let `uio[0]` go low for one cycle when it handed over, which a
+receiver takes as a start bit (fixed in 6ea46bd).
+
+TT's precheck (KLayout CMOS5L DRC, pins, boundary, layers, cell names)
+passed on run 40079395684. From 24 Oct about 11:00, GitHub stopped starting
+jobs on the repository for a billing reason, so the later runs built the
+layout but never ran their precheck, gate-level test or sign-off job.
+`check_signoff.py`, the gate-level tests and the precheck (`precheck.py` from
+tt-support-tools, branch `ihp-sg13cmos5l` at d66cf17) were run by hand on
+their artifacts; the precheck passed on run 40085473871's layout. Before the move to CMOS5L, v2.0 hardened on SG13G2 at 40 ns
+with 23.09 ns to spare at the slow corner (run 39022166820, 17 Oct) and at
+20 ns with 3.09 ns (run 39633377026). v1 never hardened (`history.md` §5).
 
 ## 7b. Power per workload — `tools/power.py`
 
@@ -229,6 +285,49 @@ of the SRAM, read every cycle. Dynamic power scales with the clock, so
 about four times this at 50 MHz; leakage is 31 µW. The simulation has no
 delays, so glitches are not counted: these are estimates from the layout,
 not measurements.
+
+## 7c. The hardened netlist equals the RTL — `formal/netlist_equiv.py`
+
+The formal properties (§3) and the simulations (§2, §4) are about the RTL.
+`netlist_equiv.py` proves that the routed netlist (the GDS action's
+`tt_submission/tt_um_msf.v`, with hold buffers, resizing and the clock
+tree) behaves the same: one sequential miter of the two designs, the
+cells' logic read from the CMOS5L liberty, proved with ABC's `dprove`
+(latch correspondence, fraiging, then induction). It runs in CI after
+`gds` (job `equiv`).
+
+* **What is proved:** from reset, on every cycle and for every sequence of
+  inputs (including later resets), `uo_out`, `uio_out` and `uio_oe` are
+  the same, and so is every pin of both SRAM macros. The macros are cut
+  out as black boxes: their inputs are compared, their outputs are free
+  inputs shared by both designs, so the result holds whatever the SRAM
+  returns.
+* **The start state:** Yosys simulates one cycle with `rst_n` low and
+  writes the result back as the flops' initial values. Storage with no
+  reset (the register file, the input synchronisers) starts at 0 in both.
+  Starting both designs at all zeros instead fails: the netlist's only
+  flop (`dfrbpq`, 1 604 of them) resets to 0, so the RTL's 93 bits that
+  reset to 1 are stored inverted; before a reset the two disagree and
+  `dprove` cannot pair those flops.
+* **Not covered:** timing (that is §7), and the netlist's behaviour before
+  its first reset.
+
+On the netlist of CI run 40085473871 (commit 6ea46bd): **equivalent**, in
+8 min 43 s (miter: 83 inputs, 3 176 flops, 75 053 AND gates). Three
+deliberate bugs put into that netlist:
+
+| Bug put into the netlist | Result |
+|---|---|
+| one NAND2 (`_14196_`, in the SERDES receiver) made a NOR2 | undecided after 43 min (exit 2, so CI fails): the difference shows only once a whole byte has been received, thousands of cycles in, beyond `dprove`'s search. A gate-level simulation of a UART boot, which uses the receiver, shows it: no ACK |
+| one AND2 (`_13241_`) made an OR2 | not equivalent, 29 min |
+| SRAM bank 0's `A_ADDR[0]` and `A_ADDR[1]` swapped at the macro | not equivalent, 1.5 min |
+
+Earlier attempts and why they failed: Yosys `equiv_make/simple/induct`
+proved only 331 of 1 660 points in 68 minutes, because it matches flops by
+name and 87 of the netlist's have none; EQY stopped at partitioning on a net that
+matched twice; `dprove` from an all-zero start did not finish in 78
+minutes. A stand-in SRAM model that hashed its inputs also worked, but the
+black box is stronger and needs no model.
 
 ## 8. Mutation score — `tools/mutation.py`
 
@@ -299,7 +398,7 @@ change behaviour.
 | Claim | Evidence |
 |---|---|
 | The RTL implements `isa.md` | an independent Python model, RTL and model compared on every issue of 80 random programs per run (§2); every instruction checked by hand-derived tests (§4) |
-| No skipped, repeated or spurious instructions, for any program | formal properties F1-F7 with free memory and pins, all `cover()` points reached; the v1 bugs reinjected are caught (§3) |
+| No skipped, repeated or spurious instructions, for any program | formal properties F1-F7 with free memory and pins, all `cover()` points reached; the v1 bugs reinjected are caught (§3). On the controller F1, F2, F4-F6 hold for all time (PDR) |
 | Bit timing is exact and drift free | `test_core` cycle costs; `test_firmware` and `test_faults` measure edges at the pins (UART bits exactly `BIT` cycles for a whole message) |
 | No firmware deadline is ever missed, on any path | `tools/msf_timing.py` (§6b): every `WAIT_CMP` in the firmware issues at least 9 cycles before its target; cross-checked against the ISA model; rejects a too-fast UART |
 | A missed deadline is never silent | `WAIT_CMP` with a passed target releases at once with Z=1 and sets LATE (isa.md §5): `test_wait_cmp_late_boundaries` (0 and 255 cycles behind are late, 256 behind and 1 ahead are not), `test_late_flags_per_thread`; formal F10, F11 and mutant B4 (§3); random programs with late targets, RTL == model (§2) |
@@ -317,7 +416,8 @@ change behaviour.
 | The chip records 8 pins as a logic analyser without changing any thread's timing | `test_capture`: every word checked against the spec's rules; the same loop takes the same cycles recording or not; formal F9 |
 | A host can halt, single-step and read the core's state through the pins | `test_debug.test_debug_single_step`: hand-driven clock, PC trace and register read between edges |
 | Timing faults can be injected by exact amounts | `test_faults`: each knob measured at the pins; a one-cycle step in the UART bit time moves a receiver from pass to fail exactly where its geometry predicts |
-| v2.0 fits the 6x4 tiles and meets timing at 25 MHz in all corners, and at 50 MHz, on SG13G2 | the GDS runs above: 23 % utilisation, no setup or hold violations, clean DRC, precheck passed; the 20 ns run on `rtl-changes`: 3.09 ns to spare (§7). The shuttle is CMOS5L, and the four-thread v2.1 build missed 50 MHz at the slow corner: both are being fixed (`docs/plan.md` §1.1-§1.2) |
+| The design fits its 6x4 tiles on CMOS5L and runs at 33 MHz in every corner, 50 MHz at the typical one | §7: 45-47 % utilisation; at 30 ns, setup and hold met in all three corners (slow +2.17 to +2.49 ns, typical +10.7 ns), no routing DRC, antenna or LVS errors; precheck passed on the CMOS5L layouts of runs 40079395684 (CI) and 40085473871 (run locally) |
+| The layout is the RTL, so every check above applies to it | `netlist_equiv.py` (§7c): the routed netlist is proved equivalent to the RTL from reset, for all inputs and all time, with the SRAMs as black boxes. Of three bugs put into the netlist, two are found and the third, deep in the receiver, is left undecided: the tool never calls a broken netlist equivalent. The netlist also boots and runs firmware in gate-level simulation (§7) |
 | The tests catch a broken design, not only pass a working one | 39 of 40 sampled single-bit mutants killed on v2.0, 38 of 40 on v2.1, 37 of 40 on v2.2; every survivor cannot change behaviour (§8) |
 
 What is **not** validated yet:
@@ -330,10 +430,10 @@ What is **not** validated yet:
   logic analyser has been connected.
 * Electrical behaviour is not modelled: pad drive, rise times with real
   pull-ups, USB and 10BASE-T signal levels.
-* The hardened netlist is only smoke-tested (`test_gl_smoke`: it
-  elaborates, its outputs carry no X, reset recovers); its function is
-  checked on the RTL.
-* The formal proofs are bounded (depth 16 from reset) and cover the
+* Timing is checked by static analysis only (§7): the gate-level
+  simulations have no delays.
+* Some formal properties are bounded (depth 16 from reset): four of the
+  controller's (§3) and those of the top level. The properties cover the
   control pipeline; the SERDES and CRC datapaths are checked in simulation
   only.
 * The mutation score comes from a sample of 40 single-bit faults.

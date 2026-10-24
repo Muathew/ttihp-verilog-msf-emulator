@@ -54,6 +54,36 @@ jobs:
       - name: Timing, DRC, antenna and LVS sign-off
         run: python3 tools/check_signoff.py tt_submission
 
+  # The hardened netlist must behave as the RTL, cycle for cycle, from reset
+  # (formal/netlist_equiv.py), so the formal results apply to the layout.
+  equiv:
+    needs: gds
+    runs-on: ubuntu-24.04
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v6
+
+      - name: Download the submission
+        uses: actions/download-artifact@v8
+        with:
+          name: tt_submission
+          path: tt_submission
+
+      - name: Install OSS CAD Suite
+        uses: YosysHQ/setup-oss-cad-suite@v4
+        with:
+          version: '2026-10-01'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # the cells' logic: the typical-corner liberty of the PDK the GDS action uses
+      - name: Cell library
+        run: >
+          curl -sSfL -o stdcell_typ.lib
+          https://raw.githubusercontent.com/IHP-GmbH/IHP-Open-PDK/2bbec755dc67ca3db0261c3d6163e15735d66710/ihp-sg13cmos5l/libs.ref/sg13cmos5l_stdcell/lib/sg13cmos5l_stdcell_typ_1p20V_25C.lib
+
+      - name: Netlist equals RTL
+        run: python3 formal/netlist_equiv.py tt_submission/tt_um_msf.v --liberty stdcell_typ.lib --pdr-timeout 1800
+
   viewer:
     needs: gds
     runs-on: ubuntu-24.04

@@ -30,6 +30,7 @@ generic building blocks that firmware composes into protocols.
 | CRC unit | any CRC up to 32 bits, normal or reflected, 1-16 bits per write, bit-serial in the background (CRC-8, CRC-5/16 USB, CRC-32 Ethernet ...) |
 | Capture engine | a logic analyser: records 8 pins into an SRAM ring buffer every *n* cycles (two samples a word, or a word per change with its time), level or edge trigger with pre-trigger history, using only data-RAM cycles the core leaves free |
 | Pins | `uio[7:0]` with per-bit set/clear/toggle/write of OUT and OE (open drain = OE), `uo_out[7:0]` written by firmware, `ui_in[7:0]` readable; all inputs pass a 2-flip-flop synchroniser; an optional glitch filter per `uio` pin removes pulses shorter than 1-15 cycles |
+| Clock | up to 33 MHz in every corner (signed off at 30 ns, slow corner 1.08 V 125 °C included); 50 MHz at the typical corner. The demos run at 12 or 20 MHz (`docs/verification.md` §7) |
 | Power | about 1.8-2.1 mW at 12.5 MHz (typical corner, estimated from the routed netlist with a gate-level workload; `docs/verification.md` §7b) |
 
 ### Timing model (what makes bit-banging exact)
@@ -75,9 +76,9 @@ must not leave bit 2 high while `rst_n` is low.
 
 The demos' timing constants are set for the clock in the table below; at
 another clock, scale each program's timing defines (e.g. `BIT`). No demo
-needs more than 20 MHz. The design meets 50 MHz at the typical corner; the
-clock it is signed off at for the slow corner (1.08 V, 125 °C) is being
-settled (`docs/plan.md` §1.2). The boot ROM's UART loader is 115200 baud only
+needs more than 20 MHz. The design is signed off at 33 MHz (30 ns) in
+every corner, including the slow one (1.08 V, 125 °C), and meets 50 MHz at
+the typical corner (`docs/verification.md` §7). The boot ROM's UART loader is 115200 baud only
 at 12 MHz (its rate scales with the clock); the parallel loader works at
 any clock.
 
