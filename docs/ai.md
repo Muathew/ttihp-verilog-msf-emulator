@@ -4,7 +4,7 @@ The brief lists "AI-assisted verification" among the methods it wants to
 see. This page says how we used it on msfcore, which checks stand between
 AI-written work and the chip, and where the AI was wrong.
 
-> Draft (23 Oct 2026), written with the AI itself from the repository and
+> Draft (23-24 Oct 2026), written with the AI itself from the repository and
 > its working notes. Sam and Muath to confirm the attributions in §1.
 
 ## 1. Who did what
@@ -30,8 +30,8 @@ something independent of it:
 |---|---|
 | RTL | an ISA model written from `isa.md`, not from the RTL, compared on every issue of random programs (`verification.md` §2); formal properties with free memory and pins (§3) |
 | Formal properties | mutants: known bugs put back into the RTL must each give a counterexample (B1–B4), and every `cover()` must be reached, so a property that is vacuous or too weak shows |
-| Tests | mutation testing (`tools/mutation.py`): seeded RTL faults the tests must catch (§8) |
-| Firmware | device models written from the protocol standards (PS/2, IEEE 1149.1, ADIv5, I2C, SPI, USB, Ethernet), not from the firmware; and the static deadline check (§6b), itself cross-checked against the ISA model |
+| Tests | mutation testing (`tools/mutation.py`): seeded RTL faults the tests must catch, after the tests have passed on the unmutated design (§8) |
+| Firmware | device models written from the protocol standards (PS/2, IEEE 1149.1, ADIv5, CAN 2.0, Maxim 1-Wire, 25xx flash, I2C, SPI, USB, Ethernet), not from the firmware; and the static deadline check (§6b), itself cross-checked against the ISA model |
 | The deadline checker | the ISA model (every observed `WAIT_CMP` must fall in the computed range) and a program that must be rejected |
 | Physical design | LibreLane's DRC, LVS and antenna checks, Tiny Tapeout's precheck, the gate-level test, and reading the timing reports rather than the badge |
 | Claims in the docs | `verification.md` §9 maps each claim to the test that backs it, and lists what is not validated |
@@ -53,6 +53,10 @@ Taken from the commit history; each is visible in `git log`.
 | The deadline checker counted the wait twice after a `WAIT_CMP`, and lost every bound | its own report (−inf..inf where a hand count gave 85..96) and the model cross-check |
 | The JTAG probe returned wrong bits for a partial last byte when the data had more bits set; its test passed by luck | writing the SWD probe with the same code against a stricter model; the JTAG test now sends data that exposes it |
 | The I2C monitor needed three designs before it caught every fault on a legal bus | an instruction-level tracer against the pad edges, and sweeps of legal and faulty buses (`history.md` §8) |
+| Six mutation "kills" were not real: a new 1-Wire test sent its next command while a 64-bit read was still running (the probe's UART buffer holds one byte), so it failed on the good design and every mutant failed it too | all six were credited to `test_buses` and none to the modules that test those circuits directly; run alone on the unmutated design, the test failed. `mutation.py` now runs the tests on the unmutated design first |
+| The deadline checker could not certify `can.s` at any bit time, which read as the firmware being too slow: widening rounded the deadline register's lead (about −175 cycles) to the next power of two, −256 | a script that computed the longest path straight from the code disagreed with the checker by about 90 cycles; recording the checker's own path showed the widening step. Its thresholds are now 16 apart near zero |
+| The SPI flash's reads came back shifted by one bit: the SCK waits' CS-check timeout (12 cycles) was shorter than half an SCK period, so a check could run just as SCK changed and the firmware missed an edge | the reference model; a per-cycle trace of the program counter showed the timeout handler running at the edge |
+| The first netlist-versus-RTL miter could never fail: an option meant to ignore undefined RTL bits became don't-cares, and optimisation folded the whole comparison to a constant | the result was too good: the AIGER file had one output and no gates. Tracing the comparison's input cone through each pass found the step |
 
 ## 4. What we take from it
 
