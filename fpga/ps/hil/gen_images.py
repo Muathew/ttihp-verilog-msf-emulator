@@ -27,6 +27,7 @@ IMAGES = [
     ("eth_10baset_tx", REPO / "firmware" / "eth_10baset_tx.s", ETH_NLP),
     ("thread_demo", REPO / "firmware" / "thread_demo.s", {}),
     ("jtag", REPO / "firmware" / "jtag.s", {}),
+    ("swd", REPO / "firmware" / "swd.s", {}),
     ("onewire", REPO / "firmware" / "onewire.s", {}),
     ("spi_target_m0", REPO / "firmware" / "spi_target.s", {"MODE": 0}),
     ("spi_target_m3", REPO / "firmware" / "spi_target.s", {"MODE": 3}),
@@ -35,6 +36,7 @@ IMAGES = [
     ("i2c_target", REPO / "firmware" / "i2c_target.s", {}),
     ("i2c_target_stretch", REPO / "firmware" / "i2c_target.s", {"STRETCH": 1}),
     ("boot_probe", HERE / "firmware" / "boot_probe.s", {}),
+    ("four_threads", HERE / "firmware" / "four_threads.s", {}),
     ("dump_ram", HERE / "firmware" / "dump_ram.s", {}),
 ]
 BASE = 128

@@ -191,4 +191,22 @@ int     msf_i2c_ctl_init(msf_i2c_ctl *c, const uint16_t *ops, uint32_t nops, uin
 uint8_t msf_i2c_ctl_cycle(msf_i2c_ctl *c, msf_pins p);     /* uio_in SDA and SCL (pulled up) */
 int     msf_i2c_ctl_done(const msf_i2c_ctl *c);
 
+/* ---- SWD: an ADIv5 SW-DP with one MEM-AP; SWCLK uio2, SWDIO uio3 with a
+ *      pull-up (test_debugports.SwdTarget) -------------------------------- */
+#define MSF_SWD_DPIDR 0x2BA01477U
+#define MSF_SWD_IDR   0x24770011U
+typedef struct {
+    uint32_t addr[8], val[8];      /* the target's memory, word by word */
+    int nmem;
+    uint32_t wait_drw;             /* DRW accesses still to answer WAIT */
+    int clk, ones, mode, ready, phase, drive;  /* drive: -1 released */
+    uint32_t hist;
+    int bits[8], nbits, n, ap, rnw, a, ack;
+    uint32_t data, word, select, csw, tar, ctrl, rdbuff, errors;
+} msf_swd_target;
+void     msf_swd_init(msf_swd_target *t, const uint32_t *addr, const uint32_t *val, int n,
+                      uint32_t wait_drw);
+uint8_t  msf_swd_cycle(msf_swd_target *t, msf_pins p);     /* uio_in SWDIO bit */
+uint32_t msf_swd_mem(const msf_swd_target *t, uint32_t addr);
+
 #endif

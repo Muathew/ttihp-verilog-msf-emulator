@@ -1045,6 +1045,182 @@ static int test_i2c_target_eeprom(void)
     return i2c_target_case(&img_i2c_target_stretch, &rng, 16U, 14U, 2U, 8U, 16U, 1);
 }
 
+static uint8_t swd_dev(void *ctx, msf_pins p)
+{
+    return msf_swd_cycle((msf_swd_target *)ctx, p);
+}
+
+/* one 'T' command for probe_run: {length, 'T', header[, 4 data bytes LE]} */
+static uint32_t swd_cmd(uint8_t *buf, uint32_t at, int ap, int rnw, int a, uint32_t v)
+{
+    uint32_t i;
+
+    buf[at++] = (uint8_t)(rnw ? 2U : 6U);
+    buf[at++] = 'T';
+    buf[at++] = (uint8_t)(ap | rnw << 1 | ((a >> 2) & 1) << 2 | ((a >> 3) & 1) << 3);
+    if (!rnw)
+        for (i = 0; i < 4U; ++i)
+            buf[at++] = (uint8_t)(v >> (8U * i));
+    return at;
+}
+
+/* the replies to an OK read: ACK 1, the data LE, the parity bit */
+static uint32_t swd_ok(uint8_t *buf, uint32_t at, uint32_t v)
+{
+    uint32_t i;
+    int p = 0;
+
+    buf[at++] = 1U;
+    for (i = 0; i < 4U; ++i)
+        buf[at++] = (uint8_t)(v >> (8U * i));
+    for (i = 0; i < 32U; ++i)
+        p ^= (int)((v >> i) & 1U);
+    buf[at++] = (uint8_t)p;
+    return at;
+}
+
+#define SWD_CHECK_REPLIES(u, exp, ne, what)                                           \
+    do {                                                                              \
+        uint32_t k_;                                                                  \
+        CHECK((u).nrx == (ne), "%s: %d replies, want %d", what, (int)(u).nrx, (int)(ne)); \
+        for (k_ = 0; k_ < (ne); ++k_)                                                 \
+            CHECK((u).rx[k_] == (exp)[k_], "%s: reply %d = %02x, want %02x", what,       \
+                  (int)k_, (u).rx[k_], (exp)[k_]);                                    \
+    } while (0)
+
+/* test_debugports.test_swd_dpidr, _memap_read_write, _wait_and_no_target */
+static int test_swd_probe(void)
+{
+    static const uint32_t a0 = 0x20000000U, v0 = 0xDEADBEEFU, a1 = 0x0U, v1 = 0x12345678U;
+    uint8_t cmds[96], nrep[16], exp[64];
+    uint32_t nc, ne;
+    int k;
+    msf_swd_target t;
+    msf_uart_host u;
+
+    /* line reset and the JTAG-to-SWD switch, then DPIDR */
+    nc = 0;
+    cmds[nc++] = 1U;
+    cmds[nc++] = 'L';
+    nc = swd_cmd(cmds, nc, 0, 1, 0x0, 0);
+    nrep[0] = 1U;
+    nrep[1] = 6U;
+    ne = 0;
+    exp[ne++] = 'L';
+    ne = swd_ok(exp, ne, MSF_SWD_DPIDR);
+    msf_swd_init(&t, 0, 0, 0, 0);
+    if (probe_run(&img_swd, &u, cmds, nrep, 2, 0x08U, swd_dev, &t, 400000U))
+        return -1;
+    SWD_CHECK_REPLIES(u, exp, ne, "DPIDR");
+    CHECK(t.mode == 2 && t.errors == 0U, "target mode %d, %d errors", t.mode, (int)t.errors);
+
+    /* SELECT bank F, the AP's IDR (posted: RDBUFF returns it), then CSW,
+     * TAR, a posted DRW read and a DRW write */
+    nc = 0;
+    cmds[nc++] = 1U;
+    cmds[nc++] = 'L';
+    nc = swd_cmd(cmds, nc, 0, 0, 0x8, 0xF0U);
+    nc = swd_cmd(cmds, nc, 1, 1, 0xC, 0);
+    nc = swd_cmd(cmds, nc, 0, 1, 0xC, 0);
+    nc = swd_cmd(cmds, nc, 0, 0, 0x8, 0x00U);
+    nc = swd_cmd(cmds, nc, 1, 0, 0x0, 0x23000002U);
+    nc = swd_cmd(cmds, nc, 1, 0, 0x4, a0);
+    nc = swd_cmd(cmds, nc, 1, 1, 0xC, 0);
+    nc = swd_cmd(cmds, nc, 0, 1, 0xC, 0);
+    nc = swd_cmd(cmds, nc, 1, 0, 0xC, 0xCAFEF00DU);
+    {
+        static const uint8_t r[10] = {1, 1, 6, 6, 1, 1, 1, 6, 6, 1};
+        memcpy(nrep, r, sizeof r);
+    }
+    ne = 0;
+    exp[ne++] = 'L';
+    exp[ne++] = 1U;
+    ne = swd_ok(exp, ne, 0);
+    ne = swd_ok(exp, ne, MSF_SWD_IDR);
+    for (k = 0; k < 3; ++k)
+        exp[ne++] = 1U;
+    ne = swd_ok(exp, ne, MSF_SWD_IDR);
+    ne = swd_ok(exp, ne, v0);
+    exp[ne++] = 1U;
+    msf_swd_init(&t, &a0, &v0, 1, 0);
+    if (probe_run(&img_swd, &u, cmds, nrep, 10, 0x08U, swd_dev, &t, 2000000U))
+        return -1;
+    SWD_CHECK_REPLIES(u, exp, ne, "MEM-AP");
+    CHECK(t.csw == 0x23000002U && t.tar == a0 && msf_swd_mem(&t, a0) == 0xCAFEF00DU &&
+          t.errors == 0U, "CSW %08x TAR %08x mem %08x, %d errors", (unsigned)t.csw,
+          (unsigned)t.tar, (unsigned)msf_swd_mem(&t, a0), (int)t.errors);
+
+    /* a WAIT ends the transaction with no data phase; the retry succeeds */
+    nc = 0;
+    cmds[nc++] = 1U;
+    cmds[nc++] = 'L';
+    nc = swd_cmd(cmds, nc, 1, 1, 0xC, 0);
+    nc = swd_cmd(cmds, nc, 1, 1, 0xC, 0);
+    nc = swd_cmd(cmds, nc, 0, 1, 0xC, 0);
+    nrep[0] = 1U;
+    nrep[1] = 1U;
+    nrep[2] = 6U;
+    nrep[3] = 6U;
+    ne = 0;
+    exp[ne++] = 'L';
+    exp[ne++] = 2U;
+    ne = swd_ok(exp, ne, 0);
+    ne = swd_ok(exp, ne, v1);
+    msf_swd_init(&t, &a1, &v1, 1, 1U);
+    if (probe_run(&img_swd, &u, cmds, nrep, 4, 0x08U, swd_dev, &t, 1000000U))
+        return -1;
+    SWD_CHECK_REPLIES(u, exp, ne, "WAIT");
+
+    /* no target: the ACK reads 7 (SWDIO pulled high) */
+    nc = 0;
+    cmds[nc++] = 1U;
+    cmds[nc++] = 'L';
+    nc = swd_cmd(cmds, nc, 0, 1, 0x0, 0);
+    nrep[0] = 1U;
+    nrep[1] = 1U;
+    if (probe_run(&img_swd, &u, cmds, nrep, 2, 0x08U, 0, 0, 400000U))
+        return -1;
+    CHECK(u.nrx >= 2U && u.rx[0] == 'L' && u.rx[1] == 7U, "no target: replies %02x %02x",
+          u.rx[0], u.rx[1]);
+    return 0;
+}
+
+/* four hardware threads (test_threads): three exact square waves at once,
+ * and the FIFO handing T0's counts to T3 in order (four_threads.s) */
+static int test_four_threads_fifo(void)
+{
+    static const uint32_t half[3] = {400U, 600U, 1000U};
+    uint32_t c, i, k, prev[3] = {0, 0, 0}, nedge[3] = {0, 0, 0}, nuo = 0;
+    unsigned last = 0;
+
+    if (fw_boot(&img_four_threads, 0, 0, 0))
+        return -1;
+    for (c = 0; c < 12000U; ++c)
+        cycle(0);
+    CHECK(!tr.overflow, "trace overflow");
+    for (i = 1; i < tr.n; ++i) {
+        for (k = 0; k < 3U; ++k) {
+            if (((tr.p[i].out ^ tr.p[i - 1U].out) & (0x10U << k)) != 0U) {
+                if (nedge[k]++)
+                    CHECK(i - prev[k] == half[k], "T%d half period %d cycles, want exactly %d",
+                          (int)k, (int)(i - prev[k]), (int)half[k]);
+                prev[k] = i;
+            }
+        }
+        if (tr.p[i].uo != tr.p[i - 1U].uo) {
+            CHECK(tr.p[i].uo == ((last + 1U) & 0xFFU),
+                  "uo_out %d -> %d: the FIFO lost or repeated a word", (int)last,
+                  (int)tr.p[i].uo);
+            last = tr.p[i].uo;
+            ++nuo;
+        }
+    }
+    for (k = 0; k < 3U; ++k)
+        CHECK(nedge[k] > 10U, "only %d edges from T%d", (int)nedge[k], (int)k);
+    CHECK(nuo > 25U, "only %d words through the FIFO", (int)nuo);
+    return 0;
+}
+
 /* ======================================================================== */
 
 typedef struct {
@@ -1072,6 +1248,8 @@ static const msf_test tests[] = {
     {"spi_target_regs", test_spi_target_regs},
     {"spi_flash", test_spi_flash},
     {"i2c_target_eeprom", test_i2c_target_eeprom},
+    {"swd_probe", test_swd_probe},
+    {"four_threads_fifo", test_four_threads_fifo},
 };
 
 #define NTESTS ((int)(sizeof tests / sizeof tests[0]))

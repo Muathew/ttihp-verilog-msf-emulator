@@ -974,3 +974,195 @@ int msf_i2c_ctl_done(const msf_i2c_ctl *c)
 {
     return c->pc >= c->n;
 }
+
+/* ======================================================================== */
+/* SWD target: an ADIv5 SW-DP with one MEM-AP (test_debugports.SwdTarget). */
+/* It samples SWDIO and changes it on SWCLK rising edges; counted from the  */
+/* request's park bit (edge 8): ACK at 9-11, read data 12-43, parity 44,    */
+/* released at 45; a write releases at 12, data 14-45, parity 46.           */
+
+enum { SWD_JTAG, SWD_SWITCHED, SWD_SWD };
+enum { SWD_IDLE, SWD_REQ, SWD_RESP };
+
+static int swd_parity(uint32_t v)
+{
+    int p = 0;
+
+    while (v) {
+        p ^= (int)(v & 1U);
+        v >>= 1;
+    }
+    return p;
+}
+
+void msf_swd_init(msf_swd_target *t, const uint32_t *addr, const uint32_t *val, int n,
+                  uint32_t wait_drw)
+{
+    int i;
+
+    memset(t, 0, sizeof *t);
+    for (i = 0; i < n && i < 8; ++i) {
+        t->addr[i] = addr[i];
+        t->val[i] = val[i];
+    }
+    t->nmem = i;
+    t->wait_drw = wait_drw;
+    t->clk = 1;
+    t->drive = -1;
+}
+
+uint32_t msf_swd_mem(const msf_swd_target *t, uint32_t addr)
+{
+    int i;
+
+    for (i = 0; i < t->nmem; ++i)
+        if (t->addr[i] == addr)
+            return t->val[i];
+    return 0;
+}
+
+static void swd_mem_write(msf_swd_target *t, uint32_t addr, uint32_t v)
+{
+    int i;
+
+    for (i = 0; i < t->nmem; ++i)
+        if (t->addr[i] == addr) {
+            t->val[i] = v;
+            return;
+        }
+    if (t->nmem < 8) {
+        t->addr[t->nmem] = addr;
+        t->val[t->nmem++] = v;
+    }
+}
+
+static uint32_t swd_read(msf_swd_target *t, int ap, int a)
+{
+    uint32_t reg, val = 0, old;
+
+    if (!ap)
+        return a == 0x0 ? MSF_SWD_DPIDR : a == 0x4 ? t->ctrl | ((t->ctrl >> 1) & 0x50000000U)
+             : a == 0x8 ? 0U : t->rdbuff;
+    reg = (t->select & 0xF0U) | (uint32_t)a;
+    if (reg == 0x00U)
+        val = t->csw;
+    else if (reg == 0x04U)
+        val = t->tar;
+    else if (reg == 0xFCU)
+        val = MSF_SWD_IDR;
+    else if (reg == 0x0CU)
+        val = msf_swd_mem(t, t->tar);
+    old = t->rdbuff;                   /* AP reads are posted */
+    t->rdbuff = val;
+    return old;
+}
+
+static void swd_write(msf_swd_target *t, int ap, int a, uint32_t v)
+{
+    uint32_t reg;
+
+    if (!ap) {
+        if (a == 0x4)
+            t->ctrl = v;
+        else if (a == 0x8)
+            t->select = v;
+        return;
+    }
+    reg = (t->select & 0xF0U) | (uint32_t)a;
+    if (reg == 0x00U)
+        t->csw = v;
+    else if (reg == 0x04U)
+        t->tar = v;
+    else if (reg == 0x0CU)
+        swd_mem_write(t, t->tar, v);
+}
+
+static void swd_rise(msf_swd_target *t, int dio, int host)
+{
+    int n;
+
+    t->ones = (host && dio) ? t->ones + 1 : 0;
+    t->hist = (t->hist >> 1) | ((uint32_t)dio << 15);
+    if (t->phase == SWD_IDLE || t->ones >= 50) {
+        if (t->ones >= 50) {                        /* line reset */
+            t->phase = SWD_IDLE;
+            t->ready = 0;
+            t->drive = -1;
+        } else if (t->mode == SWD_JTAG && t->hist == 0xE79EU) {
+            t->mode = SWD_SWITCHED;
+        } else if (host && !dio && t->mode != SWD_JTAG) {
+            if (t->mode == SWD_SWITCHED)
+                t->mode = SWD_SWD;
+            t->ready = t->mode == SWD_SWD;
+        } else if (host && dio && t->ready) {
+            t->phase = SWD_REQ;
+            t->bits[0] = 1;
+            t->nbits = 1;
+        }
+        return;
+    }
+    if (t->phase == SWD_REQ) {
+        int *b = t->bits, drw;
+
+        b[t->nbits++] = dio;
+        if (t->nbits < 8)
+            return;
+        t->ap = b[1];
+        t->rnw = b[2];
+        t->a = (b[3] | b[4] << 1) << 2;
+        if (b[0] != 1 || b[6] != 0 || b[7] != 1 || b[5] != (b[1] ^ b[2] ^ b[3] ^ b[4])) {
+            ++t->errors;                            /* a bad request */
+            t->phase = SWD_IDLE;
+            return;
+        }
+        drw = t->ap && ((t->select & 0xF0U) | (uint32_t)t->a) == 0x0CU;
+        t->ack = 1;
+        if (drw && t->wait_drw) {
+            --t->wait_drw;
+            t->ack = 2;
+        }
+        t->data = (t->rnw && t->ack == 1) ? swd_read(t, t->ap, t->a) : 0U;
+        t->n = 8;
+        t->phase = SWD_RESP;
+        return;
+    }
+    n = ++t->n;
+    if (n >= 9 && n <= 11) {
+        t->drive = (t->ack >> (n - 9)) & 1;
+    } else if (t->ack != 1 || !t->rnw) {
+        if (n == 12) {
+            t->drive = -1;
+            if (t->ack != 1)
+                t->phase = SWD_IDLE;
+        } else if (!t->rnw && n >= 14 && n <= 45) {
+            t->word |= (uint32_t)dio << (n - 14);
+        } else if (!t->rnw && n == 46) {
+            if (dio != swd_parity(t->word))
+                ++t->errors;                        /* write data parity */
+            swd_write(t, t->ap, t->a, t->word);
+            t->word = 0;
+            t->phase = SWD_IDLE;
+        }
+    } else if (n >= 12 && n <= 43) {
+        t->drive = (int)((t->data >> (n - 12)) & 1U);
+    } else if (n == 44) {
+        t->drive = swd_parity(t->data);
+    } else if (n == 45) {
+        t->drive = -1;
+        t->phase = SWD_IDLE;
+    }
+}
+
+uint8_t msf_swd_cycle(msf_swd_target *t, msf_pins p)
+{
+    int clk = (p.out >> 2) & 1, host = (p.oe >> 3) & 1;
+
+    if (host && t->drive >= 0)
+        ++t->errors;                                /* both drive SWDIO */
+    if (clk && !t->clk) {
+        int dio = host ? (p.out >> 3) & 1 : (t->drive >= 0 ? t->drive : 1);
+        swd_rise(t, dio, host);
+    }
+    t->clk = clk;
+    return (uint8_t)(t->drive >= 0 ? (t->drive << 3) : 0x08);   /* pulled up */
+}
