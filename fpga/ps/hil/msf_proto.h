@@ -168,4 +168,27 @@ uint8_t msf_spi_ctl_cycle(msf_spi_ctl *c, msf_pins p);     /* uio_in for the nex
 int     msf_spi_ctl_done(const msf_spi_ctl *c);
 uint8_t msf_spi_ctl_byte(const msf_spi_ctl *c, uint32_t k); /* k-th byte read, in order */
 
+/* ---- I2C controller, open drain with clock stretching, for the chip as a
+ *      target: SDA uio5, SCL uio6 (test_targets.I2cController) ------------ */
+#define MSF_I2C_START    0x100U    /* ops: a START (repeated if SCL is low) */
+#define MSF_I2C_STOP     0x200U
+#define MSF_I2C_BYTE(v)  (0x300U | ((v) & 0xFFU))   /* write a byte, record the ACK */
+#define MSF_I2C_READ(ack) (0x400U | ((ack) ? 1U : 0U)) /* read a byte, then ACK or NACK */
+#define MSF_I2C_PROG 8192U
+typedef struct {
+    uint16_t prog[MSF_I2C_PROG];   /* micro-steps, op << 12 | argument */
+    uint32_t n, pc, wait;
+    int sda_low, scl_low, first;
+    unsigned acc;
+    uint8_t results[128];          /* per byte: the ACK bit seen (0 = ACK); per read: the byte */
+    uint32_t nres, stretched, violations;
+} msf_i2c_ctl;
+/* tlow, thigh = SCL low and high; thd = SDA change after SCL falls; tss =
+ * START/STOP setup and hold; tbuf = bus free after a STOP (core cycles).
+ * -1 if the program does not fit. */
+int     msf_i2c_ctl_init(msf_i2c_ctl *c, const uint16_t *ops, uint32_t nops, uint32_t tlow,
+                         uint32_t thigh, uint32_t thd, uint32_t tss, uint32_t tbuf);
+uint8_t msf_i2c_ctl_cycle(msf_i2c_ctl *c, msf_pins p);     /* uio_in SDA and SCL (pulled up) */
+int     msf_i2c_ctl_done(const msf_i2c_ctl *c);
+
 #endif

@@ -831,3 +831,146 @@ uint8_t msf_spi_ctl_byte(const msf_spi_ctl *c, uint32_t k)
 {
     return k < sizeof c->miso ? c->miso[k] : 0U;
 }
+
+/* ======================================================================== */
+/* I2C controller (test_targets.I2cController), as a list of micro-steps:  */
+/* the Python generator's waits and pin changes, run one cycle at a time.  */
+
+enum { I2W, I2SDA, I2PULL, I2REL, I2SMP, I2WH, I2ACK, I2BYTE };
+#define I2C_SDA 0x20U
+#define I2C_SCL 0x40U
+
+static int i2c_emit(msf_i2c_ctl *c, unsigned op, uint32_t arg)
+{
+    while (op == I2W && arg > 0xFFFU) {           /* long waits: several steps */
+        if (i2c_emit(c, I2W, 0xFFFU))
+            return -1;
+        arg -= 0xFFFU;
+    }
+    if (c->n >= MSF_I2C_PROG)
+        return -1;
+    if (op == I2W && arg == 0U)
+        return 0;
+    c->prog[c->n++] = (uint16_t)(op << 12 | arg);
+    return 0;
+}
+
+/* one bit: SDA = value (0, 1, or 2 = released for the target), sampled
+ * while SCL is high (into acc if `shift`) */
+static int i2c_clock(msf_i2c_ctl *c, unsigned value, int shift, uint32_t tlow, uint32_t thigh,
+                     uint32_t thd)
+{
+    int e = 0;
+
+    e |= i2c_emit(c, I2W, thd - 1U);
+    e |= i2c_emit(c, I2SDA, value == 0U ? 0U : 1U);
+    e |= i2c_emit(c, I2W, tlow - thd);
+    e |= i2c_emit(c, I2REL, 0);
+    e |= i2c_emit(c, I2SMP, shift ? 1U : 0U);
+    e |= i2c_emit(c, I2WH, thigh - 1U);
+    e |= i2c_emit(c, I2PULL, 0);
+    return e;
+}
+
+int msf_i2c_ctl_init(msf_i2c_ctl *c, const uint16_t *ops, uint32_t nops, uint32_t tlow,
+                     uint32_t thigh, uint32_t thd, uint32_t tss, uint32_t tbuf)
+{
+    uint32_t i;
+    int e = 0, scl_low = 0, b;
+
+    memset(c, 0, sizeof *c);
+    e |= i2c_emit(c, I2W, 40U);
+    for (i = 0; i < nops; ++i) {
+        unsigned op = ops[i] & 0xF00U, v = ops[i] & 0xFFU;
+
+        if (op == MSF_I2C_START) {
+            if (scl_low) {                         /* repeated START: SDA up, SCL up */
+                e |= i2c_emit(c, I2W, thd);
+                e |= i2c_emit(c, I2SDA, 1);
+                e |= i2c_emit(c, I2W, tlow - thd);
+                e |= i2c_emit(c, I2REL, 0);
+            }
+            e |= i2c_emit(c, I2W, tss);
+            e |= i2c_emit(c, I2SDA, 0);
+            e |= i2c_emit(c, I2W, tss);
+            e |= i2c_emit(c, I2PULL, 0);
+            scl_low = 1;
+        } else if (op == MSF_I2C_STOP) {
+            e |= i2c_emit(c, I2W, thd);
+            e |= i2c_emit(c, I2SDA, 0);
+            e |= i2c_emit(c, I2W, tlow - thd);
+            e |= i2c_emit(c, I2REL, 0);
+            e |= i2c_emit(c, I2W, tss);
+            e |= i2c_emit(c, I2SDA, 1);
+            e |= i2c_emit(c, I2W, tbuf);
+            scl_low = 0;
+        } else if (op == 0x300U) {
+            for (b = 7; b >= 0; --b)
+                e |= i2c_clock(c, (v >> b) & 1U, 0, tlow, thigh, thd);
+            e |= i2c_clock(c, 2U, 1, tlow, thigh, thd);
+            e |= i2c_emit(c, I2ACK, 0);
+        } else if (op == 0x400U) {
+            for (b = 0; b < 8; ++b)
+                e |= i2c_clock(c, 2U, 1, tlow, thigh, thd);
+            e |= i2c_clock(c, v ? 0U : 1U, 0, tlow, thigh, thd);
+            e |= i2c_emit(c, I2BYTE, 0);
+        }
+    }
+    return e ? -1 : 0;
+}
+
+uint8_t msf_i2c_ctl_cycle(msf_i2c_ctl *c, msf_pins p)
+{
+    int chip_sda = (p.oe & I2C_SDA) != 0, chip_scl = (p.oe & I2C_SCL) != 0;
+    int sda = (c->sda_low || chip_sda) ? 0 : 1;
+
+    for (;;) {
+        unsigned op, arg;
+
+        if (c->pc >= c->n)
+            break;
+        op = c->prog[c->pc] >> 12;
+        arg = c->prog[c->pc] & 0xFFFU;
+        if (op == I2W || op == I2WH) {             /* one cycle of a wait */
+            if (op == I2WH && sda != c->first)
+                ++c->violations;                   /* SDA moved while SCL was high */
+            if (++c->wait >= arg) {
+                c->wait = 0;
+                ++c->pc;
+            }
+            break;
+        }
+        if (op == I2SDA) {
+            c->sda_low = arg == 0U;
+        } else if (op == I2PULL) {
+            c->scl_low = 1;
+            ++c->pc;
+            break;
+        } else if (op == I2REL) {
+            c->scl_low = 0;
+            if (chip_scl) {                        /* the target stretches the clock */
+                ++c->stretched;
+                break;
+            }
+            ++c->pc;                               /* high from this cycle */
+            break;
+        } else if (op == I2SMP) {
+            c->first = sda;
+            if (arg)
+                c->acc = (c->acc << 1) | (unsigned)sda;
+        } else if (op == I2ACK || op == I2BYTE) {
+            if (c->nres < sizeof c->results)
+                c->results[c->nres++] = (uint8_t)(op == I2ACK ? (c->acc & 1U) : (c->acc & 0xFFU));
+            c->acc = 0;
+        }
+        ++c->pc;
+    }
+    /* the bus, wired-AND with the chip's pulls (msf_i2c_slave_cycle) */
+    return (uint8_t)(((c->sda_low || chip_sda) ? 0U : I2C_SDA) |
+                     ((c->scl_low || chip_scl) ? 0U : I2C_SCL));
+}
+
+int msf_i2c_ctl_done(const msf_i2c_ctl *c)
+{
+    return c->pc >= c->n;
+}

@@ -32,6 +32,8 @@ IMAGES = [
     ("spi_target_m3", REPO / "firmware" / "spi_target.s", {"MODE": 3}),
     ("spi_flash_m0", REPO / "firmware" / "spi_flash.s", {"MODE": 0}),
     ("spi_flash_m3", REPO / "firmware" / "spi_flash.s", {"MODE": 3}),
+    ("i2c_target", REPO / "firmware" / "i2c_target.s", {}),
+    ("i2c_target_stretch", REPO / "firmware" / "i2c_target.s", {"STRETCH": 1}),
     ("boot_probe", HERE / "firmware" / "boot_probe.s", {}),
     ("dump_ram", HERE / "firmware" / "dump_ram.s", {}),
 ]

@@ -901,6 +901,150 @@ static int test_spi_flash(void)
     return 0;
 }
 
+/* the chip as an I2C target (24C01-style EEPROM), clocked by the C I2C
+ * controller; ops as in test_targets.i2c_write / i2c_read */
+static void i2c_write_ops(uint16_t *ops, uint32_t *n, unsigned addr, unsigned ptr,
+                          const uint8_t *d, uint32_t nd)
+{
+    uint32_t i;
+
+    ops[(*n)++] = MSF_I2C_START;
+    ops[(*n)++] = (uint16_t)MSF_I2C_BYTE(addr << 1);
+    ops[(*n)++] = (uint16_t)MSF_I2C_BYTE(ptr);
+    for (i = 0; i < nd; ++i)
+        ops[(*n)++] = (uint16_t)MSF_I2C_BYTE(d[i]);
+    ops[(*n)++] = MSF_I2C_STOP;
+}
+
+/* ptr < 0: a current-address read; else a random read (pointer, repeated START) */
+static void i2c_read_ops(uint16_t *ops, uint32_t *n, unsigned addr, uint32_t cnt, int ptr)
+{
+    uint32_t i;
+
+    if (ptr >= 0) {
+        ops[(*n)++] = MSF_I2C_START;
+        ops[(*n)++] = (uint16_t)MSF_I2C_BYTE(addr << 1);
+        ops[(*n)++] = (uint16_t)MSF_I2C_BYTE((unsigned)ptr);
+    }
+    ops[(*n)++] = MSF_I2C_START;
+    ops[(*n)++] = (uint16_t)MSF_I2C_BYTE(addr << 1 | 1U);
+    for (i = 0; i < cnt; ++i)
+        ops[(*n)++] = (uint16_t)MSF_I2C_READ(i + 1U < cnt);
+    ops[(*n)++] = MSF_I2C_STOP;
+}
+
+/* test_targets.i2c_ref: expected ACK bits / read bytes, and the memory after */
+static uint32_t i2c_ref(uint8_t *mem, unsigned addr, const uint16_t *ops, uint32_t n,
+                        uint8_t *out)
+{
+    enum { IDLE, ADR, RD, PTR, DAT } st = IDLE;
+    unsigned ptr = 0;
+    uint32_t i, k = 0;
+
+    for (i = 0; i < n; ++i) {
+        unsigned op = ops[i] & 0xF00U, v = ops[i] & 0xFFU;
+
+        if (op == MSF_I2C_START) {
+            st = ADR;
+        } else if (op == MSF_I2C_STOP) {
+            st = IDLE;
+        } else if (op == 0x300U) {
+            if (st == ADR) {
+                int us = (v >> 1) == addr;
+                out[k++] = us ? 0U : 1U;
+                st = us ? ((v & 1U) ? RD : PTR) : IDLE;
+            } else if (st == PTR) {
+                ptr = v & 0x7FU;
+                st = DAT;
+                out[k++] = 0U;
+            } else if (st == DAT) {
+                mem[ptr] = (uint8_t)v;
+                ptr = (ptr + 1U) & 0x7FU;
+                out[k++] = 0U;
+            } else {
+                out[k++] = 1U;
+            }
+        } else if (op == 0x400U) {
+            if (st == RD) {
+                out[k++] = mem[ptr];
+                ptr = (ptr + 1U) & 0x7FU;
+            } else {
+                out[k++] = 0xFFU;
+            }
+        }
+    }
+    return k;
+}
+
+static int i2c_target_case(const msf_image *img, msf_rng *rng, uint32_t tlow, uint32_t thigh,
+                           uint32_t thd, uint32_t tss, uint32_t tbuf, int stretch)
+{
+    static msf_i2c_ctl ctl;
+    static const uint8_t first[3] = {0x11, 0x22, 0x33};
+    uint16_t ops[160], data[128], got[128];
+    uint8_t mem[128], want[128];
+    uint32_t n = 0, nwant, i, t, c;
+    uint8_t uio = 0x60U;                       /* SDA and SCL pulled up */
+
+    for (i = 0; i < 128U; ++i) {
+        mem[i] = (uint8_t)msf_rng_next(rng);
+        data[i] = mem[i];
+    }
+    /* test_i2c_target_eeprom: a write across the wrap, its read-back, then
+     * writes, current and random reads, and a transfer for another address */
+    i2c_write_ops(ops, &n, 0x50U, 0x7EU, first, 3U);
+    i2c_read_ops(ops, &n, 0x50U, 4U, 0x7E);
+    for (t = 0; t < 6U; ++t) {
+        uint8_t d[3];
+        unsigned ptr = msf_rng_range(rng, 0U, 128U), kind = msf_rng_range(rng, 0U, 4U);
+        uint32_t nd = msf_rng_range(rng, 1U, 4U);
+
+        for (i = 0; i < 3U; ++i)
+            d[i] = (uint8_t)msf_rng_next(rng);
+        if (kind == 0U)
+            i2c_write_ops(ops, &n, 0x50U, ptr, d, nd);
+        else if (kind == 1U)
+            i2c_read_ops(ops, &n, 0x50U, nd, -1);
+        else if (kind == 2U)
+            i2c_read_ops(ops, &n, 0x50U, nd, (int)ptr);
+        else
+            i2c_write_ops(ops, &n, 0x51U, ptr, d, 2U);
+    }
+    nwant = i2c_ref(mem, 0x50U, ops, n, want);
+    if (fw_boot(img, data, 128U, uio))
+        return -1;
+    CHECK(msf_i2c_ctl_init(&ctl, ops, n, tlow, thigh, thd, tss, tbuf) == 0,
+          "I2C program too long");
+    for (c = 0; c < 2000000U && !msf_i2c_ctl_done(&ctl); ++c)
+        uio = msf_i2c_ctl_cycle(&ctl, cycle(uio));
+    CHECK(msf_i2c_ctl_done(&ctl), "the I2C controller did not finish");
+    CHECK(ctl.nres == nwant, "%d results, want %d", (int)ctl.nres, (int)nwant);
+    for (i = 0; i < nwant; ++i)
+        CHECK(ctl.results[i] == want[i], "result %d = %02x, want %02x", (int)i, ctl.results[i],
+              want[i]);
+    CHECK(ctl.violations == 0U, "SDA moved %d times while SCL was high", (int)ctl.violations);
+    CHECK(stretch ? ctl.stretched > 0U : ctl.stretched == 0U, "SCL held low for %d cycles",
+          (int)ctl.stretched);
+    if (dump_ram(0U, 128U, got))
+        return -1;
+    for (i = 0; i < 128U; ++i)
+        CHECK(got[i] == mem[i], "register %d = %02x after the writes, want %02x", (int)i,
+              (unsigned)got[i], mem[i]);
+    return 0;
+}
+
+/* test_targets.test_i2c_target_eeprom (100 kHz at 12 MHz, no stretching) and
+ * test_i2c_target_fast_mode (400 kHz, STRETCH=1 holds SCL low to keep up) */
+static int test_i2c_target_eeprom(void)
+{
+    msf_rng rng;
+
+    msf_rng_seed(&rng, 21U);
+    if (i2c_target_case(&img_i2c_target, &rng, 60U, 60U, 6U, 60U, 80U, 0))
+        return -1;
+    return i2c_target_case(&img_i2c_target_stretch, &rng, 16U, 14U, 2U, 8U, 16U, 1);
+}
+
 /* ======================================================================== */
 
 typedef struct {
@@ -927,6 +1071,7 @@ static const msf_test tests[] = {
     {"onewire_probe", test_onewire_probe},
     {"spi_target_regs", test_spi_target_regs},
     {"spi_flash", test_spi_flash},
+    {"i2c_target_eeprom", test_i2c_target_eeprom},
 };
 
 #define NTESTS ((int)(sizeof tests / sizeof tests[0]))
