@@ -15,7 +15,7 @@
 #include "msf_proto.h"
 
 #define DONE       0x55U
-#define TRACE_CAP  65536U
+#define TRACE_CAP  262144U
 
 static msf_pins trace_buf[TRACE_CAP];
 static msf_trace tr;
@@ -1222,6 +1222,833 @@ static int test_four_threads_fifo(void)
 }
 
 /* ======================================================================== */
+/* Bus monitors (test_monitors): the chip listens to a bus it does not
+ * drive; thread 1 reports each event as two UART bytes, code then data, on
+ * uio[0] at 12 cycles a bit (firmware/report.inc).                         */
+
+#define MON_BIT    104U
+#define REPORT_BIT 12U
+
+/* one item on the monitored UART line (uio[1]): a byte at `bit` cycles a
+ * bit with its stop bit at level `stop`, or (bit == 0) a low pulse of `v`
+ * cycles; then `idle` cycles high (test_monitors.uart_wave) */
+typedef struct {
+    uint16_t v, bit;
+    uint8_t stop;
+    uint16_t idle;
+} mon_item;
+
+static uint32_t mon_item_len(const mon_item *it)
+{
+    return (it->bit ? 10U * it->bit : it->v) + it->idle;
+}
+
+static int mon_line(const mon_item *items, uint32_t n, uint32_t k)
+{
+    uint32_t i, b;
+
+    for (i = 0; i < n; ++i) {
+        const mon_item *it = &items[i];
+        uint32_t len = mon_item_len(it);
+
+        if (k < len) {
+            if (!it->bit)
+                return k >= it->v;
+            if (k >= 10U * it->bit)
+                return 1;
+            b = k / it->bit;
+            return b == 0U ? 0 : b == 9U ? (int)it->stop : (int)((it->v >> (b - 1U)) & 1U);
+        }
+        k -= len;
+    }
+    return 1;
+}
+
+/* the report stream as (code, data) pairs; -1 on a framing error or an
+ * odd number of bytes */
+static int mon_events(char *code, int *data, uint32_t max)
+{
+    static int by[512];
+    uint32_t n = msf_uart_decode(&tr, REPORT_BIT, 0, by, 512), i;
+
+    if (n % 2U || n / 2U > max)
+        return -1;
+    for (i = 0; i < n; ++i)
+        if (by[i] < 0)
+            return -1;
+    for (i = 0; i < n / 2U; ++i) {
+        code[i] = (char)by[2U * i];
+        data[i] = by[2U * i + 1U];
+    }
+    return (int)(n / 2U);
+}
+
+/* mon_uart.s watching `items` from cycle 60 (test_monitors.mon_run) */
+static int mon_uart_run(const mon_item *items, uint32_t n, char *code, int *data, uint32_t max)
+{
+    uint32_t k, total = 60U + 400U, i;
+
+    for (i = 0; i < n; ++i)
+        total += mon_item_len(&items[i]);
+    if (fw_boot(&img_mon_uart, 0, 0, 0x02U))
+        return -1;
+    for (k = 0; k < total; ++k)
+        cycle(k >= 60U && !mon_line(items, n, k - 60U) ? 0x00U : 0x02U);
+    CHECK(!tr.overflow, "trace overflow");
+    return mon_events(code, data, max);
+}
+
+/* the data bits a frame is low for before its first rising edge, with the
+ * start bit (test_monitors.first_rise_cells) */
+static int first_rise_cells(unsigned v)
+{
+    int n = 1;
+
+    while (n < 9 && !((v >> (n - 1)) & 1U))
+        ++n;
+    return n;
+}
+
+static int wrap_diff(int a, int b)
+{
+    return ((a - b + 128) & 0xFF) - 128;
+}
+
+/* test_monitors.test_mon_uart_decodes_and_times: bytes, a framing error, a
+ * glitch and frames at the wrong rate; a frame's timing offset is reported
+ * when it exceeds BIT >> 4 */
+static int test_mon_uart_decodes_and_times(void)
+{
+    static const mon_item items[8] = {
+        {0x55, MON_BIT, 1, 200},     {0xA6, MON_BIT, 1, 200},
+        {0x10, MON_BIT + 5U, 1, 200}, {0x01, MON_BIT + 5U, 1, 200},
+        {0x80, MON_BIT - 3U, 1, 200}, {0x3C, MON_BIT, 0, 300},
+        {20, 0, 1, 1500},            {0x42, MON_BIT, 1, 200},
+    };
+    char code[32], wc[32];
+    int data[32], wd[32], n, i, nw = 0, tol = (int)(MON_BIT >> 4);
+
+    for (i = 0; i < 8; ++i) {
+        const mon_item *it = &items[i];
+
+        if (!it->bit) {
+            wc[nw] = 'G';
+            wd[nw++] = it->v;
+            wc[nw] = 'U';
+            wd[nw++] = 0xFF;
+            continue;
+        }
+        {
+            int off = first_rise_cells(it->v) * ((int)it->bit - (int)MON_BIT);
+
+            if (off > tol || off < -tol) {
+                wc[nw] = 'B';
+                wd[nw++] = off & 0xFF;
+            }
+        }
+        wc[nw] = it->stop ? 'U' : 'F';
+        wd[nw++] = it->v;
+    }
+    n = mon_uart_run(items, 8, code, data, 32);
+    CHECK(n == nw, "%d events, want %d", n, nw);
+    for (i = 0; i < n; ++i) {
+        CHECK(code[i] == wc[i], "event %d is '%c', want '%c'", i, code[i], wc[i]);
+        /* edges are seen in thread 0's own slots: a time may be one cycle off */
+        if (wc[i] == 'B' || wc[i] == 'G')
+            CHECK(wrap_diff(data[i], wd[i]) >= -1 && wrap_diff(data[i], wd[i]) <= 1,
+                  "event %d ('%c') %d, want %d +-1", i, wc[i], data[i], wd[i]);
+        else
+            CHECK(data[i] == wd[i], "event %d ('%c') %02x, want %02x", i, wc[i], data[i],
+                  wd[i]);
+    }
+    return 0;
+}
+
+/* test_monitors.test_mon_uart_break: a break is a framing error with data
+ * 0, and the byte after it is decoded and timed */
+static int test_mon_uart_break(void)
+{
+    static const mon_item items[3] = {
+        {0x31, MON_BIT, 1, 300}, {20U * MON_BIT, 0, 1, 600}, {0x10, MON_BIT + 5U, 1, 300}};
+    char code[8];
+    int data[8], n;
+
+    n = mon_uart_run(items, 3, code, data, 8);
+    CHECK(n == 4 && code[0] == 'U' && code[1] == 'F' && code[2] == 'B' && code[3] == 'U',
+          "%d events, want U F B U", n);
+    CHECK(data[0] == 0x31 && data[1] == 0 && data[3] == 0x10, "data %02x %02x %02x",
+          data[0], data[1], data[3]);
+    CHECK(wrap_diff(data[2], 25) >= -1 && wrap_diff(data[2], 25) <= 1,
+          "timing offset %d, want 25 +-1", data[2]);
+    return 0;
+}
+
+/* test_monitors.test_mon_uart_back_to_back: no idle between frames; every
+ * byte is decoded and no error is invented */
+static int test_mon_uart_back_to_back(void)
+{
+    mon_item items[21];
+    char code[32];
+    int data[32], n, i;
+    msf_rng rng;
+
+    msf_rng_seed(&rng, 3U);
+    for (i = 0; i < 21; ++i) {
+        items[i].v = (uint16_t)(i < 20 ? msf_rng_range(&rng, 0U, 256U) : 0U);
+        items[i].bit = MON_BIT;
+        items[i].stop = 1;
+        items[i].idle = 0;
+    }
+    n = mon_uart_run(items, 21, code, data, 32);
+    CHECK(n == 21, "%d events, want 21", n);
+    for (i = 0; i < 21; ++i)
+        CHECK(code[i] == 'U' && data[i] == items[i].v, "event %d ('%c', %02x), want ('U', %02x)",
+              i, code[i], data[i], items[i].v);
+    return 0;
+}
+
+/* I2C bus levels with exact phase lengths, and the events the monitor must
+ * report for them (test_monitors.I2cWave). The model drives both lines:
+ * the monitor only listens. SDA uio5, SCL uio6. */
+#define I2W_SDA    5
+#define I2W_SCL    6
+#define I2W_IDLE   (1U << I2W_SDA | 1U << I2W_SCL)
+#define I2W_MAX    131072U
+#define I2W_LMIN   56U
+#define I2W_HMIN   48U
+#define I2W_BOOT   400U         /* the I2C monitor clears its queue first */
+#define I2C_LSLACK 10           /* mon_i2c.s: see its header */
+#define I2C_HFLOOR 16
+#define I2W_EVENTS 160U
+
+typedef struct {
+    uint32_t n, tlow, thigh, thd, tss, tbuf, nw;
+    int sda, scl, nbits, byte, overflow;
+    char wc[I2W_EVENTS];
+    int wd[I2W_EVENTS];
+} i2c_wave;
+
+static uint8_t i2w_lv[I2W_MAX];
+
+static void i2w_init(i2c_wave *w, uint32_t tlow, uint32_t thigh)
+{
+    w->n = 0;
+    w->tlow = tlow;
+    w->thigh = thigh;
+    w->thd = 6;
+    w->tss = 60;
+    w->tbuf = 100;
+    w->nw = 0;
+    w->sda = w->scl = 1;
+    w->nbits = w->byte = 0;
+    w->overflow = 0;
+}
+
+static void i2w_hold(i2c_wave *w, uint32_t n)
+{
+    uint8_t v = (uint8_t)((unsigned)w->sda << I2W_SDA | (unsigned)w->scl << I2W_SCL);
+
+    while (n--) {
+        if (w->n < I2W_MAX)
+            i2w_lv[w->n++] = v;
+        else
+            w->overflow = 1;
+    }
+}
+
+static void i2w_want(i2c_wave *w, char c, int d)
+{
+    if (w->nw < I2W_EVENTS) {
+        w->wc[w->nw] = c;
+        w->wd[w->nw++] = d;
+    } else {
+        w->overflow = 1;
+    }
+}
+
+static void i2w_start(i2c_wave *w)
+{
+    if (!w->scl) {                       /* repeated START: SDA up, SCL up */
+        i2w_hold(w, w->thd);
+        w->sda = 1;
+        i2w_hold(w, w->tlow - w->thd);
+        w->scl = 1;
+    }
+    i2w_hold(w, w->tss);
+    w->sda = 0;
+    if (w->nbits)
+        i2w_want(w, 'X', w->nbits);
+    i2w_want(w, 'S', 0);
+    i2w_hold(w, w->tss);
+    w->scl = 0;
+    w->nbits = w->byte = 0;
+}
+
+static void i2w_stop(i2c_wave *w)
+{
+    i2w_hold(w, w->thd);
+    w->sda = 0;
+    i2w_hold(w, w->tlow - w->thd);
+    w->scl = 1;
+    i2w_hold(w, w->tss);
+    w->sda = 1;
+    if (w->nbits)
+        i2w_want(w, 'X', w->nbits);
+    i2w_want(w, 'P', 0);
+    w->nbits = 0;
+    i2w_hold(w, w->tbuf);
+}
+
+/* one bit; low / high 0: the wave's own phase lengths */
+static void i2w_bit(i2c_wave *w, int b, uint32_t low, uint32_t high)
+{
+    uint32_t h;
+
+    if (!low)
+        low = w->tlow;
+    if (!high)
+        high = w->thigh;
+    h = w->thd < low - 1U ? w->thd : low - 1U;
+    i2w_hold(w, h);
+    w->sda = b;
+    i2w_hold(w, low - h);
+    w->scl = 1;
+    i2w_hold(w, high);
+    w->scl = 0;
+    w->nbits++;
+    w->byte = w->byte << 1 | b;
+    if (w->nbits == 9) {
+        i2w_want(w, b ? 'N' : 'A', w->byte >> 1);
+        w->nbits = w->byte = 0;
+    }
+}
+
+/* a byte, MSB first, and its ACK bit; low[i] / high[i] (0: as the wave)
+ * override bit i, 8 being the ACK; either may be NULL */
+static void i2w_byte(i2c_wave *w, unsigned v, int ack, const uint32_t *low, const uint32_t *high)
+{
+    int i;
+
+    for (i = 0; i < 9; ++i)
+        i2w_bit(w, i < 8 ? (int)((v >> (7 - i)) & 1U) : ack, low ? low[i] : 0U,
+                high ? high[i] : 0U);
+}
+
+/* mon_i2c.s watching the wave from cycle 60 */
+static int mon_i2c_run(const i2c_wave *w, uint32_t extra, char *code, int *data, uint32_t max)
+{
+    uint32_t k;
+
+    CHECK(!w->overflow, "the wave does not fit");
+    if (fw_boot(&img_mon_i2c, 0, 0, I2W_IDLE))
+        return -1;
+    for (k = 0; k < 60U + w->n + extra; ++k)
+        cycle(k >= 60U && k - 60U < w->n ? i2w_lv[k - 60U] : (uint8_t)I2W_IDLE);
+    CHECK(!tr.overflow, "trace overflow");
+    return mon_events(code, data, max);
+}
+
+static void print_events(const char *what, const char *c, const int *d, int n)
+{
+    int i;
+
+    msf_printf("    %s:", what);
+    for (i = 0; i < n; ++i)
+        msf_printf(" %c%d", c[i], d[i]);
+    msf_printf("\r\n");
+}
+
+/* test_monitors.check_i2c_events: codes exact; values exact, except a
+ * phase length 'H' / 'L', checked against the monitor's stated accuracy
+ * (a high to +-1, HFLOOR for anything shorter; a low from -1 to +LSLACK,
+ * or below LMIN - 1 for one shorter than thread 0's turnaround); 0 = a
+ * short phase on a 9th bit, flagged without its length */
+static int mon_i2c_check(const char *gc, const int *gd, int n, const char *wc, const int *wd,
+                         int nw)
+{
+    int i, ok;
+
+    if (n != nw) {
+        print_events("got", gc, gd, n < 0 ? 0 : n);
+        print_events("want", wc, wd, nw);
+    }
+    CHECK(n == nw, "%d events, want %d", n, nw);
+    for (i = 0; i < n; ++i) {
+        if (gc[i] != wc[i]) {
+            print_events("got", gc, gd, n);
+            print_events("want", wc, wd, nw);
+        }
+        CHECK(gc[i] == wc[i], "event %d is '%c', want '%c'", i, gc[i], wc[i]);
+        if ((wc[i] == 'H' || wc[i] == 'L') && wd[i] == 0) {
+            ok = gd[i] == 0;
+        } else if (wc[i] == 'H') {
+            int want = wd[i] > I2C_HFLOOR ? wd[i] : I2C_HFLOOR;
+
+            ok = gd[i] >= want - 1 && gd[i] <= want + 1;
+        } else if (wc[i] == 'L') {
+            int hi = wd[i] + I2C_LSLACK;
+
+            if (wd[i] < 45 && hi < (int)I2W_LMIN - 2)
+                hi = (int)I2W_LMIN - 2;
+            ok = gd[i] >= wd[i] - 1 && gd[i] <= hi;
+        } else {
+            ok = gd[i] == wd[i];
+        }
+        CHECK(ok, "event %d ('%c' %d), want %d", i, gc[i], gd[i], wd[i]);
+    }
+    return 0;
+}
+
+static i2c_wave i2w;
+static char ev_c[I2W_EVENTS];
+static int ev_d[I2W_EVENTS];
+
+/* test_monitors.test_mon_i2c_transfers: a write, a random read with a
+ * repeated START, a NACK and a STOP, at 100 kHz and at the legal minimum:
+ * decoded exactly, with no timing event */
+static int test_mon_i2c_transfers(void)
+{
+    static const uint32_t ph[2][2] = {{60U, 60U}, {I2W_LMIN, I2W_HMIN}};
+    int k, n;
+
+    for (k = 0; k < 2; ++k) {
+        i2w_init(&i2w, ph[k][0], ph[k][1]);
+        i2w_hold(&i2w, I2W_BOOT);
+        i2w_start(&i2w);
+        i2w_byte(&i2w, 0x50U << 1, 0, 0, 0);
+        i2w_byte(&i2w, 0x12U, 0, 0, 0);
+        i2w_byte(&i2w, 0x34U, 0, 0, 0);
+        i2w_stop(&i2w);
+        i2w_start(&i2w);
+        i2w_byte(&i2w, 0x50U << 1, 0, 0, 0);
+        i2w_byte(&i2w, 0x07U, 0, 0, 0);
+        i2w_start(&i2w);
+        i2w_byte(&i2w, 0x50U << 1 | 1U, 0, 0, 0);
+        i2w_byte(&i2w, 0xC3U, 0, 0, 0);
+        i2w_byte(&i2w, 0x3CU, 1, 0, 0);
+        i2w_stop(&i2w);
+        n = mon_i2c_run(&i2w, 3000U, ev_c, ev_d, I2W_EVENTS);
+        if (mon_i2c_check(ev_c, ev_d, n, i2w.wc, i2w.wd, (int)i2w.nw))
+            return -1;
+    }
+    return 0;
+}
+
+/* test_monitors.test_mon_i2c_random_legal: random legal phases on every bit
+ * (lows LMIN..3 LMIN, now and then a few hundred cycles; highs HMIN..3
+ * HMIN), random data, ACKs and NACKs, repeated STARTs: decoded exactly,
+ * no timing event */
+static int test_mon_i2c_random_legal(void)
+{
+    uint32_t low[9], high[9];
+    int t, b, i, n, nbytes, stopped = 1;
+    msf_rng rng;
+
+    msf_rng_seed(&rng, 7U);
+    i2w_init(&i2w, I2W_LMIN, I2W_HMIN);
+    i2w_hold(&i2w, I2W_BOOT);
+    for (t = 0; t < 4; ++t) {
+        i2w_start(&i2w);
+        stopped = 0;
+        nbytes = (int)msf_rng_range(&rng, 1U, 5U);
+        for (b = 0; b < nbytes; ++b) {
+            unsigned v = msf_rng_range(&rng, 0U, 256U);
+
+            for (i = 0; i < 9; ++i) {
+                low[i] = msf_rng_range(&rng, 0U, 10U) == 0U && msf_rng_range(&rng, 0U, 2U)
+                             ? msf_rng_range(&rng, 150U, 400U)
+                             : msf_rng_range(&rng, I2W_LMIN, 3U * I2W_LMIN);
+                high[i] = msf_rng_range(&rng, I2W_HMIN, 3U * I2W_HMIN);
+            }
+            i2w_byte(&i2w, v, (int)msf_rng_range(&rng, 0U, 2U), low, high);
+        }
+        if (msf_rng_range(&rng, 0U, 2U)) {
+            i2w_stop(&i2w);
+            stopped = 1;
+        }
+    }
+    if (!stopped)
+        i2w_stop(&i2w);
+    n = mon_i2c_run(&i2w, 5000U, ev_c, ev_d, I2W_EVENTS);
+    for (i = 0; i < n; ++i)
+        CHECK(ev_c[i] != 'H' && ev_c[i] != 'L', "timing event %d ('%c' %d) on a legal bus", i,
+              ev_c[i], ev_d[i]);
+    return mon_i2c_check(ev_c, ev_d, n, i2w.wc, i2w.wd, (int)i2w.nw);
+}
+
+/* test_monitors.test_mon_i2c_protocol_errors: each byte's first short
+ * phase with its length; a short phase on a 9th bit flagged with 0; a STOP
+ * after 3 bits of a byte and a repeated START after 5 */
+static int test_mon_i2c_protocol_errors(void)
+{
+    static const char wc[] = "SHALALHAAHALXPSAXSAP";
+    static const int wd[] = {0, 30, 0xA0, 40, 0x5A, 50, 20, 0x33, 0xC4, 0, 0x96, 0, 3, 0,
+                             0, 0xA0, 5, 0, 0xA1, 0};
+    uint32_t low[9], high[9];
+    int n;
+
+    i2w_init(&i2w, 60U, 60U);
+    i2w_hold(&i2w, I2W_BOOT);
+    i2w_start(&i2w);
+    memset(low, 0, sizeof low);
+    memset(high, 0, sizeof high);
+    high[3] = 30U;
+    low[6] = 30U;                                         /* 'H' 30 only */
+    i2w_byte(&i2w, 0x50U << 1, 0, low, high);
+    memset(low, 0, sizeof low);
+    memset(high, 0, sizeof high);
+    low[4] = 40U;
+    i2w_byte(&i2w, 0x5AU, 0, low, 0);                     /* 'L' 40 */
+    memset(low, 0, sizeof low);
+    low[2] = 50U;
+    high[2] = 20U;
+    i2w_byte(&i2w, 0x33U, 0, low, high);                  /* both, one word */
+    memset(low, 0, sizeof low);
+    memset(high, 0, sizeof high);
+    high[8] = 30U;
+    i2w_byte(&i2w, 0xC4U, 0, 0, high);                    /* 9th bit: flagged */
+    low[8] = 44U;
+    i2w_byte(&i2w, 0x96U, 0, low, 0);
+    i2w_bit(&i2w, 1, 0, 0);
+    i2w_bit(&i2w, 0, 0, 0);
+    i2w_bit(&i2w, 1, 0, 0);
+    i2w_stop(&i2w);                                       /* STOP after 3 bits */
+    i2w_start(&i2w);
+    i2w_byte(&i2w, 0x50U << 1, 0, 0, 0);
+    i2w_bit(&i2w, 0, 0, 0);
+    i2w_bit(&i2w, 1, 0, 0);
+    i2w_bit(&i2w, 1, 0, 0);
+    i2w_bit(&i2w, 0, 0, 0);
+    i2w_bit(&i2w, 1, 0, 0);
+    i2w_start(&i2w);                                      /* repeated START after 5 */
+    i2w_byte(&i2w, 0x50U << 1 | 1U, 0, 0, 0);
+    i2w_stop(&i2w);
+    n = mon_i2c_run(&i2w, 4000U, ev_c, ev_d, I2W_EVENTS);
+    return mon_i2c_check(ev_c, ev_d, n, wc, wd, (int)(sizeof wd / sizeof wd[0]));
+}
+
+/* test_monitors.test_mon_i2c_single_faults: one short phase per byte, on
+ * each data bit from the second, at 100 kHz and at the legal minimum: each
+ * reported once with its length, and every byte still decodes */
+static int test_mon_i2c_single_faults(void)
+{
+    static const char kinds[4] = {'L', 'L', 'H', 'H'};
+    static const uint32_t vals[4] = {30U, 50U, 12U, 40U};
+    static const uint32_t base[2][2] = {{60U, 60U}, {I2W_LMIN, I2W_HMIN}};
+    static char wc[I2W_EVENTS];
+    static int wd[I2W_EVENTS];
+    uint32_t low[9], high[9];
+    int nw = 0, k, bit, f, n;
+    msf_rng rng;
+
+    msf_rng_seed(&rng, 11U);
+    i2w_init(&i2w, 60U, 60U);
+    i2w_hold(&i2w, I2W_BOOT);
+    i2w_start(&i2w);
+    wc[nw] = 'S';
+    wd[nw++] = 0;
+    for (k = 0; k < 2; ++k) {
+        i2w.tlow = base[k][0];
+        i2w.thigh = base[k][1];
+        for (bit = 1; bit < 8; ++bit) {
+            for (f = 0; f < 4; ++f) {
+                unsigned v = msf_rng_range(&rng, 0U, 256U);
+
+                memset(low, 0, sizeof low);
+                memset(high, 0, sizeof high);
+                if (kinds[f] == 'L')
+                    low[bit] = vals[f];
+                else
+                    high[bit] = vals[f];
+                i2w_byte(&i2w, v, 0, low, high);
+                wc[nw] = kinds[f];
+                wd[nw++] = (int)vals[f];
+                wc[nw] = 'A';
+                wd[nw++] = (int)v;
+            }
+        }
+    }
+    i2w_stop(&i2w);
+    wc[nw] = 'P';
+    wd[nw++] = 0;
+    n = mon_i2c_run(&i2w, 40000U, ev_c, ev_d, I2W_EVENTS);
+    return mon_i2c_check(ev_c, ev_d, n, wc, wd, nw);
+}
+
+/* test_monitors.test_mon_i2c_fast_master: a master out of spec on every
+ * bit, at the monitor's limits (lows of 16 cycles, bits of 72): every byte
+ * decodes, and each reports its first short phase */
+static int test_mon_i2c_fast_master(void)
+{
+    static const uint32_t ph[4][2] = {{16U, 56U}, {34U, 38U}, {40U, 32U}, {56U, 16U}};
+    static const unsigned data[5] = {0x50U << 1, 0x00U, 0xFFU, 0x5AU, 0xA5U};
+    int k, i, n, m, nt;
+
+    for (k = 0; k < 4; ++k) {
+        i2w_init(&i2w, ph[k][0], ph[k][1]);
+        i2w_hold(&i2w, I2W_BOOT);
+        i2w_start(&i2w);
+        for (i = 0; i < 5; ++i)
+            i2w_byte(&i2w, data[i], 0, 0, 0);
+        i2w_stop(&i2w);
+        n = mon_i2c_run(&i2w, 6000U, ev_c, ev_d, I2W_EVENTS);
+        CHECK(n > 0, "low %d high %d: no events", (int)ph[k][0], (int)ph[k][1]);
+        m = nt = 0;
+        for (i = 0; i < n; ++i) {
+            if (ev_c[i] == 'H' || ev_c[i] == 'L') {
+                ++nt;
+                continue;
+            }
+            CHECK(m <= 6 && ev_c[i] == (m == 0 ? 'S' : m == 6 ? 'P' : 'A') &&
+                      ev_d[i] == (m == 0 || m == 6 ? 0 : (int)data[m - 1]),
+                  "low %d high %d: event %d ('%c' %d) out of order", (int)ph[k][0],
+                  (int)ph[k][1], i, ev_c[i], ev_d[i]);
+            ++m;
+        }
+        CHECK(m == 7, "low %d high %d: %d bus events, want 7", (int)ph[k][0], (int)ph[k][1], m);
+        CHECK(nt >= 5, "low %d high %d: %d timing events, want one a byte", (int)ph[k][0],
+              (int)ph[k][1], nt);
+    }
+    return 0;
+}
+
+/* test_monitors.test_mon_i2c_long_low: an SCL low of 70000 cycles inside a
+ * byte (past the 16-bit cycle counter's wrap) reads as fine */
+static int test_mon_i2c_long_low(void)
+{
+    uint32_t low[9];
+    int n;
+
+    memset(low, 0, sizeof low);
+    low[4] = 70000U;
+    i2w_init(&i2w, 60U, 60U);
+    i2w_hold(&i2w, I2W_BOOT);
+    i2w_start(&i2w);
+    i2w_byte(&i2w, 0xA6U, 0, low, 0);
+    i2w_byte(&i2w, 0x3CU, 0, 0, 0);
+    i2w_stop(&i2w);
+    n = mon_i2c_run(&i2w, 3000U, ev_c, ev_d, I2W_EVENTS);
+    return mon_i2c_check(ev_c, ev_d, n, i2w.wc, i2w.wd, (int)i2w.nw);
+}
+
+/* SPI bus levels in a given mode, controller and device both modelled (the
+ * monitor only listens), and the events the monitor must report
+ * (test_monitors.SpiWave). SCK uio2, MOSI uio3, CS uio5, MISO uio7. */
+#define SPW_SCK    2
+#define SPW_MOSI   3
+#define SPW_CS     5
+#define SPW_MISO   7
+#define SPW_MAX    32768U
+#define SPW_EVENTS 96U
+
+typedef struct {
+    int cpol, cpha, cs, sck, mosi, miso, mm;   /* mm: SCK level at CS low if wrong, else -1 */
+    uint32_t n, nw;
+    int overflow;
+    char wc[SPW_EVENTS];
+    int wd[SPW_EVENTS];
+} spi_wave;
+
+static uint8_t spw_lv[SPW_MAX];
+
+static void spw_init(spi_wave *w, int mode)
+{
+    w->cpol = mode >> 1;
+    w->cpha = mode & 1;
+    w->cs = 1;
+    w->sck = w->cpol;
+    w->mosi = w->miso = 0;
+    w->mm = -1;
+    w->n = w->nw = 0;
+    w->overflow = 0;
+}
+
+static uint8_t spw_idle(const spi_wave *w)
+{
+    return (uint8_t)(1U << SPW_CS | (unsigned)w->cpol << SPW_SCK);
+}
+
+static void spw_hold(spi_wave *w, uint32_t n)
+{
+    uint8_t v = (uint8_t)((unsigned)w->cs << SPW_CS | (unsigned)w->sck << SPW_SCK |
+                          (unsigned)w->mosi << SPW_MOSI | (unsigned)w->miso << SPW_MISO);
+
+    while (n--) {
+        if (w->n < SPW_MAX)
+            spw_lv[w->n++] = v;
+        else
+            w->overflow = 1;
+    }
+}
+
+static void spw_want(spi_wave *w, char c, int d)
+{
+    if (w->nw < SPW_EVENTS) {
+        w->wc[w->nw] = c;
+        w->wd[w->nw++] = d;
+    } else {
+        w->overflow = 1;
+    }
+}
+
+static void spw_select(spi_wave *w, uint32_t setup)
+{
+    w->cs = 0;
+    w->mm = w->sck != w->cpol ? w->sck : -1;   /* reported as 'M' at the end */
+    spw_hold(w, setup);
+}
+
+static void spw_bit(spi_wave *w, int o, int i, uint32_t half)
+{
+    w->sck = w->cpha ? 1 - w->cpol : w->cpol;
+    w->mosi = o;
+    w->miso = i;
+    spw_hold(w, half);
+    w->sck = 1 - w->sck;                       /* the sampling edge */
+    spw_hold(w, half);
+}
+
+static void spw_byte(spi_wave *w, unsigned o, unsigned i, uint32_t half, uint32_t gap)
+{
+    int k;
+
+    for (k = 0; k < 8; ++k)
+        spw_bit(w, (int)((o >> (7 - k)) & 1U), (int)((i >> (7 - k)) & 1U), half);
+    spw_want(w, '>', (int)o);
+    spw_want(w, '<', (int)i);
+    if (!w->cpha)
+        w->sck = w->cpol;
+    spw_hold(w, gap);
+}
+
+static void spw_deselect(spi_wave *w, int left)
+{
+    spw_hold(w, 10);
+    w->cs = 1;
+    if (w->mm >= 0)
+        spw_want(w, 'M', w->mm);
+    spw_want(w, 'E', left);
+    spw_hold(w, 200);
+}
+
+/* mon_spi.s (built for `mode`) watching the wave from cycle 60; the events
+ * must be exactly the wave's */
+static int spi_mon_check(const spi_wave *w, int mode)
+{
+    static const msf_image *const img[4] = {&img_mon_spi_m0, &img_mon_spi_m1, &img_mon_spi_m2,
+                                            &img_mon_spi_m3};
+    uint32_t k;
+    uint8_t idle = spw_idle(w);
+    int n, i;
+
+    CHECK(!w->overflow, "the wave does not fit");
+    if (fw_boot(img[mode], 0, 0, idle))
+        return -1;
+    for (k = 0; k < 60U + w->n + 4000U; ++k)
+        cycle(k >= 60U && k - 60U < w->n ? spw_lv[k - 60U] : idle);
+    CHECK(!tr.overflow, "trace overflow");
+    n = mon_events(ev_c, ev_d, I2W_EVENTS);
+    if (n != (int)w->nw) {
+        print_events("got", ev_c, ev_d, n < 0 ? 0 : n);
+        print_events("want", w->wc, w->wd, (int)w->nw);
+    }
+    CHECK(n == (int)w->nw, "mode %d: %d events, want %d", mode, n, (int)w->nw);
+    for (i = 0; i < n; ++i)
+        CHECK(ev_c[i] == w->wc[i] && ev_d[i] == w->wd[i],
+              "mode %d: event %d ('%c' %02x), want ('%c' %02x)", mode, i, ev_c[i], ev_d[i],
+              w->wc[i], w->wd[i]);
+    return 0;
+}
+
+static spi_wave spw;
+
+/* test_monitors.test_mon_spi_modes: every mode, random bytes on MOSI and
+ * MISO with and without gaps between bytes: each byte decoded on both */
+static int test_mon_spi_modes(void)
+{
+    static const uint32_t hg[2][2] = {{30U, 40U}, {40U, 0U}};
+    int mode, k, b;
+    msf_rng rng;
+
+    msf_rng_seed(&rng, 5U);
+    for (mode = 0; mode < 4; ++mode) {
+        spw_init(&spw, mode);
+        spw_hold(&spw, I2W_BOOT);
+        for (k = 0; k < 2; ++k) {
+            spw_select(&spw, 20U);
+            for (b = 0; b < 4; ++b) {
+                unsigned o = msf_rng_range(&rng, 0U, 256U), i = msf_rng_range(&rng, 0U, 256U);
+
+                spw_byte(&spw, o, i, hg[k][0], hg[k][1]);
+            }
+            spw_deselect(&spw, 0);
+        }
+        if (spi_mon_check(&spw, mode))
+            return -1;
+    }
+    return 0;
+}
+
+/* test_monitors.test_mon_spi_limits: SCK periods of 28 cycles inside a
+ * byte, 36 between bytes, 16 from CS low to the first sampling edge */
+static int test_mon_spi_limits(void)
+{
+    static const unsigned data[4][2] = {{0xA5U, 0x3CU}, {0x00U, 0xFFU}, {0xFFU, 0x00U},
+                                        {0x5AU, 0xC3U}};
+    int mode, b;
+
+    for (mode = 0; mode < 4; ++mode) {
+        spw_init(&spw, mode);
+        spw_hold(&spw, I2W_BOOT);
+        spw_select(&spw, spw.cpha ? 6U : 2U);
+        for (b = 0; b < 4; ++b)
+            spw_byte(&spw, data[b][0], data[b][1], 14U, 8U);
+        spw_deselect(&spw, 0);
+        if (spi_mon_check(&spw, mode))
+            return -1;
+    }
+    return 0;
+}
+
+/* test_monitors.test_mon_spi_errors: a controller in another mode (SCK
+ * idling high), CS rising in the middle of a byte, a single clock */
+static int test_mon_spi_errors(void)
+{
+    int k;
+
+    spw_init(&spw, 0);
+    spw_hold(&spw, I2W_BOOT);
+    spw.sck = 1;                                  /* a mode 2 / 3 controller */
+    spw_hold(&spw, 20U);
+    spw_select(&spw, 20U);                        /* 'M' 1 at the end */
+    spw.mosi = 1;
+    spw.miso = 0;
+    for (k = 0; k < 8; ++k) {                     /* 8 clocks idling high */
+        spw.sck = 0;
+        spw_hold(&spw, 30U);
+        spw.sck = 1;
+        spw_hold(&spw, 30U);
+    }
+    spw_want(&spw, '>', 0xFF);
+    spw_want(&spw, '<', 0x00);
+    spw_deselect(&spw, 0);
+    spw.sck = 0;
+    spw_hold(&spw, 100U);
+    spw_select(&spw, 20U);                        /* mode 0 again */
+    spw_byte(&spw, 0x81U, 0x7EU, 30U, 0U);
+    spw_bit(&spw, 1, 0, 30U);
+    spw_bit(&spw, 0, 0, 30U);
+    spw_bit(&spw, 1, 0, 30U);
+    spw.sck = 0;
+    spw_deselect(&spw, 3);                        /* CS high after 3 bits */
+    spw_select(&spw, 20U);
+    spw_bit(&spw, 1, 1, 30U);
+    spw.sck = 0;
+    spw_deselect(&spw, 1);                        /* a single clock */
+    return spi_mon_check(&spw, 0);
+}
+
+/* ======================================================================== */
 
 typedef struct {
     const char *name;
@@ -1250,6 +2077,18 @@ static const msf_test tests[] = {
     {"i2c_target_eeprom", test_i2c_target_eeprom},
     {"swd_probe", test_swd_probe},
     {"four_threads_fifo", test_four_threads_fifo},
+    {"mon_uart_decodes_and_times", test_mon_uart_decodes_and_times},
+    {"mon_uart_break", test_mon_uart_break},
+    {"mon_uart_back_to_back", test_mon_uart_back_to_back},
+    {"mon_i2c_transfers", test_mon_i2c_transfers},
+    {"mon_i2c_random_legal", test_mon_i2c_random_legal},
+    {"mon_i2c_protocol_errors", test_mon_i2c_protocol_errors},
+    {"mon_i2c_single_faults", test_mon_i2c_single_faults},
+    {"mon_i2c_fast_master", test_mon_i2c_fast_master},
+    {"mon_i2c_long_low", test_mon_i2c_long_low},
+    {"mon_spi_modes", test_mon_spi_modes},
+    {"mon_spi_limits", test_mon_spi_limits},
+    {"mon_spi_errors", test_mon_spi_errors},
 };
 
 #define NTESTS ((int)(sizeof tests / sizeof tests[0]))
