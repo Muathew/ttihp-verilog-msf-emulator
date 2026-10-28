@@ -3123,6 +3123,508 @@ static int test_fault_spi_knobs(void)
 }
 
 /* ======================================================================== */
+/* WS2812 (test_firmware): ws2812.s drives an LED chain on uio0 from the TX
+ * engine, 15 cycles a bit (800 kHz at 12 MHz).                            */
+
+/* test_firmware.test_fw_ws2812: every bit 15 cycles, a 1 high for 10, a 0
+ * for 5 (the LEDs allow +-2), no gap between bits, the colours in order,
+ * then the line low for over 50 us to latch them */
+static int test_fw_ws2812(void)
+{
+    static const uint16_t data[10] = {3, 0x10, 0xFF, 0x00, 0xA5, 0x5A, 0x81, 0x00, 0x00, 0xFF};
+    static uint32_t rises[72];
+    uint32_t nr = 0, c, k, high = 0;
+    int b, j, v;
+
+    if (fw_boot(&img_ws2812, data, 10, 0))
+        return -1;
+    for (c = 0; c < 20000U; ++c)
+        if (cycle(0).uo == DONE)
+            break;
+    CHECK(c < 20000U, "uo_out never showed DONE");
+    CHECK(!tr.overflow, "trace overflow");
+    for (k = 1; k < tr.n; ++k) {
+        if ((tr.p[k].out & 1U) && !(tr.p[k - 1U].out & 1U)) {
+            if (nr < 72U)
+                rises[nr] = k;
+            ++nr;
+        }
+    }
+    CHECK(nr == 72U, "%d rising edges, want 72 (3 LEDs)", (int)nr);
+    for (k = 1; k < 72U; ++k)
+        CHECK(rises[k] - rises[k - 1U] == 15U, "bit %d starts %d cycles after the one before, want 15",
+              (int)k, (int)(rises[k] - rises[k - 1U]));
+    for (b = 0; b < 9; ++b) {
+        v = 0;
+        for (j = 0; j < 8; ++j) {
+            k = rises[8 * b + j];
+            for (high = 0; k + high < tr.n && (tr.p[k + high].out & 1U); ++high)
+                ;
+            CHECK(high == 5U || high == 10U, "bit %d is high for %d cycles", 8 * b + j, (int)high);
+            v = (v << 1) | (high == 10U);
+        }
+        CHECK(v == data[1 + b], "byte %d = %02x, want %02x", b, v, data[1 + b]);
+    }
+    CHECK(tr.n - rises[71] - high >= 600U, "the line is low %d cycles at the end, want 600 (latch)",
+          (int)(tr.n - rises[71] - high));
+    return 0;
+}
+
+/* ======================================================================== */
+/* Input filter and Manchester RX (test_peripherals). The Python tests read
+ * registers or the SRAM; these store the results in RAM and read it back
+ * with dump_ram.                                                          */
+
+/* test_peripherals.wait_uo: step with uio_in = uio until uo_out = v */
+static int wait_uo(uint8_t v, uint8_t uio, uint32_t limit)
+{
+    uint32_t c;
+
+    for (c = 0; c < limit; ++c)
+        if (cycle(uio).uo == v)
+            break;
+    CHECK(c < limit, "uo_out never showed %02x", v);
+    return 0;
+}
+
+/* filter_count.s: pulses 1, 2, 3, 4, 5 and 8 cycles wide on the pins of
+ * `mask`, 40 cycles apart; the two threads' rise counts */
+static int filter_pulses(const msf_image *img, uint8_t mask, uint16_t *got)
+{
+    static const uint32_t w[6] = {1, 2, 3, 4, 5, 8};
+    uint32_t i, c;
+
+    if (fw_boot(img, 0, 0, 0) || wait_uo(0x01U, 0, 1000U))
+        return -1;
+    for (i = 0; i < 6U; ++i) {
+        for (c = 0; c < w[i]; ++c)
+            cycle(mask);
+        for (c = 0; c < 40U; ++c)
+            cycle(0);
+    }
+    if (wait_uo(DONE, 0, 2000U))
+        return -1;
+    for (c = 0; c < 50U; ++c)           /* T1 stores its count too */
+        cycle(0);
+    return dump_ram(0, 2, got);
+}
+
+/* test_peripherals.test_filter_removes_short_pulses: FILTER on uio2 with
+ * len 4, uio3 left alone: uio3 shows all six rises, uio2 only the three of
+ * 4 cycles or more */
+static int test_filter_removes_short_pulses(void)
+{
+    uint16_t got[2];
+
+    if (filter_pulses(&img_filter_pulses, 0x0CU, got))
+        return -1;
+    CHECK(got[0] == 3U && got[1] == 6U, "uio2 (filtered) %d rises, uio3 %d: want 3 and 6",
+          got[0], got[1]);
+    return 0;
+}
+
+/* test_peripherals.test_filter_every_pin: FILTER on all eight uio pins (len
+ * 4): on each pin only the three pulses of 4 cycles or more get through */
+static int test_filter_every_pin(void)
+{
+    static const msf_image *const img[8] = {
+        &img_filter_pin0, &img_filter_pin1, &img_filter_pin2, &img_filter_pin3,
+        &img_filter_pin4, &img_filter_pin5, &img_filter_pin6, &img_filter_pin7,
+    };
+    uint16_t got[2];
+    int pin;
+
+    for (pin = 0; pin < 8; ++pin) {
+        if (filter_pulses(img[pin], 0xFFU, got))
+            return -1;
+        CHECK(got[0] == 3U && got[1] == 3U, "uio%d: %d and %d rises got through, want 3", pin,
+              got[0], got[1]);
+    }
+    return 0;
+}
+
+/* test_peripherals.test_filter_delay: a filtered pin's change arrives
+ * exactly len cycles after the same change on an unfiltered pin */
+static int test_filter_delay(void)
+{
+    static const msf_image *const img[2] = {&img_filter_delay4, &img_filter_delay9};
+    static const uint16_t len[2] = {4, 9};
+    uint16_t got[1];
+    uint32_t c;
+    int t;
+
+    for (t = 0; t < 2; ++t) {
+        if (fw_boot(img[t], 0, 0, 0) || wait_uo(0x01U, 0, 1000U))
+            return -1;
+        for (c = 0; c < 20U; ++c)
+            cycle(0);
+        if (wait_uo(DONE, 0x0CU, 200U) || dump_ram(0, 1, got))
+            return -1;
+        CHECK(got[0] == len[t], "len %d: uio2 rose %d cycles after uio3", len[t], got[0]);
+    }
+    return 0;
+}
+
+/* test_peripherals.spiky_uart: one bit of 104 cycles with an inverted
+ * 3-cycle spike at its centre, where the RX engine samples */
+static uint32_t spiky_bit(uint8_t *lv, uint32_t m, int v)
+{
+    uint32_t i;
+
+    for (i = 0; i < 104U; ++i)
+        lv[m + i] = (uint8_t)(i >= 51U && i < 54U ? !v : v);
+    return m + 104U;
+}
+
+/* test_peripherals.test_filter_uart_spikes: UART RX at 104 cycles a bit
+ * with a spike at every bit centre and in the idle line: without the filter
+ * the bytes come out wrong, with FILTER on the RX pin (len 6) they are
+ * right */
+static int test_filter_uart_spikes(void)
+{
+    static const uint8_t data[4] = {0x55, 0xA3, 0x00, 0xFF};
+    static const msf_image *const img[2] = {&img_rx_uart_nofilt, &img_rx_uart_filt};
+    static uint8_t lv[48U * 104U];
+    uint16_t got[4];
+    uint32_t m = 0, k;
+    int t, i, j, ok;
+
+    m = spiky_bit(lv, m, 1);
+    m = spiky_bit(lv, m, 1);
+    for (i = 0; i < 4; ++i) {
+        m = spiky_bit(lv, m, 0);
+        for (j = 0; j < 8; ++j)
+            m = spiky_bit(lv, m, (data[i] >> j) & 1);
+        m = spiky_bit(lv, m, 1);
+        m = spiky_bit(lv, m, 1);
+    }
+    for (k = 0; k < 104U; ++k)
+        lv[m++] = 1;
+    for (t = 0; t < 2; ++t) {
+        if (fw_boot(img[t], 0, 0, 0x02U) || wait_uo(0x01U, 0x02U, 1000U))
+            return -1;
+        for (k = 0; k < m; ++k)
+            cycle((uint8_t)(lv[k] << 1));
+        for (k = 0; k < 200U; ++k)
+            cycle(0x02U);
+        if (dump_ram(0, 4, got))
+            return -1;
+        ok = got[0] == data[0] && got[1] == data[1] && got[2] == data[2] && got[3] == data[3];
+        CHECK(ok == t, "filter %s: got %02x %02x %02x %02x, want them %s", t ? "on" : "off",
+              got[0], got[1], got[2], got[3], t ? "right" : "wrong");
+    }
+    return 0;
+}
+
+/* test_peripherals.drive_levels: uio_in[pin] = levels[k] like a real
+ * transmitter: symbol k starts at round(k * period * (1 + ppm / 1e6)) + j_k,
+ * j_k in [-jitter, jitter] per edge (it does not accumulate). The period is
+ * in hundredths of a cycle, so the rounding is exact. */
+static void drive_levels(int pin, const uint8_t *levels, uint32_t n, uint32_t period100,
+                         int jitter, uint32_t seed)
+{
+    msf_rng rng;
+    uint32_t k, c;
+    int32_t start = 0, next;
+
+    msf_rng_seed(&rng, seed);
+    for (k = 0; k < n; ++k) {
+        next = (int32_t)(((k + 1U) * period100 + 50U) / 100U) +
+               (int32_t)msf_rng_range(&rng, 0, (uint32_t)(2 * jitter + 1)) - jitter;
+        for (c = 0; c < (uint32_t)(next - start > 1 ? next - start : 1); ++c)
+            cycle((uint8_t)((levels[k] & 1U) << pin));
+        start = next;
+    }
+}
+
+/* test_peripherals.test_rx_manchester_frames_jitter: Manchester RX (half-bit
+ * = RX_DIV = 8): two frames separated by idle line, at -2 %, 0 and +2 %
+ * rate with +-1 cycle of jitter on every edge. Both frames decode, the
+ * second after the receiver re-locks. */
+static int test_rx_manchester_frames_jitter(void)
+{
+    static const uint8_t f0[5] = {0x55, 0xA7, 0x3C, 0x00, 0xFF}, f1[2] = {0x81, 0x6E};
+    static const uint32_t p100[3] = {800, 816, 784};
+    uint8_t lv[2 * 8 * 5 + 6];
+    uint16_t got[7];
+    uint32_t c, n;
+    int t, f, i, j, ok;
+
+    for (t = 0; t < 3; ++t) {
+        if (fw_boot(&img_rx_manch, 0, 0, 0) || wait_uo(0x01U, 0, 1000U))
+            return -1;
+        for (c = 0; c < 30U; ++c)
+            cycle(0);
+        for (f = 0; f < 2; ++f) {
+            const uint8_t *w = f ? f1 : f0;
+            int nw = f ? 2 : 5;
+
+            n = 0;
+            for (i = 0; i < nw; ++i)
+                for (j = 0; j < 8; ++j) {       /* a bit b is 1-b then b */
+                    lv[n++] = (uint8_t)!((w[i] >> j) & 1);
+                    lv[n++] = (uint8_t)((w[i] >> j) & 1);
+                }
+            for (i = 0; i < 6; ++i)
+                lv[n++] = 0;
+            drive_levels(5, lv, n, p100[t], 1, (uint32_t)t + 1U);
+        }
+        if (wait_uo(DONE, 0, 5000U) || dump_ram(0, 7, got))
+            return -1;
+        ok = 1;
+        for (i = 0; i < 7; ++i)
+            ok &= got[i] == (i < 5 ? f0[i] : f1[i - 5]);
+        CHECK(ok, "rate %d/800: got %02x %02x %02x %02x %02x %02x %02x", (int)p100[t], got[0],
+              got[1], got[2], got[3], got[4], got[5], got[6]);
+    }
+    return 0;
+}
+
+/* test_peripherals.test_rx_manchester_loopback: TX Manchester (uio0) wired
+ * to RX Manchester (uio3) by the bench, same chip, 6 cycles a half-bit (1
+ * Mbit/s at 12 MHz), back to back */
+static int test_rx_manchester_loopback(void)
+{
+    uint16_t words[13], got[13];
+    msf_rng rng;
+    uint32_t c;
+    uint8_t uio = 0;
+    int i;
+
+    msf_rng_seed(&rng, 9U);
+    words[0] = 0x55;
+    for (i = 1; i < 13; ++i)
+        words[i] = (uint16_t)msf_rng_range(&rng, 0, 256);
+    if (fw_boot(&img_manch_loopback, words, 13, 0))
+        return -1;
+    for (c = 0; c < 10000U; ++c) {
+        msf_pins p = cycle(uio);
+
+        if (p.uo == DONE)
+            break;
+        uio = (uint8_t)((p.out & 1U) << 3);
+    }
+    CHECK(c < 10000U, "uo_out never showed DONE");
+    if (dump_ram(64, 13, got))
+        return -1;
+    for (i = 0; i < 13; ++i)
+        CHECK(got[i] == words[i], "word %d = %02x, want %02x", i, got[i], words[i]);
+    return 0;
+}
+
+/* ======================================================================== */
+/* Debug view (test_debug, isa.md §8): ui_in[2] high during reset makes
+ * uo_out show the byte of internal state chosen by ui_in[7:2], page 1 with
+ * ui_in[1]. Read in step mode, one core cycle a view (dbg_view).          */
+
+#define DBG_STRAP 0x04U
+#define DBG_JMP   0x4800U           /* JMP: opcode 0x09 << 11 */
+
+/* test_debug: boot_asm with ui_in = ui at reset, then `cycles` cycles */
+static int dbg_boot(const msf_image *img, uint8_t ui, uint32_t cycles)
+{
+    static const uint16_t zeros[128];
+    uint32_t c;
+
+    TRY(msf_boot_enter(0));
+    TRY(msf_boot_write(0, zeros, 128));
+    TRY(msf_boot_write(img->addr, img->words, img->count));
+    TRY(msf_reset(ui, 0, 1));
+    TRY(msf_run());
+    for (c = 0; c < cycles; ++c)
+        msf_step(0);
+    return 0;
+}
+
+/* test_debug.view / view1: select a view and read it. On silicon no clock
+ * edge is needed, but the board wrapper captures the pins for the PS only
+ * after a step, so each read here is one core cycle: the tests read views
+ * of parked state, or count that cycle. */
+static uint8_t dbg_view(unsigned sel, int page)
+{
+    msf_set_ui((uint8_t)(sel << 2 | (page ? 0x02U : 0U) | MSF_BOOT_DIRECT));
+    return msf_step(0).uo;
+}
+
+/* a 16-bit view: low byte at sel, high byte at sel | 1 */
+static unsigned dbg_view16(unsigned sel, int page)
+{
+    unsigned hi = dbg_view(sel | 1U, page);
+
+    return hi << 8 | dbg_view(sel, page);
+}
+
+/* test_debug.self_jump: address of the first `x: JMP x` in an image */
+static unsigned dbg_self_jump(const msf_image *img)
+{
+    unsigned i;
+
+    for (i = 0; i < img->count; ++i)
+        if (img->words[i] == (DBG_JMP | (img->addr + i)))
+            return img->addr + i;
+    return 0;
+}
+
+/* test_debug.test_debug_view_reads_state: both threads' registers, the last
+ * issued PC and word, flags, SR, the pins, the FIFO; the cycle counter's
+ * low byte counts core cycles; uio is left alone */
+static int test_debug_view_reads_state(void)
+{
+    static const unsigned regs1[8] = {0, 0xCAFE, 0, 0, 0, 0x0FF0, 0, 0};
+    unsigned h0 = dbg_self_jump(&img_debug_prog), regs0[8] = {0, 0x1234, 0xBEEF, 0xFFFF,
+                                                              0x8001, 0, 0, 0};
+    int want[32], t, r, s, lo;
+
+    CHECK(h0 != 0U, "no self-jump in debug_prog.s");
+    regs0[6] = h0 + 1U;             /* t1 */
+    if (dbg_boot(&img_debug_prog, DBG_STRAP | MSF_BOOT_DIRECT, 80))
+        return -1;
+    for (t = 0; t < 2; ++t)
+        for (r = 0; r < 8; ++r) {
+            unsigned got = dbg_view16((unsigned)(t << 4 | r << 1), 0),
+                     v = t ? regs1[r] : regs0[r];
+
+            CHECK(got == v, "T%d R%d: %04x, want %04x", t, r, got, v);
+        }
+    for (s = 0; s < 32; ++s)
+        want[s] = 0;                /* 0x2C-0x3F: FIFO empty, no drops, reserved */
+    want[0x00] = (int)(h0 & 0xFFU);
+    want[0x01] = (int)(h0 >> 8);    /* PC[9:8]; T0 issued last, single mode */
+    want[0x02] = (int)((DBG_JMP | h0) & 0xFFU);
+    want[0x03] = (int)((DBG_JMP | h0) >> 8);
+    want[0x04] = 0x6;               /* N1 Z1 N0 Z0 */
+    want[0x05] = want[0x06] = -1;   /* the cycle counter: below */
+    want[0x07] = 0x01;              /* SR */
+    want[0x08] = 0x80;
+    want[0x09] = 0x3C;
+    want[0x0A] = 0xC3;
+    want[0x0B] = 0x5A;
+    for (s = 0; s < 32; ++s) {
+        int got = dbg_view(0x20U + (unsigned)s, 0);
+
+        CHECK(want[s] < 0 || got == want[s], "view %02x: %02x, want %02x", 0x20 + s, got,
+              want[s]);
+    }
+    lo = dbg_view(0x25, 0);         /* two reads, one cycle apart */
+    CHECK(dbg_view(0x25, 0) == ((lo + 1) & 0xFF), "the cycle counter's low byte did not count");
+    CHECK(msf_sample().out == 0x3CU, "the debug view changed uio_out");
+    return 0;
+}
+
+/* test_debug.test_debug_view_pc_in_bank1: the last issued PC's bits 9:8
+ * (view 0x21) for code in SRAM bank 1 */
+static int test_debug_view_pc_in_bank1(void)
+{
+    CHECK(img_debug_bank1.count == 950U - 128U + 1U, "debug_bank1.s is %d words",
+          (int)img_debug_bank1.count);
+    if (dbg_boot(&img_debug_bank1, DBG_STRAP | MSF_BOOT_DIRECT, 40))
+        return -1;
+    CHECK((dbg_view(0x21, 0) & 3U) == 950U >> 8, "PC[9:8] = %d", dbg_view(0x21, 0) & 3);
+    CHECK(dbg_view(0x20, 0) == (950U & 0xFFU), "PC[7:0] = %02x", dbg_view(0x20, 0));
+    return 0;
+}
+
+/* test_debug.test_debug_mode_off_without_strap: without the strap uo_out is
+ * the firmware's, whatever ui_in[7:2] is */
+static int test_debug_mode_off_without_strap(void)
+{
+    static const unsigned sel[4] = {0x00, 0x13, 0x20, 0x3F};
+    int i;
+
+    if (dbg_boot(&img_debug_prog, MSF_BOOT_DIRECT, 80))
+        return -1;
+    for (i = 0; i < 4; ++i)
+        CHECK(dbg_view(sel[i], 0) == 0x5AU, "view %02x showed %02x, want the firmware's 5a",
+              sel[i], dbg_view(sel[i], 0));
+    return 0;
+}
+
+/* test_debug.test_debug_single_step: one core cycle at a time, the last
+ * issued PC after each follows the program's order and R1 counts the loop's
+ * INCRs. A read is a step (dbg_view), so the trace reads PC[7:0] only: the
+ * loop is at 128-131 (test_debug_view_pc_in_bank1 reads PC[9:8]). */
+static int test_debug_single_step(void)
+{
+    unsigned pcs[60], trace[60], r1;
+    int n = 0, i, k, incrs = 0;
+
+    if (dbg_boot(&img_debug_loop, DBG_STRAP | MSF_BOOT_DIRECT, 0))
+        return -1;
+    for (i = 0; i < 60; ++i) {
+        pcs[i] = dbg_view(0x20, 0);
+        if (i == 0 || pcs[i] != pcs[i - 1])
+            trace[n++] = pcs[i];
+    }
+    for (k = 0; k < n && trace[k] != 128U; ++k)
+        ;
+    CHECK(n - k >= 13, "PC trace from 128: %d entries", n - k);
+    for (i = 0; i < 13; ++i)
+        CHECK(trace[k + i] == (i ? 129U + (unsigned)(i - 1) % 3U : 128U),
+              "PC trace entry %d is %d, want %d", i, (int)trace[k + i],
+              i ? 129 + (i - 1) % 3 : 128);
+    for (i = k; i < n; ++i)
+        incrs += trace[i] == 129U;
+    /* R1's low byte, read in cycle 61, holds every INCR the trace shows (up
+     * to cycle 60): the view shows the instruction issuing in the current
+     * cycle, whose result lands at the next edge. Its high byte is 0. */
+    r1 = dbg_view(0x02, 0);
+    CHECK(dbg_view(0x03, 0) == 0U, "R1[15:8] is not 0");
+    CHECK(r1 == (unsigned)incrs, "R1 = %d, INCR issued %d times", (int)r1, incrs);
+    return 0;
+}
+
+/* test_debug.test_debug_view_page1: T2 and T3 registers, the running and
+ * stalled threads, flags and T0's fetch pointer (four threads, all parked) */
+static int test_debug_view_page1(void)
+{
+    static const unsigned tr_[5][3] = {
+        {2, 1, 0x2211}, {2, 7, 0x2277}, {2, 3, 0xFFFF}, {3, 1, 0x3311}, {3, 3, 0},
+    };
+    unsigned h0 = dbg_self_jump(&img_debug_page1), flags;
+    int i;
+
+    CHECK(h0 != 0U, "no self-jump in debug_page1.s");
+    if (dbg_boot(&img_debug_page1, DBG_STRAP | MSF_BOOT_DIRECT, 120))
+        return -1;
+    for (i = 0; i < 5; ++i) {
+        unsigned got = dbg_view16((tr_[i][0] - 2U) << 4 | tr_[i][1] << 1, 1);
+
+        CHECK(got == tr_[i][2], "T%d R%d: %04x, want %04x", (int)tr_[i][0], (int)tr_[i][1], got,
+              tr_[i][2]);
+    }
+    CHECK(dbg_view(0x20, 1) == 0xF8U, "threads %02x, want f8 (all run, T3 stalled)",
+          dbg_view(0x20, 1));
+    flags = dbg_view(0x21, 1);
+    CHECK(((flags >> 4) & 3U) == 2U && ((flags >> 6) & 3U) == 1U, "flags %02x", flags);
+    CHECK(dbg_view(0x22, 1) == (h0 & 0xFFU), "T0's fetch pointer %02x, want %02x",
+          dbg_view(0x22, 1), h0 & 0xFFU);
+    return 0;
+}
+
+/* test_threads.test_tmo_per_thread: each thread has its own TMO; T1 starts
+ * with its starter's (isa.md §7). T1's WAIT times out with the 10 it
+ * inherited although T0 then set 0: the release is in T1's first own slot
+ * at or after expiry, 12 stalled cycles, so CNT_R to CNT_R is 2 + 12 + 2.
+ * T1's own TMO = 3 expires after 4, already in its own slot: 2 + 4 + 2.
+ * T0 (TMO 0) is still waiting: the debug view's thread byte shows it. */
+static int test_tmo_per_thread(void)
+{
+    uint16_t got[3];
+    unsigned thr;
+
+    if (dbg_boot(&img_tmo_threads, DBG_STRAP | MSF_BOOT_DIRECT, 200))
+        return -1;
+    thr = dbg_view(0x20, 1);        /* {running, stalled} */
+    CHECK(thr == 0x31U, "threads %02x, want 31 (T0 and T1 run, T0 stalled)", thr);
+    if (dump_ram(0, 3, got))
+        return -1;
+    CHECK(got[0] == 1U, "T1's first WAIT did not time out");
+    CHECK(got[1] == 16U, "T1's first WAIT took %d cycles CNT_R to CNT_R, want 16", got[1]);
+    CHECK(got[2] == 8U, "T1's second WAIT (its own TMO 3) took %d, want 8", got[2]);
+    return 0;
+}
+
+/* ======================================================================== */
 
 typedef struct {
     const char *name;
@@ -3175,6 +3677,19 @@ static const msf_test tests[] = {
     {"fault_uart_tolerance_sweep", test_fault_uart_tolerance_sweep},
     {"fault_i2c_knobs", test_fault_i2c_knobs},
     {"fault_spi_knobs", test_fault_spi_knobs},
+    {"fw_ws2812", test_fw_ws2812},
+    {"filter_removes_short_pulses", test_filter_removes_short_pulses},
+    {"filter_every_pin", test_filter_every_pin},
+    {"filter_delay", test_filter_delay},
+    {"filter_uart_spikes", test_filter_uart_spikes},
+    {"rx_manchester_frames_jitter", test_rx_manchester_frames_jitter},
+    {"rx_manchester_loopback", test_rx_manchester_loopback},
+    {"debug_view_reads_state", test_debug_view_reads_state},
+    {"debug_view_pc_in_bank1", test_debug_view_pc_in_bank1},
+    {"debug_mode_off_without_strap", test_debug_mode_off_without_strap},
+    {"debug_single_step", test_debug_single_step},
+    {"debug_view_page1", test_debug_view_page1},
+    {"tmo_per_thread", test_tmo_per_thread},
 };
 
 #define NTESTS ((int)(sizeof tests / sizeof tests[0]))
