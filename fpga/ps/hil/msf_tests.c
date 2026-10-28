@@ -15,7 +15,7 @@
 #include "msf_proto.h"
 
 #define DONE       0x55U
-#define TRACE_CAP  262144U
+#define TRACE_CAP  524288U
 
 static msf_pins trace_buf[TRACE_CAP];
 static msf_trace tr;
@@ -2049,6 +2049,1080 @@ static int test_mon_spi_errors(void)
 }
 
 /* ======================================================================== */
+/* UART -> SPI bridge (test_bridge): thread 0 queues UART bytes, thread 1
+ * runs the SPI transfers they announce and sends the bytes read back.     */
+
+/* test_bridge.ShiftRegDevice: an 8-bit register shifted MSB first, MOSI
+ * (uio3) in, MISO (uio4) out, SCK uio2, CS uio5 (high when undriven);
+ * records the bytes of each transfer */
+typedef struct {
+    int cpol, cpha, sck, cs, miso, n, ntr;
+    uint8_t reg;
+    uint8_t got[8][8];
+    int ngot[8];
+} shreg_dev;
+
+static void shreg_init(shreg_dev *d, int mode)
+{
+    memset(d, 0, sizeof *d);
+    d->cpol = mode >> 1;
+    d->cpha = mode & 1;
+    d->reg = 0x5AU;
+    d->miso = (d->reg >> 7) & 1;
+    d->sck = d->cpol;
+    d->cs = 1;
+}
+
+static int shreg_cycle(shreg_dev *d, msf_pins p)
+{
+    int cs = (p.oe >> 5) & 1U ? (p.out >> 5) & 1 : 1;
+    int sck = (p.out >> 2) & 1, mosi = (p.out >> 3) & 1;
+
+    if (!cs && d->cs) {                       /* selected: first bit on MISO */
+        if (d->ntr < 8)
+            d->ngot[d->ntr++] = 0;
+        d->n = 0;
+        d->miso = (d->reg >> 7) & 1;
+    }
+    if (!cs && sck != d->sck) {
+        int leading = sck != d->cpol;
+
+        if (leading == !d->cpha) {            /* the sampling edge */
+            d->reg = (uint8_t)(d->reg << 1 | mosi);
+            if (++d->n % 8 == 0 && d->ntr && d->ngot[d->ntr - 1] < 8)
+                d->got[d->ntr - 1][d->ngot[d->ntr - 1]++] = d->reg;
+        } else {                              /* the shifting edge */
+            d->miso = (d->reg >> 7) & 1;
+        }
+    }
+    d->sck = sck;
+    d->cs = cs;
+    return d->miso;
+}
+
+/* test_bridge.test_bridge_modes: every SPI mode, transfers of 3, 2 and 1
+ * bytes and a 0 that is ignored: the device sees each transfer's bytes
+ * framed by CS, and the UART returns what it shifted out */
+static int test_bridge_modes(void)
+{
+    static const msf_image *const img[4] = {&img_bridge_m0, &img_bridge_m1, &img_bridge_m2,
+                                            &img_bridge_m3};
+    static const uint8_t frames[10] = {3, 0x11, 0x22, 0xC3, 0, 2, 0xA5, 0x00, 1, 0xFF};
+    static const uint8_t back_want[6] = {0x5A, 0x11, 0x22, 0xC3, 0xA5, 0x00};
+    static const uint8_t tr_want[3][3] = {{0x11, 0x22, 0xC3}, {0xA5, 0x00}, {0xFF}};
+    static const int tr_len[3] = {3, 2, 1};
+    mon_item items[10];
+    shreg_dev d;
+    int back[16], mode, miso, i, j;
+    uint32_t k, total = 400U + 4U * 12U * MON_BIT, n;
+
+    for (i = 0; i < 10; ++i) {
+        items[i].v = frames[i];
+        items[i].bit = MON_BIT;
+        items[i].stop = 1;
+        items[i].idle = 3U * MON_BIT;
+        total += mon_item_len(&items[i]);
+    }
+    for (mode = 0; mode < 4; ++mode) {
+        if (fw_boot(img[mode], 0, 0, 0x02U))
+            return -1;
+        shreg_init(&d, mode);
+        miso = d.miso;
+        for (k = 0; k < total; ++k) {
+            int line = k >= 400U ? mon_line(items, 10, k - 400U) : 1;
+
+            miso = shreg_cycle(&d, cycle((uint8_t)(line << 1 | miso << 4)));
+        }
+        CHECK(!tr.overflow, "trace overflow");
+        CHECK(d.ntr == 3, "mode %d: %d transfers, want 3", mode, d.ntr);
+        for (i = 0; i < 3; ++i) {
+            CHECK(d.ngot[i] == tr_len[i], "mode %d: transfer %d has %d bytes, want %d", mode, i,
+                  d.ngot[i], tr_len[i]);
+            for (j = 0; j < tr_len[i]; ++j)
+                CHECK(d.got[i][j] == tr_want[i][j], "mode %d: transfer %d byte %d = %02x, want %02x",
+                      mode, i, j, d.got[i][j], tr_want[i][j]);
+        }
+        n = msf_uart_decode(&tr, MON_BIT, 0, back, 16);
+        CHECK(n == 6U, "mode %d: %d bytes back, want 6", mode, (int)n);
+        for (i = 0; i < 6; ++i)
+            CHECK(back[i] == back_want[i], "mode %d: byte %d back = %02x, want %02x", mode, i,
+                  back[i], back_want[i]);
+    }
+    return 0;
+}
+
+/* ======================================================================== */
+/* Capture engine (test_capture): the chip as a logic analyser.            */
+
+#define CS_RUN  0x8000U
+#define CS_TRIG 0x4000U
+#define CS_DONE 0x2000U
+#define CS_OVF  0x1000U
+
+/* test_capture.cap_ref: the words the engine records for a sample
+ * sequence (isa.md 6.6: packing, change records, trigger, POST), and the
+ * index of the trigger word; the word count, or -1 if it does not finish */
+static int cap_ref(const uint8_t *s, int ns, int chg, unsigned mask, unsigned val, int edge,
+                   int post, uint16_t *words, int maxw, int *tw)
+{
+    int n = 0, i, trig = 0, left = 0, prev_c = 1, first = 1, half = 0, thit = 0;
+    unsigned last = 0, delta = 0;
+
+    for (i = 0; i < ns; ++i) {
+        int cond = (s[i] & mask) == val, hit = cond && (!edge || !prev_c), have = 0, ptrig = 0;
+        unsigned word = 0;
+
+        prev_c = cond;
+        if (chg) {
+            unsigned d = (delta + 1U) & 0xFFU;
+
+            if (first || s[i] != last || d == 255U || (hit && !trig)) {
+                word = (unsigned)s[i] << 8 | d;
+                have = 1;
+                ptrig = hit && !trig;
+                delta = 0;
+                last = s[i];
+            } else {
+                delta = d;
+            }
+        } else if (!half) {
+            last = s[i];
+            half = 1;
+            thit = hit && !trig;
+        } else {
+            word = (unsigned)s[i] << 8 | last;
+            have = 1;
+            ptrig = !trig && (thit || hit);
+            half = 0;
+        }
+        first = 0;
+        if (!have)
+            continue;
+        if (n >= maxw)
+            return -1;
+        words[n++] = (uint16_t)word;
+        if (ptrig) {
+            trig = 1;
+            *tw = n - 1;
+            left = post;
+            if (post == 0)
+                return n;
+        } else if (trig) {
+            if (left == 1)
+                return n;
+            --left;
+        }
+    }
+    return -1;
+}
+
+/* test_capture.test_fw_logic_analyzer: logic_analyzer.s arms (sample mode,
+ * every 2nd cycle, edge trigger on (pins & 0xF0) == 0x30, POST 9, a
+ * 32-word ring), waits, then dumps over the UART at 12 cycles a bit: the
+ * host gets the samples back exactly. The pins are k >> 2 (k counting the
+ * harness's cycles); the chip's CNT differs from k by a constant, found by
+ * trying -8..8: only the right one can match all 32 words. */
+static int test_fw_logic_analyzer(void)
+{
+    enum { DIV = 2, SIZE = 32, POST = 9, NS = 4096 };
+    static uint8_t samples[NS];
+    static uint16_t words[NS];
+    int raw[128], i, n, nw, tw = 0, off, found = 0;
+    uint16_t w[64];
+    uint32_t k;
+
+    if (fw_boot(&img_logic_analyzer, 0, 0, 0))
+        return -1;
+    for (k = 0; k < 60000U; ++k)
+        if (cycle((uint8_t)(k >> 2)).uo == DONE)
+            break;
+    CHECK(k < 60000U, "no DONE on uo_out");
+    CHECK(!tr.overflow, "trace overflow");
+    n = (int)msf_uart_decode(&tr, 12U, 0, raw, 128);
+    CHECK(n == 2 * (4 + SIZE), "%d bytes dumped, want %d", n, 2 * (4 + SIZE));
+    for (i = 0; i < n; ++i)
+        CHECK(raw[i] >= 0, "framing error in byte %d", i);
+    for (i = 0; i < n / 2; ++i)
+        w[i] = (uint16_t)(raw[2 * i] | raw[2 * i + 1] << 8);
+    CHECK(w[0] == 0xA55AU, "header %04x, want a55a", w[0]);
+    CHECK((w[3] & (CS_RUN | CS_TRIG | CS_DONE | CS_OVF)) == (CS_TRIG | CS_DONE),
+          "status %04x", w[3]);
+    for (off = -8; off <= 8 && !found; ++off) {
+        for (i = 0; i < NS; ++i)
+            samples[i] = (uint8_t)(((int)w[1] + i * DIV - off) >> 2);
+        nw = cap_ref(samples, NS, 0, 0xF0U, 0x30U, 1, POST, words, NS, &tw);
+        if (nw < 0)
+            continue;
+        /* oldest first; the ring was cleared before arming */
+        found = 1;
+        for (i = 0; i < SIZE; ++i)
+            if (w[4 + i] != (nw - SIZE + i >= 0 ? words[nw - SIZE + i] : 0U))
+                found = 0;
+        if (found)
+            CHECK(w[2] == (uint16_t)(((tw - (nw - SIZE)) % SIZE + SIZE) % SIZE),
+                  "trigger index %d, want %d", w[2], ((tw - (nw - SIZE)) % SIZE + SIZE) % SIZE);
+    }
+    CHECK(found, "the 32 samples match the spec at no CNT offset");
+    return 0;
+}
+
+/* ======================================================================== */
+/* PS/2 (test_buses): the chip plays a keyboard against a host model that
+ * reads device frames on CLK falling edges, sends commands the way a host
+ * does, and checks the device's timing. CLK uio2, DATA uio3 (open drain,
+ * pulled up), UART RX uio1 / TX uio0.                                     */
+
+#define PS2_CLK 2
+#define PS2_DAT 3
+#define PS2_US  12U                 /* cycles per microsecond at 12 MHz */
+
+typedef struct {
+    uint32_t at;
+    uint8_t b;
+    int good;                       /* 0: send it with bad parity */
+} ps2_send;
+
+/* test_buses.Ps2Host */
+typedef struct {
+    const ps2_send *sends;
+    int nsends, isend;
+    int inh_frame, inh_bits, inh_armed;   /* inhibit after inh_bits of frame inh_frame */
+    uint32_t inh_len;
+    int pull_clk, pull_dat, clk, dat;
+    int bits[11], nbits;
+    uint8_t got[32];
+    int ngot, errors, frames_started;
+    uint32_t first_error;
+    int acks[16], nacks;
+    int tx_on, tx_bits[10], tx_n, tx_stage;   /* 0 inhibit, 1 request, 2 bits, 3 ACK seen */
+    uint32_t tx_t;
+    uint32_t last_edge;
+    int last_fall_bits;
+    uint32_t ph_min, ph_max;              /* clock phases in device frames, under 100 us */
+    int nph;
+    int inhibit_on;
+    uint32_t inhibit_until;
+} ps2_host;
+
+static int odd_parity(unsigned b)
+{
+    int n = 0;
+
+    for (; b; b >>= 1)
+        n += (int)(b & 1U);
+    return 1 - (n & 1);
+}
+
+static void ps2_init(ps2_host *h, const ps2_send *sends, int nsends)
+{
+    memset(h, 0, sizeof *h);
+    h->sends = sends;
+    h->nsends = nsends;
+    h->clk = h->dat = 1;
+    h->ph_min = 0xFFFFFFFFU;
+}
+
+static void ps2_error(ps2_host *h, uint32_t k)
+{
+    if (!h->errors++)
+        h->first_error = k;
+}
+
+/* the levels the host leaves on CLK and DATA (1 = released) after cycle k */
+static uint8_t ps2_step(ps2_host *h, uint32_t k, msf_pins p)
+{
+    int chip_clk = ((p.oe >> PS2_CLK) & 1U) && !((p.out >> PS2_CLK) & 1U);
+    int chip_dat = ((p.oe >> PS2_DAT) & 1U) && !((p.out >> PS2_DAT) & 1U);
+    int clk = !(chip_clk || h->pull_clk), dat = !(chip_dat || h->pull_dat);
+    int fall = h->clk && !clk, rise = clk && !h->clk;
+    int quiet = clk && !h->nbits && k - h->last_edge >= 50U * PS2_US;
+    int i;
+
+    /* the host starts a command when it is due and the bus is quiet */
+    if (!h->tx_on && h->isend < h->nsends && k >= h->sends[h->isend].at && quiet) {
+        const ps2_send *s = &h->sends[h->isend++];
+
+        for (i = 0; i < 8; ++i)
+            h->tx_bits[i] = (s->b >> i) & 1;
+        h->tx_bits[8] = odd_parity(s->b) ^ (s->good ? 0 : 1);
+        h->tx_bits[9] = 1;
+        h->tx_n = 0;
+        h->tx_t = k;
+        h->tx_stage = 0;
+        h->tx_on = 1;
+        h->pull_clk = 1;
+    }
+    if (h->tx_on) {
+        if (h->tx_stage == 0 && k - h->tx_t >= 110U * PS2_US) {
+            h->pull_dat = 1;
+            h->tx_stage = 1;
+        } else if (h->tx_stage == 1 && k - h->tx_t >= 115U * PS2_US) {
+            h->pull_clk = 0;
+            h->tx_stage = 2;
+        } else if (h->tx_stage == 2 && fall) {
+            if (h->tx_n < 10) {
+                h->pull_dat = 1 - h->tx_bits[h->tx_n++];
+            } else {                        /* the 11th clock: the device's ACK */
+                if (h->nacks < 16)
+                    h->acks[h->nacks++] = dat == 0;
+                h->tx_stage = 3;
+            }
+        } else if (h->tx_stage == 3 && rise) {
+            h->tx_on = 0;
+        }
+    } else if (h->inhibit_on) {
+        if (k >= h->inhibit_until) {
+            h->pull_clk = 0;
+            h->inhibit_on = 0;
+        }
+    } else {
+        /* device to host: DATA must not change while CLK is low */
+        if (dat != h->dat && !clk && !h->pull_clk)
+            ps2_error(h, k);
+        if (fall) {
+            if (!h->nbits)
+                h->frames_started++;
+            h->bits[h->nbits++] = dat;
+            if (h->inh_armed && h->frames_started == h->inh_frame && h->nbits == h->inh_bits) {
+                h->pull_clk = 1;
+                h->inhibit_on = 1;
+                h->inhibit_until = k + h->inh_len;
+                h->nbits = 0;
+                h->inh_armed = 0;
+            } else if (h->nbits == 11) {
+                unsigned v = 0;
+
+                for (i = 1; i < 9; ++i)
+                    v |= (unsigned)h->bits[i] << (i - 1);
+                if (h->bits[0] != 0 || h->bits[10] != 1 || h->bits[9] != odd_parity(v))
+                    ps2_error(h, k);
+                if (h->ngot < 32)
+                    h->got[h->ngot++] = (uint8_t)v;
+                h->nbits = 0;
+            }
+        }
+    }
+    /* clock phases inside a device frame: lows, and highs between bits */
+    if ((fall || rise) && !h->pull_clk && !h->tx_on) {
+        int in_frame = (rise && h->last_fall_bits >= 1) || (fall && h->nbits >= 2 && h->nbits <= 11);
+
+        if (in_frame && h->last_edge) {
+            uint32_t ph = k - h->last_edge;
+
+            if (ph < 100U * PS2_US) {
+                if (ph < h->ph_min)
+                    h->ph_min = ph;
+                if (ph > h->ph_max)
+                    h->ph_max = ph;
+                h->nph++;
+            }
+        }
+        if (fall)
+            h->last_fall_bits = h->nbits;
+        h->last_edge = k;
+    }
+    h->clk = clk;
+    h->dat = dat;
+    return (uint8_t)((h->pull_clk ? 0U : 1U) << PS2_CLK | (h->pull_dat ? 0U : 1U) << PS2_DAT);
+}
+
+/* test_buses.ps2_run: ps2_device.s, `ub` sent on its UART from cycle 400;
+ * returns the bytes it sent on its UART */
+static int ps2_run(const msf_image *img, ps2_host *h, const uint8_t *ub, int nub,
+                   uint32_t cycles, int *back, int maxback)
+{
+    mon_item items[8];
+    uint8_t uio = 0x02U | 1U << PS2_CLK | 1U << PS2_DAT;
+    uint32_t k;
+    int i;
+
+    for (i = 0; i < nub; ++i) {
+        items[i].v = ub[i];
+        items[i].bit = MON_BIT;
+        items[i].stop = 1;
+        items[i].idle = 20U * MON_BIT;
+    }
+    if (fw_boot(img, 0, 0, uio))
+        return -1;
+    for (k = 0; k < cycles; ++k) {
+        msf_pins p = cycle(uio);
+        int line = k >= 400U && nub ? mon_line(items, (uint32_t)nub, k - 400U) : 1;
+        uint8_t ext = (uint8_t)(ps2_step(h, k, p) | line << 1);
+
+        uio = (uint8_t)((p.out & p.oe) | (ext & ~p.oe));
+    }
+    CHECK(!tr.overflow, "trace overflow");
+    CHECK(!h->errors, "%d protocol errors, the first in cycle %d", h->errors, (int)h->first_error);
+    return (int)msf_uart_decode(&tr, MON_BIT, 0, back, (uint32_t)maxback);
+}
+
+/* test_buses.test_ps2_device_types_scancodes: scancodes from the UART reach
+ * the host as valid frames, in order, every clock phase within 30-50 us */
+static int test_ps2_device_types_scancodes(void)
+{
+    static const uint8_t codes[4] = {0x1C, 0xF0, 0x1C, 0x5A};
+    static ps2_host h;
+    int back[8], i;
+
+    ps2_init(&h, 0, 0);
+    if (ps2_run(&img_ps2_q240, &h, codes, 4, 400U + 4U * 30U * MON_BIT + 4U * 12U * 1000U, back,
+                8) < 0)
+        return -1;
+    CHECK(h.ngot == 4, "the host got %d bytes, want 4", h.ngot);
+    for (i = 0; i < 4; ++i)
+        CHECK(h.got[i] == codes[i], "byte %d = %02x, want %02x", i, h.got[i], codes[i]);
+    CHECK(h.nph > 0 && h.ph_min >= 30U * PS2_US && h.ph_max <= 50U * PS2_US,
+          "%d clock phases, %d..%d cycles, want 360..600", h.nph, (int)h.ph_min, (int)h.ph_max);
+    return 0;
+}
+
+/* test_buses.test_ps2_device_answers_commands: reset, set LEDs (and its
+ * argument), echo and read ID get a keyboard's answers; every command byte
+ * is ACKed in the 11th clock and reported on the UART; bad parity gets FE */
+static int test_ps2_device_answers_commands(void)
+{
+    static const uint8_t cb[6] = {0xFF, 0xED, 0x02, 0xEE, 0xF2, 0x55};
+    static const uint8_t want[9] = {0xFA, 0xAA, 0xFA, 0xFA, 0xEE, 0xFA, 0xAB, 0x83, 0xFE};
+    static const uint8_t back_want[5] = {0xFF, 0xED, 0x02, 0xEE, 0xF2};
+    static ps2_send sends[6];
+    static ps2_host h;
+    int back[16], n, i;
+
+    for (i = 0; i < 6; ++i) {
+        sends[i].at = 2000U + (uint32_t)i * 9000U;
+        sends[i].b = cb[i];
+        sends[i].good = i < 5;
+    }
+    ps2_init(&h, sends, 6);
+    n = ps2_run(&img_ps2_q60, &h, 0, 0, 2000U + 6U * 9000U + 6000U, back, 16);
+    if (n < 0)
+        return -1;
+    CHECK(h.nacks == 6, "%d ACKs, want 6", h.nacks);
+    for (i = 0; i < 6; ++i)
+        CHECK(h.acks[i], "command %d not ACKed", i);
+    CHECK(h.ngot == 9, "the host got %d bytes, want 9", h.ngot);
+    for (i = 0; i < 9; ++i)
+        CHECK(h.got[i] == want[i], "byte %d = %02x, want %02x", i, h.got[i], want[i]);
+    CHECK(n == 5, "%d bytes on the UART, want 5", n);
+    for (i = 0; i < 5; ++i)
+        CHECK(back[i] == back_want[i], "UART byte %d = %02x, want %02x", i, back[i],
+              back_want[i]);
+    return 0;
+}
+
+/* test_buses.test_ps2_device_host_inhibit: the host pulls CLK low after 4
+ * bits of a frame, for 150 us; the device sends the whole byte again */
+static int test_ps2_device_host_inhibit(void)
+{
+    static const uint8_t codes[2] = {0x1C, 0x32};
+    static ps2_host h;
+    int back[8];
+
+    ps2_init(&h, 0, 0);
+    h.inh_armed = 1;
+    h.inh_frame = 1;
+    h.inh_bits = 4;
+    h.inh_len = 150U * PS2_US;
+    if (ps2_run(&img_ps2_q60, &h, codes, 2, 400U + 2U * 30U * MON_BIT + 8000U, back, 8) < 0)
+        return -1;
+    CHECK(h.ngot == 2 && h.got[0] == 0x1C && h.got[1] == 0x32,
+          "the host got %d bytes (%02x %02x), want 1c 32", h.ngot, h.got[0], h.got[1]);
+    return 0;
+}
+
+/* ======================================================================== */
+/* CAN 2.0A (test_buses): can.s against a node model written from the
+ * specification. The chip's TXD is uio2, its RXD uio7; the bus is the
+ * wired AND of the two nodes' TXD. UART RX uio1 / TX uio0.                */
+
+#define CAN_TX  2
+#define CAN_RX  7
+#define CAN_BT  480U                /* can.s default: 50 kbit/s at 24 MHz */
+#define CAN_SP  (CAN_BT / 2U)
+
+typedef struct {
+    uint16_t ident;
+    uint8_t data[8];
+    int len, bad_crc;
+} can_frame;
+
+static uint16_t can_crc15(const uint8_t *bits, int n)
+{
+    uint16_t crc = 0;
+    int i;
+
+    for (i = 0; i < n; ++i) {
+        int nxt = bits[i] ^ ((crc >> 14) & 1);
+
+        crc = (uint16_t)((crc << 1) & 0x7FFF);
+        if (nxt)
+            crc ^= 0x4599;
+    }
+    return crc;
+}
+
+static int can_msb(uint8_t *b, int n, unsigned v, int w)
+{
+    int i;
+
+    for (i = 0; i < w; ++i)
+        b[n++] = (uint8_t)((v >> (w - 1 - i)) & 1U);
+    return n;
+}
+
+/* test_buses.can_bits then stuff: a data frame, SOF to the end of the
+ * CRC, with stuff bits */
+static int can_stuffed(const can_frame *f, uint8_t *out)
+{
+    uint8_t bits[128];
+    int n = 0, i, m = 0, run = 0, last = -1;
+
+    bits[n++] = 0;
+    n = can_msb(bits, n, f->ident, 11);
+    n = can_msb(bits, n, 0, 3);
+    n = can_msb(bits, n, (unsigned)f->len, 4);
+    for (i = 0; i < f->len; ++i)
+        n = can_msb(bits, n, f->data[i], 8);
+    n = can_msb(bits, n, can_crc15(bits, n) ^ (f->bad_crc ? 1U : 0U), 15);
+    for (i = 0; i < n; ++i) {
+        if (run == 5) {
+            out[m++] = (uint8_t)(1 - last);
+            run = 1;
+            last = 1 - last;
+        }
+        out[m++] = bits[i];
+        run = bits[i] == last ? run + 1 : 1;
+        last = bits[i];
+    }
+    if (run == 5)
+        out[m++] = (uint8_t)(1 - last);
+    return m;
+}
+
+enum { CAN_FRAME, CAN_DELIM, CAN_ACK, CAN_EOF };
+
+/* test_buses.CanNode: takes part after 10 recessive bits, hard-syncs on
+ * SOF, drives at bit starts and samples at CAN_SP; receives every frame
+ * and ACKs a good one if `ack`; sends each queued frame once, after 11 idle
+ * bits and not before `start`, or joins the chip's SOF if `join` */
+typedef struct {
+    const can_frame *q;
+    int nq, iq, ack, join;
+    uint32_t start, gap;
+    int txd, bus_prev, active, tx;
+    uint32_t idle_since, t0, k;
+    uint8_t bits[160], txbits[200];
+    int nbits, runl, last, stuff_next, total, crc_done, crc_ok, phase, n, ntx, txi;
+    int sent[8], nsent, errors;
+    can_frame got[8];
+    int ngot;
+} can_node;
+
+static void can_init(can_node *c, const can_frame *q, int nq, int ack, uint32_t start, int join,
+                     uint32_t gap)
+{
+    memset(c, 0, sizeof *c);
+    c->q = q;
+    c->nq = nq;
+    c->ack = ack;
+    c->start = start;
+    c->join = join;
+    c->gap = gap;
+    c->txd = c->bus_prev = 1;
+}
+
+static void can_begin(can_node *c, uint32_t k, int tx, int own_sof)
+{
+    c->active = 1;
+    c->t0 = k;
+    c->tx = tx;
+    c->nbits = c->runl = 0;
+    c->last = 1;
+    c->stuff_next = 0;
+    c->total = -1;
+    c->crc_done = 0;
+    c->phase = CAN_FRAME;
+    c->n = 0;
+    if (tx) {
+        c->ntx = can_stuffed(&c->q[c->iq], c->txbits);
+        c->txi = 1;
+        if (own_sof)
+            c->txd = 0;                    /* SOF now */
+    }
+}
+
+static unsigned can_field(const uint8_t *b, int at, int w)
+{
+    unsigned v = 0;
+    int j;
+
+    for (j = 0; j < w; ++j)
+        v = v << 1 | b[at + j];
+    return v;
+}
+
+static void can_sample(can_node *c, int b, int i)
+{
+    if (c->phase == CAN_FRAME) {
+        if (c->tx && i < c->ntx && c->txbits[i] == 1 && b == 0) {
+            c->tx = 0;                     /* lost arbitration */
+            c->txd = 1;
+        }
+        if (c->stuff_next) {
+            if (b == c->last)
+                c->errors++;               /* stuff error */
+            c->runl = 1;
+            c->last = b;
+            c->stuff_next = 0;
+        } else {
+            if (c->nbits < 160)
+                c->bits[c->nbits++] = (uint8_t)b;
+            c->runl = b == c->last ? c->runl + 1 : 1;
+            c->last = b;
+            c->stuff_next = c->runl == 5;
+            if (c->nbits == 19) {
+                unsigned dlc = can_field(c->bits, 15, 4);
+
+                c->total = 19 + 8 * (int)(dlc < 8U ? dlc : 8U) + 15;
+            }
+            if (c->nbits == c->total) {
+                c->crc_ok = can_crc15(c->bits, c->nbits) == 0;
+                c->crc_done = 1;
+            }
+        }
+        if (c->crc_done && !c->stuff_next)
+            c->phase = CAN_DELIM;          /* the next bit */
+    } else if (c->phase == CAN_DELIM) {
+        c->phase = CAN_ACK;
+    } else if (c->phase == CAN_ACK) {
+        if (c->tx) {
+            if (c->nsent < 8)
+                c->sent[c->nsent++] = b == 0;   /* ACKed? */
+            c->iq++;
+            c->start = c->k + c->gap;
+        } else if (c->crc_ok && c->ngot < 8) {
+            can_frame *g = &c->got[c->ngot++];
+            int n;
+
+            g->ident = (uint16_t)can_field(c->bits, 1, 11);
+            g->len = (int)can_field(c->bits, 15, 4);
+            for (n = 0; n < (g->len < 8 ? g->len : 8); ++n)
+                g->data[n] = (uint8_t)can_field(c->bits, 19 + 8 * n, 8);
+        }
+        c->phase = CAN_EOF;
+        c->n = 0;
+    } else if (++c->n >= 8) {              /* ACK delimiter + 7 EOF bits */
+        c->active = 0;
+        c->txd = 1;
+    }
+}
+
+/* the level the node puts on the chip's RXD after cycle k */
+static int can_step(can_node *c, uint32_t k, msf_pins p)
+{
+    int chip = (p.out >> CAN_TX) & 1, bus = chip & c->txd;
+
+    if (!c->active) {
+        int idle = k - c->idle_since >= 10U * CAN_BT;    /* bus integration */
+
+        if (bus == 0 && c->bus_prev == 1 && idle)        /* someone's SOF */
+            can_begin(c, k, c->join && c->iq < c->nq, 0);
+        else if (bus == 1 && c->iq < c->nq && k >= c->start && k - c->idle_since >= 11U * CAN_BT)
+            can_begin(c, k, 1, 1);
+    }
+    if (bus == 0)
+        c->idle_since = k;
+    if (c->active) {
+        uint32_t t = (k - c->t0) % CAN_BT, i = (k - c->t0) / CAN_BT;
+
+        c->k = k;
+        if (t == 0U && i > 0U) {                         /* bit start: drive */
+            if (c->phase == CAN_FRAME && c->tx && c->txi < c->ntx)
+                c->txd = c->txbits[c->txi++];
+            else
+                c->txd = c->phase == CAN_ACK && !c->tx && c->ack && c->crc_ok ? 0 : 1;
+        }
+        if (t == CAN_SP)
+            can_sample(c, bus, (int)i);
+    }
+    c->bus_prev = bus;
+    return chip & c->txd;
+}
+
+/* test_buses.can_run: can.s with `cmd` sent on its UART from cycle 400
+ * (the last byte followed by 40 idle bits); the UART bytes it returns */
+static int can_run(can_node *c, const uint8_t *cmd, int ncmd, uint32_t cycles, int *back, int max)
+{
+    mon_item items[16];
+    uint8_t uio = 0x02U | 1U << CAN_RX;
+    uint32_t k;
+    int i;
+
+    for (i = 0; i < ncmd; ++i) {
+        items[i].v = cmd[i];
+        items[i].bit = MON_BIT;
+        items[i].stop = 1;
+        items[i].idle = (uint16_t)(i == ncmd - 1 ? 40U * MON_BIT : MON_BIT);
+    }
+    if (fw_boot(&img_can, 0, 0, uio))
+        return -1;
+    for (k = 0; k < cycles; ++k) {
+        msf_pins p = cycle(uio);
+        int line = k >= 400U && ncmd ? mon_line(items, (uint32_t)ncmd, k - 400U) : 1;
+        uint8_t ext = (uint8_t)(line << 1 | can_step(c, k, p) << CAN_RX);
+
+        uio = (uint8_t)((p.out & p.oe) | (ext & ~p.oe));
+    }
+    CHECK(!tr.overflow, "trace overflow");
+    CHECK(!c->errors, "the node saw %d stuff errors", c->errors);
+    return (int)msf_uart_decode(&tr, MON_BIT, 0, back, (uint32_t)max);
+}
+
+static int can_check_back(const int *back, int n, const uint8_t *want, int nw)
+{
+    int i;
+
+    CHECK(n == nw, "%d UART bytes back, want %d", n, nw);
+    for (i = 0; i < n; ++i)
+        CHECK(back[i] == want[i], "UART byte %d = %02x, want %02x", i, back[i], want[i]);
+    return 0;
+}
+
+/* test_buses.test_can_receive_and_ack: a node sends two frames; the chip
+ * ACKs and reports each; one with a bad CRC is reported 'E' 'C', not ACKed */
+static int test_can_receive_and_ack(void)
+{
+    static const can_frame q[3] = {{0x123, {0x11, 0x22, 0x33}, 3, 0},
+                                   {0x7FF, {0}, 0, 0},
+                                   {0x055, {0xA5}, 1, 1}};
+    static const uint8_t want[] = {'R', 0x01, 0x23, 3, 0x11, 0x22, 0x33, 'R', 0x07, 0xFF, 0,
+                                   'E', 'C'};
+    static can_node c;
+    int back[32], n;
+
+    can_init(&c, q, 3, 1, 2000U, 0, 40U * CAN_BT);
+    n = can_run(&c, 0, 0, 2000U + 3U * 200U * CAN_BT, back, 32);
+    if (n < 0)
+        return -1;
+    CHECK(c.nsent == 3 && c.sent[0] && c.sent[1] && !c.sent[2],
+          "%d frames sent, ACKs %d %d %d, want 1 1 0", c.nsent, c.sent[0], c.sent[1], c.sent[2]);
+    return can_check_back(back, n, want, (int)sizeof want);
+}
+
+/* test_buses.test_can_transmit: 'T' sends a data frame the node receives
+ * with a good CRC and ACKs; the chip replies 'K' */
+static int test_can_transmit(void)
+{
+    static const uint8_t cmd[12] = {'T', 0x02, 0xA5, 8, 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0xFF,
+                                    0x5A, 0x81};
+    static const uint8_t want[1] = {'K'};
+    static can_node c;
+    int back[8], n, i;
+
+    can_init(&c, 0, 0, 1, 0, 0, 0);
+    n = can_run(&c, cmd, 12, 400U + 40U * MON_BIT * 13U + 200U * CAN_BT, back, 8);
+    if (n < 0)
+        return -1;
+    CHECK(c.ngot == 1 && c.got[0].ident == 0x2A5 && c.got[0].len == 8,
+          "the node got %d frames (first %03x, %d bytes), want one 2a5 of 8", c.ngot,
+          c.got[0].ident, c.got[0].len);
+    for (i = 0; i < 8; ++i)
+        CHECK(c.got[0].data[i] == cmd[4 + i], "data byte %d = %02x, want %02x", i,
+              c.got[0].data[i], cmd[4 + i]);
+    return can_check_back(back, n, want, 1);
+}
+
+/* test_buses.test_can_arbitration_and_no_ack: the node joins the chip's
+ * SOF with a lower identifier: the chip loses arbitration, reports the
+ * node's frame, then sends its own again ('K'). With nobody to ACK: 8
+ * tries, then 'N' */
+static int test_can_arbitration_and_no_ack(void)
+{
+    static const can_frame q[1] = {{0x0F0, {0x42}, 1, 0}};
+    static const uint8_t cmd1[5] = {'T', 0x01, 0x00, 1, 0x99};
+    static const uint8_t want1[] = {'R', 0x00, 0xF0, 1, 0x42, 'K'};
+    static const uint8_t cmd2[4] = {'T', 0x00, 0x01, 0};
+    static const uint8_t want2[1] = {'N'};
+    static can_node c;
+    int back[16], n;
+
+    can_init(&c, q, 1, 1, 1000000000U, 1, 0);
+    n = can_run(&c, cmd1, 5, 400U + 40U * MON_BIT * 6U + 400U * CAN_BT, back, 16);
+    if (n < 0 || can_check_back(back, n, want1, (int)sizeof want1))
+        return -1;
+    CHECK(c.nsent == 1 && c.sent[0], "the node sent %d frames (ACKed %d), want 1 ACKed",
+          c.nsent, c.sent[0]);
+    CHECK(c.ngot == 1 && c.got[0].ident == 0x100 && c.got[0].len == 1 && c.got[0].data[0] == 0x99,
+          "the node got %d frames, want one 100 of [99]", c.ngot);
+    can_init(&c, 0, 0, 0, 0, 0, 0);                    /* only closes the TXD -> RXD loop */
+    n = can_run(&c, cmd2, 4, 400U + 40U * MON_BIT * 5U + 8U * 80U * CAN_BT + 4000U, back, 16);
+    if (n < 0)
+        return -1;
+    return can_check_back(back, n, want2, 1);
+}
+
+/* ======================================================================== */
+/* Timing-fault injection (test_faults): the controllers' timing knobs
+ * (firmware defines) move edges by exact amounts, measured at the pins.   */
+
+static const msf_image *const fault_uart_knob_img[4] = {
+    &img_uart_b104_s104,
+    &img_uart_b99_s104,
+    &img_uart_b110_s37,
+    &img_uart_b104_s300,
+};
+static const msf_image *const fault_uart_sweep_img[21] = {
+    &img_uart_b94_s94,
+    &img_uart_b95_s95,
+    &img_uart_b96_s96,
+    &img_uart_b97_s97,
+    &img_uart_b98_s98,
+    &img_uart_b99_s99,
+    &img_uart_b100_s100,
+    &img_uart_b101_s101,
+    &img_uart_b102_s102,
+    &img_uart_b103_s103,
+    &img_uart_b104_s104,
+    &img_uart_b105_s105,
+    &img_uart_b106_s106,
+    &img_uart_b107_s107,
+    &img_uart_b108_s108,
+    &img_uart_b109_s109,
+    &img_uart_b110_s110,
+    &img_uart_b111_s111,
+    &img_uart_b112_s112,
+    &img_uart_b113_s113,
+    &img_uart_b114_s114,
+};
+static const msf_image *const fault_i2c_img[5] = {
+    &img_i2c_ql9_qh9,
+    &img_i2c_ql9_qh3,
+    &img_i2c_ql2_qh9,
+    &img_i2c_ql5_qh14,
+    &img_i2c_ql1_qh1,
+};
+static const msf_image *const fault_spi_img[4] = {
+    &img_bridge_sh1_sl1,
+    &img_bridge_sh3_sl1,
+    &img_bridge_sh1_sl5,
+    &img_bridge_sh10_sl2,
+};
+static uint8_t lvbuf[TRACE_CAP];
+
+/* test_faults.runs: (level, length) runs of lv[] from its first edge at or
+ * after `start`; the last run ends with the trace */
+static int lv_runs(uint32_t n, uint32_t start, uint8_t *rl, uint32_t *rn, int max)
+{
+    uint32_t k, a = 0;
+    int m = 0, have = 0;
+
+    for (k = start < 1U ? 1U : start; k < n; ++k) {
+        if (lvbuf[k] != lvbuf[k - 1U]) {
+            if (have && m < max) {
+                rl[m] = lvbuf[a];
+                rn[m++] = k - a;
+            }
+            a = k;
+            have = 1;
+        }
+    }
+    if (have && m < max) {
+        rl[m] = lvbuf[a];
+        rn[m++] = n - a;
+    }
+    return m;
+}
+
+/* test_faults.uart_frames: uart_tx.s (BIT, STOP set by the image) sends
+ * `msg`; lvbuf = uio_out[0] per cycle until DONE. Returns the length. */
+static int uart_frames(const msf_image *img, const char *msg, uint32_t bit, uint32_t stop,
+                       uint32_t *n)
+{
+    uint16_t data[16];
+    uint32_t i, len = (uint32_t)strlen(msg), limit = 20U * (bit + stop) * (len + 2U), c;
+
+    for (i = 0; i <= len; ++i)
+        data[i] = (uint8_t)msg[i];
+    if (fw_boot(img, data, (uint16_t)(len + 1U), 0))
+        return -1;
+    for (c = 0; c < limit; ++c)
+        if (cycle(0).uo == DONE)
+            break;
+    CHECK(c < limit, "uo_out never showed DONE");
+    CHECK(!tr.overflow, "trace overflow");
+    for (i = 0; i < tr.n; ++i)
+        lvbuf[i] = (uint8_t)(tr.p[i].out & 1U);
+    *n = tr.n;
+    return 0;
+}
+
+/* test_faults.test_fault_uart_knobs: every bit of 0x55 0x55 lasts BIT,
+ * the stop bit STOP */
+static int test_fault_uart_knobs(void)
+{
+    static const uint32_t ks[4][2] = {{104, 104}, {99, 104}, {110, 37}, {104, 300}};
+    uint8_t rl[32];
+    uint32_t rn[32], n, first, k;
+    int t, i, m;
+
+    for (t = 0; t < 4; ++t) {
+        if (uart_frames(fault_uart_knob_img[t], "UU", ks[t][0], ks[t][1], &n))
+            return -1;
+        for (first = 1; first < n && !(lvbuf[first - 1U] == 1 && lvbuf[first] == 0); ++first)
+            ;
+        CHECK(first < n, "BIT %d STOP %d: no start bit", (int)ks[t][0], (int)ks[t][1]);
+        m = lv_runs(n, first, rl, rn, 32);
+        CHECK(m >= 19, "BIT %d STOP %d: %d runs", (int)ks[t][0], (int)ks[t][1], m);
+        /* each frame: start and b0..b7 alternate (9 runs of one bit), then stop */
+        for (i = 0; i < 19; ++i) {
+            if (i == 9)
+                continue;
+            k = rn[i];
+            CHECK(k == ks[t][0], "BIT %d STOP %d: run %d is %d cycles", (int)ks[t][0],
+                  (int)ks[t][1], i, (int)k);
+        }
+        CHECK(rl[9] == 1 && rn[9] == ks[t][1], "BIT %d STOP %d: the stop bit is %d for %d",
+              (int)ks[t][0], (int)ks[t][1], rl[9], (int)rn[9]);
+    }
+    return 0;
+}
+
+/* test_faults.mid_bit_receiver: find each start edge, sample every bit at
+ * its nominal centre (no re-sync in a frame); bytes, -1 for a stop bit
+ * read low */
+static int mid_bit_receiver(uint32_t n, uint32_t nominal, int *out, int max)
+{
+    uint32_t i = 1, k;
+    int m = 0;
+
+    while (i < n && m < max) {
+        if (lvbuf[i - 1U] == 1 && lvbuf[i] == 0) {
+            int s[10], v = 0;
+
+            for (k = 0; k < 10U; ++k) {
+                uint32_t at = i + nominal / 2U + k * nominal;
+
+                s[k] = lvbuf[at < n ? at : n - 1U];
+            }
+            if (s[0] != 0) {
+                ++i;
+                continue;
+            }
+            for (k = 1; k < 9U; ++k)
+                v |= s[k] << (k - 1U);
+            out[m++] = s[9] == 1 ? v : -1;
+            i += 9U * nominal + nominal / 2U;
+        } else {
+            ++i;
+        }
+    }
+    return m;
+}
+
+/* test_faults.test_fault_uart_tolerance_sweep: bit times 94..114 against a
+ * receiver sampling at 104's centres: 0x55 decodes exactly for 99..109 */
+static int test_fault_uart_tolerance_sweep(void)
+{
+    int got[8], m, ok, b;
+    uint32_t n;
+
+    for (b = 94; b <= 114; ++b) {
+        if (uart_frames(fault_uart_sweep_img[b - 94], "UUU", (uint32_t)b, (uint32_t)b, &n))
+            return -1;
+        m = mid_bit_receiver(n, 104U, got, 8);
+        ok = m == 3 && got[0] == 0x55 && got[1] == 0x55 && got[2] == 0x55;
+        CHECK(ok == (b >= 99 && b <= 109), "BIT %d: the receiver %s, want it to %s", b,
+              ok ? "decodes 55 55 55" : "fails", b >= 99 && b <= 109 ? "decode" : "fail");
+    }
+    return 0;
+}
+
+/* test_faults.i2c_scl: i2c_master.s writing to an absent device (address
+ * NACKed, then STOP); SCL (uio6, open drain, pulled up) runs from its
+ * first edge */
+static int i2c_scl(const msf_image *img, uint8_t *rl, uint32_t *rn, int max)
+{
+    static const uint16_t data[4] = {0x50, 1, 0xA5, 0};
+    uint8_t uio = 0x60U;
+    uint32_t c, first;
+
+    if (fw_boot(img, data, 4, uio))
+        return -1;
+    for (c = 0; c < 20000U; ++c) {
+        msf_pins p = cycle(uio);
+
+        uio = (uint8_t)((p.out & p.oe) | (0x60U & ~p.oe));
+        if (p.uo & 0x80U)
+            break;
+    }
+    CHECK(c < 20000U, "i2c_master never finished");
+    for (c = 0; c < tr.n; ++c)
+        lvbuf[c] = (uint8_t)((tr.p[c].oe >> 6) & 1U ? (tr.p[c].out >> 6) & 1U : 1U);
+    for (first = 1; first < tr.n && lvbuf[first] == lvbuf[first - 1U]; ++first)
+        ;
+    return lv_runs(tr.n, first, rl, rn, max);
+}
+
+/* test_faults.test_fault_i2c_knobs: SCL high and low phases move by
+ * exactly 3 cycles per QH / QL count (runs 2..15: the address byte) */
+static int test_fault_i2c_knobs(void)
+{
+    static const int q[5][2] = {{9, 9}, {9, 3}, {2, 9}, {5, 14}, {1, 1}};
+    uint8_t rl0[32], rl[32];
+    uint32_t rn0[32], rn[32];
+    int t, i;
+
+    if (i2c_scl(fault_i2c_img[0], rl0, rn0, 32) < 16)
+        return -1;
+    for (t = 1; t < 5; ++t) {
+        if (i2c_scl(fault_i2c_img[t], rl, rn, 32) < 16)
+            return -1;
+        for (i = 2; i < 16; ++i) {
+            int d = rl0[i] ? 3 * (q[t][1] - 9) : 3 * (q[t][0] - 9);
+
+            CHECK(rl[i] == rl0[i] && (int)rn[i] == (int)rn0[i] + d,
+                  "QL %d QH %d: run %d is %d for %d, want %d for %d", q[t][0], q[t][1], i, rl[i],
+                  (int)rn[i], rl0[i], (int)rn0[i] + d);
+        }
+    }
+    return 0;
+}
+
+/* test_faults.test_fault_spi_knobs: the bridge's SCK (mode 0) is high
+ * 4 + 4 SH cycles and low 10 + 4 SL */
+static int test_fault_spi_knobs(void)
+{
+    static const int ks[4][2] = {{1, 1}, {3, 1}, {1, 5}, {10, 2}};
+    static const mon_item items[2] = {{1, MON_BIT, 1, 200}, {0xA5, MON_BIT, 1, 200}};
+    uint8_t rl[16];
+    uint32_t rn[16], k, first, total = 400U + 2U * (10U * MON_BIT + 200U) + 2000U;
+    int t, i, m;
+
+    for (t = 0; t < 4; ++t) {
+        if (fw_boot(fault_spi_img[t], 0, 0, 0x02U))
+            return -1;
+        for (k = 0; k < total; ++k)
+            cycle(k >= 400U && !mon_line(items, 2, k - 400U) ? 0x00U : 0x02U);
+        CHECK(!tr.overflow, "trace overflow");
+        for (k = 0; k < tr.n; ++k)
+            lvbuf[k] = (uint8_t)((tr.p[k].out >> 2) & 1U);
+        for (first = 1; first < tr.n && lvbuf[first] == lvbuf[first - 1U]; ++first)
+            ;
+        m = lv_runs(tr.n, first, rl, rn, 16);
+        CHECK(m == 16, "SH %d SL %d: %d SCK runs, want 16", ks[t][0], ks[t][1], m);
+        for (i = 0; i < 16; ++i) {
+            if (rl[i])
+                CHECK((int)rn[i] == 4 + 4 * ks[t][0], "SH %d SL %d: a high of %d cycles",
+                      ks[t][0], ks[t][1], (int)rn[i]);
+            else if (i < 15)                  /* the last low: idle */
+                CHECK((int)rn[i] == 10 + 4 * ks[t][1], "SH %d SL %d: a low of %d cycles",
+                      ks[t][0], ks[t][1], (int)rn[i]);
+        }
+    }
+    return 0;
+}
+
+/* ======================================================================== */
 
 typedef struct {
     const char *name;
@@ -2089,6 +3163,18 @@ static const msf_test tests[] = {
     {"mon_spi_modes", test_mon_spi_modes},
     {"mon_spi_limits", test_mon_spi_limits},
     {"mon_spi_errors", test_mon_spi_errors},
+    {"bridge_modes", test_bridge_modes},
+    {"fw_logic_analyzer", test_fw_logic_analyzer},
+    {"ps2_device_types_scancodes", test_ps2_device_types_scancodes},
+    {"ps2_device_answers_commands", test_ps2_device_answers_commands},
+    {"ps2_device_host_inhibit", test_ps2_device_host_inhibit},
+    {"can_receive_and_ack", test_can_receive_and_ack},
+    {"can_transmit", test_can_transmit},
+    {"can_arbitration_and_no_ack", test_can_arbitration_and_no_ack},
+    {"fault_uart_knobs", test_fault_uart_knobs},
+    {"fault_uart_tolerance_sweep", test_fault_uart_tolerance_sweep},
+    {"fault_i2c_knobs", test_fault_i2c_knobs},
+    {"fault_spi_knobs", test_fault_spi_knobs},
 };
 
 #define NTESTS ((int)(sizeof tests / sizeof tests[0]))
