@@ -238,19 +238,27 @@ typical silicon), but only the slow corner is promised.
 | CI 40084290148 | 44a7d31 | 16 662 | 45.3 % | +1.61 / +9.37 ns | 0.11 ns | 0 / 0 | 113 / 28 | 0, 0, 0 | yes |
 | CI 40085473871 | 6ea46bd | 16 605 | 45.3 % | +2.17 / +10.72 ns | 0.11 ns | 0 / 0 | 114 / 32 | 0, 0, 0 | yes |
 | local S | 44a7d31 + design repair | 18 023 | 47.0 % | +2.49 / +10.64 ns | 0.07 ns | 0 / 0 | 6 / 2 | 0, 0, 0 | yes |
+| local F | 6ea46bd's RTL + design repair (`src/config.json`) | 18 220 | 47.3 % | +1.24 / +11.02 ns | 0.07 ns | 0 / 0 | 2 / 2 | 0, 0, 0 | yes |
 
-Design repair (local run S: repair again after global routing, wires at
-most 300 µm, 30 % margin on slew and capacitance; not yet in
-`src/config.json`) adds about 1 400 buffers and removes almost all the
-warnings. The 6 max-slew
-warnings left are SRAM address and data inputs at the slow corner (worst
-0.76 ns against a 0.60 ns limit) and the 2 max-cap warnings are SRAM data
-outputs at the fast corner (0.099 pF against 0.064 pF): the macro's
-timing there is extrapolated beyond its tables. A slower input edge
-costs setup time, which the 2.5 ns covers; a heavier output load slows
-the output, which only adds hold margin. The 107 max-fanout warnings are
-clock-tree leaf buffers driving 17 or 18 flops (the limit is 8); the
-timing above includes them.
+**Design repair** (repair again after global routing, wires at most 300 µm,
+30 % margin on slew and capacitance) is in `src/config.json` from 28 Oct.
+On the same RTL (local run F against CI 40085473871) it adds about 1 600
+cells, mostly buffers, and leaves 2 max-slew and 2 max-cap warnings instead
+of 114 and 32. Its effect on the slow-corner slack is within run-to-run
+noise: −0.93 ns there, +0.88 ns in run S against CI 40084290148. The four
+warnings left are all on SRAM pins, where the macro's timing is
+extrapolated beyond its tables. The slow input edges are on address pins
+`A_ADDR[4]` and `A_ADDR[6]` (worst 0.76 ns against 0.60 ns, slow corner),
+which have 20 ns of setup and 2.5 ns of hold slack. The heavy loads are on
+data outputs `A_DOUT[11]` (0.23 pF against 0.064 pF, in every corner) and
+`B_DOUT[9]` (0.072 pF): the worst path from `A_DOUT[11]` has 3.04 ns of
+slack at the slow corner (OpenSTA with the sign-off constraints, which
+reproduces the flow's 1.243 ns worst slack), so its extrapolated 7.07 ns
+clock-to-output would have to be 3 ns short to matter. Run F's layout
+passes the precheck and the five gate-level tests, and its netlist equals
+the RTL (`netlist_equiv.py`, 2 min 26 s: the repair added 1 729 buffers
+and no logic). The 109 max-fanout warnings are clock-tree leaf buffers driving 17 to 19 flops
+(the limit is 8); the timing above includes them.
 
 **Gate-level tests** (`test_gl_smoke`, `test_gl_firmware`; the action's
 `gl_test` job runs them on the routed netlist, with zero delays). The
@@ -259,7 +267,7 @@ boots firmware through the parallel loader as the chip will, then sends
 UART with every bit exactly `BIT` cycles for a whole message
 (`uart_tx.s`), runs two threads at once (`thread_demo.s`), and answers as
 a SPI flash (`spi_flash.s`) at a 14-cycle SCK half period. All five pass
-on the netlist of run 40085473871. The UART test found a real bug: the
+on the netlists of run 40085473871 and local run F. The UART test found a real bug: the
 boot ROM let `uio[0]` go low for one cycle when it handed over, which a
 receiver takes as a start bit (fixed in 6ea46bd).
 
@@ -269,7 +277,7 @@ jobs on the repository for a billing reason, so the later runs built the
 layout but never ran their precheck, gate-level test or sign-off job.
 `check_signoff.py`, the gate-level tests and the precheck (`precheck.py` from
 tt-support-tools, branch `ihp-sg13cmos5l` at d66cf17) were run by hand on
-their artifacts; the precheck passed on run 40085473871's layout. Before the move to CMOS5L, v2.0 hardened on SG13G2 at 40 ns
+their artifacts; the precheck passed on the layouts of run 40085473871 and local run F. Before the move to CMOS5L, v2.0 hardened on SG13G2 at 40 ns
 with 23.09 ns to spare at the slow corner (run 39022166820, 17 Oct) and at
 20 ns with 3.09 ns (run 39633377026). v1 never hardened (`history.md` §5).
 
