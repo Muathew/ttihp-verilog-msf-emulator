@@ -118,7 +118,13 @@ assertions (a timeout releases after exactly TMO+1 stalled cycles, or
 within 3 of it with several threads) and F10's first (a late release is a
 `WAIT_CMP` release, not a timeout or an event). All four relate the 17-bit
 ghost stall counter to the 16-bit timeout; PDR would need an invariant
-tying the two. `--prove-timeout S` stops each target after S seconds and
+tying the two. Helper invariants for it, per thread (the stall's kind,
+lateness and target, the timeout counter plus the ghost count equal to
+TMO, the overrun bounded by F12's gap), did not get there: with them PDR
+proved 61 of 87 assertions in an hour, neither the four nor most of the
+helpers, and k-induction (SMT, depth 4) fails its step even on F3's event
+release, which PDR proves alone. They were left out; the four stay bounded
+(depth 16 in CI). `--prove-timeout S` stops each target after S seconds and
 lists which assertions were proved and which are open. The top level (F7,
 F9 and the controller inside the whole design) has not been run for all
 time yet: `--prove` reaches it only after the controller, which does not
