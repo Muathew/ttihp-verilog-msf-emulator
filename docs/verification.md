@@ -165,12 +165,15 @@ AUP-ZU3 board itself the same 14 tests passed (23 Oct 2026). Details in
 
 ## 6. Pre-hardening check — `tools/synth_check.py`
 
-Maps the RTL onto the IHP `sg13g2_stdcell` liberty (slow corner) with Yosys +
-ABC and reports cell count, area against the 24-tile budget and the longest
-register-to-register logic depth. Current result: 6 893 cells (823 flip-flops),
-93 336 um² + the 88 482 um² SRAM macro = 24 % of the 24-tile area before
-routing; 69 gate levels (+ 6.4 ns SRAM clk->q at the slow corner), hence
-`CLOCK_PERIOD` = 40 ns. Sign-off remains the LibreLane GDS action in CI.
+Maps the RTL onto the IHP `sg13cmos5l_stdcell` liberty (slow corner;
+`sg13g2_stdcell` works too) with Yosys + ABC and reports cell count, area
+against the 24-tile budget and the longest register-to-register logic depth,
+in a minute and before any layout. On 28 Oct (the RTL of 6ea46bd): 11 534
+cells (1 604 flip-flops), 173 670 µm² + the two SRAM macros' 176 963 µm² =
+46.6 % of the 24-tile area before routing; 59 gate levels plus the SRAM's
+clock-to-output. An earlier RTL on SG13G2 gave 6 893 cells, 823 flip-flops
+and 69 levels, which set v2.0's 40 ns clock. It is an estimate only: the
+clock is signed off by LibreLane's STA on the routed layout (§7).
 
 ## 6b. Firmware deadlines — `tools/msf_timing.py`
 
