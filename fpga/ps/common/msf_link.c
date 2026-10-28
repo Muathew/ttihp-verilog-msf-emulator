@@ -13,6 +13,7 @@ static uint32_t out;          /* shadow of the EMIO outputs */
 static int stepping;
 static int strobe;            /* strobe level of the last parallel byte */
 static int fault;
+static uint32_t digest_crc, digest_steps;   /* msf_digest() */
 
 static void put(uint32_t value)
 {
@@ -54,18 +55,49 @@ int msf_link_fault(void)
     return fault;
 }
 
+static void digest_byte(uint8_t b)
+{
+    int i;
+
+    digest_crc ^= b;
+    for (i = 0; i < 8; ++i)
+        digest_crc = (digest_crc >> 1) ^ (0xEDB88320U & (0U - (digest_crc & 1U)));
+}
+
+void msf_digest_reset(void)
+{
+    digest_crc = 0xFFFFFFFFU;
+    digest_steps = 0;
+}
+
+uint32_t msf_digest(uint32_t *steps)
+{
+    if (steps)
+        *steps = digest_steps;
+    return ~digest_crc;
+}
+
 msf_pins msf_step(uint8_t uio)
 {
     uint32_t v = 0, n;
+    msf_pins p;
 
     put(((out & ~UIO_MASK) | ((uint32_t)uio << MSF_O_UIO_SHIFT)) ^ MSF_O_REQ);
     for (n = 0; n < ACK_LIMIT; ++n) {
         v = msf_emio_read();
         if (((v & MSF_I_ACK) != 0U) == ((out & MSF_O_REQ) != 0U))
-            return decode(v);
+            break;
     }
-    fault = 1;
-    return decode(v);
+    if (n == ACK_LIMIT)
+        fault = 1;
+    p = decode(v);
+    digest_byte((uint8_t)(out & UI_MASK));
+    digest_byte(uio);
+    digest_byte(p.uo);
+    digest_byte(p.out);
+    digest_byte(p.oe);
+    ++digest_steps;
+    return p;
 }
 
 msf_pins msf_sample(void)

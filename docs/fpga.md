@@ -72,7 +72,7 @@ checking the part.
 | FPGA SRAM | `sh fpga/tests/run_sram_test.sh` | pass |
 | Wrapper: ownership, reset, status, step mode | `sh fpga/tests/run_aup_zu3_io_test.sh` | pass |
 | PS apps compile (Vitis stubs, classic and SDT drivers) | `sh fpga/tests/run_ps_loader_compile_test.sh` | pass |
-| PS C protocol tests against the RTL | `python fpga/tests/run_ps_hil.py` | 14/14 |
+| PS C protocol tests against the RTL | `python fpga/tests/run_ps_hil.py` | 66/66 (28 Oct; 52 of them not yet run on the board) |
 | **PS C protocol tests on the AUP-ZU3 board** | the `hil` app on the PS | **14/14 (23 Oct 2026)** |
 | **Loader on the board** | `loader/blink.s` | **LED0 blinks** |
 

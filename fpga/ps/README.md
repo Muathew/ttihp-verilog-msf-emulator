@@ -67,6 +67,16 @@ On the board:
 4. Run it. Results print on the PS UART (115200 8N1), one PASS/FAIL line per
    test, then `ALL PASSED` or `FAILED: n`.
 
+**Execution digest.** Before each PASS/FAIL line the runner prints
+`msf-hil: digest <test> <crc32> over <n> steps`: a CRC-32 of every step the
+test took (`ui_in`, `uio_in`, `uo_out`, `uio_out`, `uio_oe` per core cycle,
+`msf_digest()` in `msf_link.c`). The C code is the same on the board and in
+simulation, so a core that is cycle-exact on the board gives the same
+digest as `run_ps_hil.py` for every test: comparing the two logs' digest
+lines compares the runs cycle for cycle, without a trace. Free-run samples
+(the boot loader's status polls) are left out, because how many there are
+depends on the PS's speed.
+
 The loader app is built the same way from `loader/src/main.c` plus the two
 `common` sources, after `python fpga/ps/loader/generate_image.py <file.s>`.
 A good first image is `loader/blink.s` (Muath's smoke test): LED0 toggles
@@ -90,6 +100,29 @@ already in SRAM without reloading it, call `msf_restart()`.
 | `usb_ls_rx_packet` | `test_fw_usb_ls_rx_packet` | PS drives D-/D+ at 0 and ±1.5 % clock error, plus a corrupted packet |
 | `eth_10baset_frame_fcs_tpidl_nlp` | `test_fw_10baset_frame_fcs_tpidl_nlp` | Manchester decode, preamble/SFD, frame, FCS, TP_IDL = 6, NLP width and period |
 | `threads_blink_and_echo` | `test_fw_threads_blink_and_echo` | PS is the UART host on uio1; T1 echo on uio0; T0 half period exactly 500 |
+
+The tests above passed on the AUP-ZU3 (23 Oct 2026). These were ported
+since and so far pass in simulation only (`docs/plan.md` §2.3); they need
+no new bitstream:
+
+| C tests | Ports (cocotb) | Checks at the pins |
+|---|---|---|
+| `jtag_probe`, `swd_probe` | `test_debugports.py` | TAP chain, SW-DP with a MEM-AP, modelled in C |
+| `onewire_probe` | `test_buses.py` | 1-Wire devices modelled in C |
+| `spi_target_regs`, `spi_flash`, `i2c_target_eeprom` | `test_targets.py` | the chip as SPI device, 25xx flash and I2C EEPROM (with clock stretching) |
+| `four_threads_fifo` | `test_threads.py` | three exact square waves at once; T0's counts reach T3 through the FIFO |
+| `mon_uart_*` 3, `mon_i2c_*` 6, `mon_spi_*` 3 | `test_monitors.py` | the bus monitors: the same waves, faults and accuracy checks |
+| `bridge_modes` | `test_bridge.py` | UART-to-SPI bridge, SPI modes 0-3 |
+| `fw_logic_analyzer`, `cap_*` 8 | `test_capture.py` | capture engine word for word against `cap_ref`; pins driven as a function of CNT |
+| `ps2_device_*` 3, `can_*` 3 | `test_buses.py` | PS/2 keyboard against a host model; CAN node against nodes with CRC-15 and stuffing |
+| `fault_*` 4 | `test_faults.py` | UART, I2C and SPI timing knobs move edges by exact amounts |
+| `fw_ws2812` | `test_firmware.py` | 15-cycle bits, 10/5 high, colours in order, latch gap |
+| `filter_*` 4, `rx_manchester_*` 2 | `test_peripherals.py` | glitch filter (widths, every pin, delay, spiky UART); Manchester RX with jitter and loopback |
+| `debug_*` 5, `tmo_per_thread` | `test_debug.py`, `test_threads.py` | the debug view (one core cycle a read: the wrapper captures the pins after a step); per-thread timeouts |
+
+Where a Python test reads registers or SRAM, small firmware in
+`hil/firmware/` stores the result in RAM and the C side reads it back with
+`dump_ram()` (any address), or reads it on the debug view.
 
 Random data comes from a fixed-seed xorshift PRNG, so the byte values differ
 from the Python tests but every run is the same.

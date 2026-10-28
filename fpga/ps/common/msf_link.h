@@ -38,6 +38,13 @@ int      msf_link_fault(void);   /* 1 once a step request went unacknowledged */
 int      msf_reset(uint8_t ui, uint8_t uio, int step);
 int      msf_run(void);                 /* release reset */
 msf_pins msf_step(uint8_t uio);         /* one core cycle with uio_in = uio */
+/* Execution digest: CRC-32 of every msf_step() since the reset ({ui_in,
+ * uio_in, uo_out, uio_out, uio_oe} a step). A cycle-exact core gives the
+ * same value on the board as in simulation, so one number compares two
+ * runs. Free-run samples are left out: how many there are depends on the
+ * PS's speed. */
+void     msf_digest_reset(void);
+uint32_t msf_digest(uint32_t *steps);
 msf_pins msf_sample(void);              /* pins now (free run) */
 void     msf_set_ui(uint8_t ui);
 void     msf_release_pins(void);        /* ui_in <- switches, uio <-> PMOD JA */

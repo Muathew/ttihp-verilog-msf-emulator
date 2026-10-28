@@ -159,9 +159,14 @@ lock-step idea as the FPGA harness below.
 The same `test_firmware.py` checks run on the FPGA build: the Zynq PS steps
 the core one clock at a time and C ports of the protocol models act as the
 other end of each bus. In simulation the C runs against the RTL through the
-same EMIO interface (`python fpga/tests/run_ps_hil.py`, 14/14), and on the
-AUP-ZU3 board itself the same 14 tests passed (23 Oct 2026). Details in
-[`docs/fpga.md`](fpga.md) and [`fpga/ps/README.md`](../fpga/ps/README.md).
+same EMIO interface (`python fpga/tests/run_ps_hil.py`): 66 tests pass (28
+Oct). On the AUP-ZU3 board itself the first 14 passed (23 Oct 2026); the
+other 52, ported since, have run only in simulation so far. Each test prints
+an execution digest, a CRC-32 of every core cycle's pins as the PS saw them;
+it does not depend on the PS's speed (the same at 2 and 7 PL clocks per GPIO
+access), so a board log can be compared with the simulation's test by test.
+Details in [`docs/fpga.md`](fpga.md) and
+[`fpga/ps/README.md`](../fpga/ps/README.md).
 
 ## 6. Pre-hardening check — `tools/synth_check.py`
 

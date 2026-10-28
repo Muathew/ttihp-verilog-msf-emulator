@@ -3960,6 +3960,7 @@ const char *msf_tests_name(int i)
 int msf_tests_run(const char *only)
 {
     int i, ran = 0, failed = 0;
+    uint32_t digest, steps;
 
     if (msf_link_init() != 0) {
         msf_printf("msf-hil: PS EMIO GPIO initialisation failed\r\n");
@@ -3971,11 +3972,15 @@ int msf_tests_run(const char *only)
         if (only && strcmp(only, tests[i].name) != 0)
             continue;
         msf_printf("msf-hil: %s\r\n", tests[i].name);
+        msf_digest_reset();
         rc = tests[i].run();
         if (msf_link_fault()) {
             msf_printf("    FAIL: the PL never acknowledged a step request\r\n");
             rc = -1;
         }
+        digest = msf_digest(&steps);
+        msf_printf("msf-hil: digest %s %04x%04x over %d steps\r\n", tests[i].name,
+                   (unsigned)(digest >> 16), (unsigned)(digest & 0xFFFFU), (int)steps);
         msf_printf("msf-hil: %s %s\r\n", rc ? "FAIL" : "PASS", tests[i].name);
         ++ran;
         if (rc)
