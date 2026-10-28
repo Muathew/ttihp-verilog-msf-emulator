@@ -1,4 +1,7 @@
-# Plan: branch `fixes`
+# Plan: branch `fixes`, now `main`
+
+`fixes` was merged into `main` on 28 Oct (a fast-forward to `2592db0`), and
+`main` is the working version from then on (§6, decisions 1 and 5).
 
 Branch `fixes` starts at `c68bd0c`, the head of `rtl-changes` and the build
 that passed on the AUP-ZU3 board on 23 Oct. It covers what has to be fixed
@@ -20,7 +23,7 @@ Updated as work lands. The §6 decisions were taken provisionally as
 | 1.1 CMOS5L port | done | workflows, GL sources, PDN: `Project.ExtendPowerStripes` (`librelane_plugin_msf_pdn.py`, `odb_sram_stripes.py`) moves the Metal4 stripes onto the SRAM supply columns; macros MX along the bottom; density 45. Local LibreLane run (same image as CI): routed with 0 DRC errors. Found and fixed on the way: the slow corner was timed with the *typical* SRAM library (overlapping lib patterns). CI (run 40001810132): GDS, precheck and the gate-level test pass on CMOS5L |
 | 1.2 slow-corner timing | done | **Signed off at 30 ns (33 MHz) in every corner.** Place and route aim at 20 ns (`pnr.sdc`), sign-off checks 30 ns (`signoff.sdc`): aiming at 30 the tools optimised less and the slow corner missed (−3.21 ns, path 33.2 ns); aiming at 20 the path is ~27.8 ns. CI 40085473871 (6ea46bd): slow +2.17 ns, typical +10.72, fast +13.27, hold +0.11, no DRC, antenna or LVS errors, 114 max-slew and 32 max-cap warnings; precheck and the gate-level tests pass (run locally: CI jobs were refused, decision 7). Design repair after global routing (300 µm wires, 30 % margins), local run S (44a7d31): +2.49 ns slow, 6 max-slew and 2 max-cap warnings, all on SRAM pins, +1 400 buffers. **Adopted in `config.json` (28 Oct)**: local run F (6ea46bd's RTL with repair) signed off at slow +1.24 ns, typical +11.02, hold +0.07, no DRC, antenna or LVS errors, 2 max-slew and 2 max-cap warnings, all on SRAM pins (the worst path from the overloaded `A_DOUT[11]` has +3.04 ns); precheck and the five gate-level tests pass on it, and its netlist equals the RTL (`netlist_equiv.py`, 2 min 26 s: the repair added 1 729 buffers and no logic). On the same RTL the repair cost 0.93 ns of slow-corner slack (S gained 0.88): noise either way. Decided (decision 2): 33 MHz; typical silicon still makes 50 MHz. `verification.md` §7 |
 | 1.3 formal CI | done, CI run pending | SymbiYosys + ABC (`--engine abc`) in CI with OSS CAD Suite: depth-16 BMC, covers and mutants passed in ~11 min (CI 40085473891). The v2.1 properties and their mutants (24 Oct): F12, every running thread owns a cycle in any four (no starvation); F8 and F9 already there, F9 now also in the capture module alone. Each has a mutant that must fail, and does: a push into a full FIFO (caught by F8 alone), capture ignoring the core on port B (F9), the rotation skipping a thread (F1 first, F12 alone too). A mutant stops at its first counterexample. Locally BMC of the three targets passes; the CI run waits for decision 7. Fixed earlier: SBY errors had counted as caught mutants |
-| 1.4 tape-out branch | decided; the merge waits for CI | Sam (28 Oct): `fixes` is merged into `main` once CI is green again, and `main` is what gets taped out. No RTL freeze: `main` is the working version until the deadline, experiments go on branches (§6, decisions 1 and 5) |
+| 1.4 tape-out branch | done | Sam (28 Oct): `fixes` merged into `main` the same day (fast-forward to `2592db0`), without waiting for CI, so that Muath can harden `main` locally; `main` is what gets taped out. No RTL freeze: `main` is the working version until the deadline, experiments go on branches (§6, decisions 1 and 5) |
 | 2.1 record board pass | done (Vivado figures to come) | `fpga.md`, `verification.md` §5/§9 |
 | 2.2 stale metadata | done | `info.yaml`, `info.md` |
 | 2.3 wider board tests | ported, not yet on the board | in `msf_tests.c`, passing in the HIL simulation, not yet on the board: `jtag_probe`, `onewire_probe`, `swd_probe` (DPIDR, MEM-AP read/write, WAIT, no target), `spi_target_regs`, `spi_flash`, `i2c_target_eeprom` (100 kHz, and 400 kHz with clock stretching), `four_threads_fifo` (three exact square waves at once, and T0's counts reaching T3 through the FIFO in order), the bus monitors (`mon_uart_*` 3, `mon_i2c_*` 6, `mon_spi_*` 3: the same waves, faults and accuracy checks as `test_monitors.py`), `bridge_modes` (UART-to-SPI, modes 0-3), `fw_logic_analyzer` (capture: trigger, pre/post samples against a reference), `ps2_device_*` 3 (keyboard against a host model: scancodes, commands with ACK and resend, host inhibit), `can_*` 3 (receive and ACK, transmit, arbitration and no ACK, against CAN nodes with CRC-15 and stuffing), `fault_*` 4 (UART, I2C and SPI timing knobs move edges by exact amounts; UART tolerance 99-109 cycles against a 104 receiver), `fw_ws2812`, `filter_*` 4 (short pulses, every pin, delay, a spiky UART), `rx_manchester_*` 2 (jitter at ±2 %, TX-to-RX loopback), `debug_*` 5 (the debug view: registers, PC in bank 1, no strap, single step, page 1) and `tmo_per_thread`, with C models of a TAP chain, 1-Wire devices, an SW-DP with a MEM-AP, a UART host, an SPI controller, an I2C controller, a PS/2 host and CAN nodes (`msf_proto.c`, `msf_tests.c`). Where a Python test reads registers or the SRAM, small firmware in `fpga/ps/hil/firmware/` stores the result in RAM and the C side reads it back (`dump_ram`), or reads it on the debug view. On the board the PS sees the pins only after a step, so each view read is one core cycle; the tests read parked state or count it. `cap_*` 8 (the capture engine against `cap_ref`: sample mode, divisors to 4099, pre-trigger ring, edge against level, change mode, `ui` pins, no effect on core timing, overflow; the bench reads CNT once on the debug view and counts it, so the pins follow CNT exactly; a one-cycle error fails). Step 1 of §2.3 is done: every item on its list has C tests. Next: run them on the board (they need no new bitstream), then step 2, free-running against real parts |
@@ -188,8 +191,9 @@ carries all of it, so it is the natural tape-out candidate. Sam decides:
   and docs change, which leaves five weeks for the final GDS and the
   write-up.
 
-**Decided (Sam, 28 Oct):** `fixes` is merged into `main` once CI is green
-again. There is no RTL freeze: `main` is the working version until the
+**Decided (Sam, 28 Oct):** `fixes` is merged into `main`: done the same day
+(a fast-forward to `2592db0`), as an exception before CI could run, so that
+Muath can harden `main` locally. There is no RTL freeze: `main` is the working version until the
 deadline and new ideas go on branches; an RTL change that reaches `main` is
 signed off again (GDS, `check_signoff.py`, `netlist_equiv.py`).
 
@@ -396,9 +400,10 @@ and "novel approaches to design and verification".
 
 Decided by Sam on 28 Oct (each was asked and explained one at a time).
 
-1. **Tape-out:** `fixes` is merged into `main` once CI is green again, and
-   `main` is taped out. It is a one-off exception to "never merge
-   `rtl-changes`", which `fixes` contains (§1.4).
+1. **Tape-out:** `fixes` is merged into `main`, and `main` is taped out.
+   It is a one-off exception to "never merge `rtl-changes`", which `fixes`
+   contains. Merged on 28 Oct without waiting for CI, so that Muath can run
+   the hardening locally on `main` (§1.4).
 2. **Clock:** 33 MHz, signed off at 30 ns in every corner. Typical silicon
    runs at about 50 MHz, and is described only as typical (§1.2).
 3. **LATE flag:** as built: per thread, sticky until read and cleared (port
