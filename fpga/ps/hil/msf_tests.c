@@ -76,13 +76,15 @@ static int dump_ram(uint16_t addr, uint16_t count, uint16_t *words)
     uint32_t got = 0, c, i;
     int prev = 0;
 
-    CHECK(img_dump_ram.count <= 64U && addr <= 255U && count >= 1U && count <= 128U,
+    CHECK(img_dump_ram.count <= 64U && addr + count <= 1024U && count >= 1U && count <= 128U,
           "dump_ram: bad arguments");
     memcpy(code, img_dump_ram.words, img_dump_ram.count * sizeof code[0]);
-    CHECK((code[0] & 0xff00U) == 0x0300U && (code[1] & 0xff00U) == 0x0400U,
-          "dump_ram.s must start with LDR R3 / LDR R4");
-    code[0] = (uint16_t)(0x0300U | addr);
-    code[1] = (uint16_t)(0x0400U | count);
+    CHECK((code[0] & 0xff00U) == 0x0300U && (code[1] & 0xff00U) == 0xfb00U &&
+              (code[2] & 0xff00U) == 0x0400U,
+          "dump_ram.s must start with LDR R3 / LDH R3 / LDR R4");
+    code[0] = (uint16_t)(0x0300U | (addr & 0xffU));
+    code[1] = (uint16_t)(0xfb00U | addr >> 8);
+    code[2] = (uint16_t)(0x0400U | count);
     TRY(msf_boot_enter(0));
     TRY(msf_boot_write(img_dump_ram.addr, code, img_dump_ram.count));
     TRY(msf_reset(MSF_BOOT_DIRECT, 0, 1));
@@ -3625,6 +3627,249 @@ static int test_tmo_per_thread(void)
 }
 
 /* ======================================================================== */
+/* Capture engine (test_capture, isa.md §6.6). The bench drives the pins as
+ * a function of CNT, so the value every sample must hold follows from the
+ * spec's timing alone, and cap_ref restates the recording rules. CNT is
+ * read once on the debug view (the strap at reset), then counted, one a
+ * step. The firmware (cap_*.s) leaves its registers in RAM[0..4].         */
+
+/* the bench's pin functions of CNT (test_capture's lambdas) */
+enum { CF_T, CF_T_HI, CF_HALF, CF_DIP, CF_STEPS, CF_T_ODD };
+
+static uint8_t cap_pins(int f, uint32_t t)
+{
+    static const uint32_t at[6] = {0, 300, 310, 360, 900, 905};
+    static const uint8_t lv[6] = {0x00, 0x01, 0x03, 0x07, 0x0F, 0x00};
+    uint32_t v = 0;
+    int i;
+
+    switch (f) {
+    case CF_T:
+        v = t;
+        break;
+    case CF_T_HI:                   /* the counter's high bits too */
+        v = t + (t >> 8);
+        break;
+    case CF_HALF:
+        v = t >> 1;
+        break;
+    case CF_DIP:                    /* pin 0 low only in cycles 400-439 */
+        v = t >= 400U && t < 440U ? 0U : 0xFFU;
+        break;
+    case CF_STEPS:
+        for (i = 0; i < 6; ++i)
+            if (t >= at[i])
+                v = lv[i];
+        break;
+    default:                        /* ui_in, bit 0 kept high */
+        v = t | 1U;
+        break;
+    }
+    return (uint8_t)v;
+}
+
+typedef struct {
+    const msf_image *img;           /* cap_arm.s or cap_work.s, its defines matching: */
+    int f, ui;                      /* pins = cap_pins(f, CNT), on ui_in if ui */
+    uint32_t cycles;
+    unsigned base, n, div, mask, val;
+    int edge, chg, post;
+} cap_case;
+
+static uint16_t cap_words[4096];    /* cap_run's reference words */
+
+/* test_capture.capture: run one capture; check the status, the trigger
+ * position and the buffer against cap_ref. Gives the word count, the
+ * trigger word's index and RAM[0..4]. */
+static int cap_run(const cap_case *cc, int *nw, int *tw, uint16_t *res)
+{
+    static uint8_t samples[4096];
+    static uint16_t mem[128];
+    unsigned size = 2U << cc->n, block = cc->base & ~(size - 1U), nxt, tpos;
+    uint32_t t, k;
+    int i;
+
+    if (dbg_boot(cc->img, DBG_STRAP | MSF_BOOT_DIRECT, 0))
+        return -1;
+    t = dbg_view(0x25, 0);          /* CNT in the cycle after this one (< 256) */
+    for (k = 0; k < cc->cycles; ++k, ++t) {
+        uint8_t v = cap_pins(cc->f, t);
+
+        if (cc->ui) {
+            msf_set_ui(v);
+            msf_step(0);
+        } else {
+            msf_step(v);
+        }
+    }
+    if (dump_ram(0, 5, res))
+        return -1;
+    for (k = 0; k < 4096U; ++k)
+        samples[k] = cap_pins(cc->f, res[2] + k * cc->div);
+    *tw = 0;
+    *nw = cap_ref(samples, 4096, cc->chg, cc->mask, cc->val, cc->edge, cc->post, cap_words,
+                  4096, tw);
+    CHECK(*nw >= 0, "the reference capture does not finish in 4096 samples");
+    nxt = block | ((unsigned)*nw & (size - 1U));
+    tpos = block | ((unsigned)*tw & (size - 1U));
+    CHECK((res[0] & (CS_RUN | CS_TRIG | CS_DONE | CS_OVF)) == (CS_TRIG | CS_DONE), "status %04x",
+          res[0]);
+    CHECK((res[0] & 0x3FFU) == nxt, "next address %d, want %d", res[0] & 0x3FF, (int)nxt);
+    CHECK(res[1] == tpos, "trigger at %d, want %d", res[1], (int)tpos);
+    if (dump_ram((uint16_t)block, (uint16_t)size, mem))
+        return -1;
+    for (i = *nw > (int)size ? *nw - (int)size : 0; i < *nw; ++i)
+        CHECK(mem[(unsigned)i & (size - 1U)] == cap_words[i],
+              "buffer word %d (at %d) = %04x, want %04x", i,
+              (int)(block | ((unsigned)i & (size - 1U))), mem[(unsigned)i & (size - 1U)],
+              cap_words[i]);
+    return 0;
+}
+
+/* test_capture.test_cap_sample_mode: two samples a word, every cycle and
+ * every 3rd; MASK 0 triggers on the first sample, then POST words follow */
+static int test_cap_sample_mode(void)
+{
+    static const cap_case cc[2] = {
+        {&img_cap_s1, CF_T, 0, 3000, 512, 4, 1, 0, 0, 0, 0, 15},
+        {&img_cap_s3, CF_T, 0, 3000, 512, 4, 3, 0, 0, 0, 0, 15},
+    };
+    uint16_t res[5];
+    int i, nw, tw;
+
+    for (i = 0; i < 2; ++i) {
+        if (cap_run(&cc[i], &nw, &tw, res))
+            return -1;
+        CHECK(nw == 16 && tw == 0, "DIV %d: %d words, trigger word %d; want 16 and 0",
+              (int)cc[i].div, nw, tw);
+    }
+    return 0;
+}
+
+/* test_capture.test_cap_divisor_sizes: sample mode at divisors 9 to 4099,
+ * where the sample tick counts through values with high bits set; the pin
+ * pattern uses the counter's high bits too */
+static int test_cap_divisor_sizes(void)
+{
+    static const msf_image *const img[6] = {&img_cap_d9, &img_cap_d10, &img_cap_d16,
+                                            &img_cap_d33, &img_cap_d100, &img_cap_d4099};
+    static const unsigned div[6] = {9, 10, 16, 33, 100, 4099};
+    cap_case cc = {0, CF_T_HI, 0, 0, 512, 4, 0, 0, 0, 0, 0, 3};
+    uint16_t res[5];
+    int i, nw, tw;
+
+    for (i = 0; i < 6; ++i) {
+        cc.img = img[i];
+        cc.div = div[i];
+        cc.cycles = 8U * div[i] + 400U;
+        if (cap_run(&cc, &nw, &tw, res))
+            return -1;
+        CHECK(nw == 4 && tw == 0, "DIV %d: %d words, trigger word %d; want 4 and 0",
+              (int)div[i], nw, tw);
+    }
+    return 0;
+}
+
+/* test_capture.test_cap_pretrigger_ring: a level trigger on a pin value
+ * long after arming; the ring keeps the words before it (16-word buffer,
+ * 160 words recorded, 6 after) */
+static int test_cap_pretrigger_ring(void)
+{
+    static const cap_case cc = {&img_cap_ring, CF_HALF, 0, 3000, 640, 3, 1, 0xFF, 0xC0, 0, 0, 6};
+    uint16_t res[5];
+    int nw, tw;
+
+    if (cap_run(&cc, &nw, &tw, res))
+        return -1;
+    CHECK(tw >= 16 && nw == tw + 7, "%d words, trigger word %d", nw, tw);
+    return 0;
+}
+
+/* test_capture.test_cap_edge_vs_level: pin 0 high from before arming, low
+ * at cycle 400, high again at 440: a level trigger fires at once, an edge
+ * trigger only at 440 */
+static int test_cap_edge_vs_level(void)
+{
+    static const cap_case level = {&img_cap_level, CF_DIP, 0, 3000, 512, 6, 1, 1, 1, 0, 0, 4};
+    static const cap_case edge = {&img_cap_edge, CF_DIP, 0, 3000, 512, 6, 1, 1, 1, 1, 0, 4};
+    uint16_t res[5];
+    int nw, tw;
+
+    if (cap_run(&level, &nw, &tw, res))
+        return -1;
+    CHECK(tw == 0, "level trigger at word %d, want 0", tw);
+    if (cap_run(&edge, &nw, &tw, res))
+        return -1;
+    CHECK(tw == (440 - (int)res[2]) / 2, "edge trigger at word %d, want %d", tw,
+          (440 - (int)res[2]) / 2);
+    return 0;
+}
+
+/* test_capture.test_cap_change_mode: a word {pins, ticks since the last}
+ * at every change, and one after 255 ticks without one */
+static int test_cap_change_mode(void)
+{
+    static const cap_case cc[2] = {
+        {&img_cap_chg1, CF_STEPS, 0, 2600, 768, 4, 1, 0, 0, 0, 1, 8},
+        {&img_cap_chg2, CF_STEPS, 0, 2600, 768, 4, 2, 0, 0, 0, 1, 8},
+    };
+    uint16_t res[5];
+    int i, k, nw, tw, seen;
+
+    for (i = 0; i < 2; ++i) {
+        if (cap_run(&cc[i], &nw, &tw, res))
+            return -1;
+        for (seen = 0, k = 0; k < nw; ++k)
+            seen |= (cap_words[k] & 0xFFU) == 255U;
+        CHECK(seen, "DIV %d: no record after 255 ticks", (int)cc[i].div);
+    }
+    return 0;
+}
+
+/* test_capture.test_cap_ui_pins: CAP_UI records ui_in */
+static int test_cap_ui_pins(void)
+{
+    static const cap_case cc = {&img_cap_ui, CF_T_ODD, 1, 3000, 512, 3, 2, 0, 0, 0, 0, 7};
+    uint16_t res[5];
+    int nw, tw;
+
+    return cap_run(&cc, &nw, &tw, res);
+}
+
+/* test_capture.test_cap_never_changes_core_timing: the same data-RAM-heavy
+ * loop takes exactly as long with the engine recording every cycle as
+ * without it, and the capture is intact: the engine only uses free port-B
+ * cycles */
+static int test_cap_never_changes_core_timing(void)
+{
+    static const cap_case cc = {&img_cap_work_on, CF_T, 0, 3000, 512, 6, 1, 0, 0, 0, 0, 110};
+    uint16_t res[5], idle[5];
+    int nw, tw;
+
+    if (cap_run(&cc, &nw, &tw, res))
+        return -1;
+    if (dbg_boot(&img_cap_work_off, MSF_BOOT_DIRECT, 1500) || dump_ram(0, 5, idle))
+        return -1;
+    CHECK(res[3] != 0U && idle[3] == res[3], "%d cycles without capture, %d with", idle[3],
+          res[3]);
+    CHECK(!(idle[4] & CS_RUN), "the engine runs with the arm bit clear (status %04x)", idle[4]);
+    return 0;
+}
+
+/* test_capture.test_cap_overflow_flag: a burst of 8 MEM_W keeps port B busy
+ * 8 cycles while the engine makes a word every 2: its 2-word queue
+ * overflows, and the status says so */
+static int test_cap_overflow_flag(void)
+{
+    uint16_t res[5];
+
+    if (dbg_boot(&img_cap_ovf, MSF_BOOT_DIRECT, 600) || dump_ram(0, 5, res))
+        return -1;
+    CHECK(res[4] & CS_OVF, "status %04x after the burst", res[4]);
+    return 0;
+}
+
+/* ======================================================================== */
 
 typedef struct {
     const char *name;
@@ -3690,6 +3935,14 @@ static const msf_test tests[] = {
     {"debug_single_step", test_debug_single_step},
     {"debug_view_page1", test_debug_view_page1},
     {"tmo_per_thread", test_tmo_per_thread},
+    {"cap_sample_mode", test_cap_sample_mode},
+    {"cap_divisor_sizes", test_cap_divisor_sizes},
+    {"cap_pretrigger_ring", test_cap_pretrigger_ring},
+    {"cap_edge_vs_level", test_cap_edge_vs_level},
+    {"cap_change_mode", test_cap_change_mode},
+    {"cap_ui_pins", test_cap_ui_pins},
+    {"cap_never_changes_core_timing", test_cap_never_changes_core_timing},
+    {"cap_overflow_flag", test_cap_overflow_flag},
 };
 
 #define NTESTS ((int)(sizeof tests / sizeof tests[0]))

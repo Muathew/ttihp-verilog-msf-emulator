@@ -15,6 +15,9 @@ REPO = HERE.parents[2]
 sys.path.insert(0, str(REPO / "test"))
 from assembler import assemble_file  # noqa: E402
 
+# Capture engine fields (isa.md 6.6), as test_capture.py names them.
+CAP_N, CAP_EDGE, CAP_UI, CAP_CHG, CAP_ARM = 10, 0x1000, 0x2000, 0x4000, 0x8000
+
 # Scaled link-pulse interval, as test_fw_10baset_frame_fcs_tpidl_nlp uses.
 ETH_NLP = {"NLP_CHUNK": 3000, "NLP_CHUNKS": 2}
 
@@ -106,6 +109,40 @@ IMAGES = [
     ("debug_loop", HERE / "firmware" / "debug_loop.s", {}),
     ("debug_page1", HERE / "firmware" / "debug_page1.s", {}),
     ("tmo_threads", HERE / "firmware" / "tmo_threads.s", {}),
+    ("cap_s1", HERE / "firmware" / "cap_arm.s",
+     {"BUF": 512 | 4 << CAP_N, "DIV": 1, "TRIG": 0, "CTL": 15 | CAP_ARM}),
+    ("cap_s3", HERE / "firmware" / "cap_arm.s",
+     {"BUF": 512 | 4 << CAP_N, "DIV": 3, "TRIG": 0, "CTL": 15 | CAP_ARM}),
+    ("cap_d9", HERE / "firmware" / "cap_arm.s",
+     {"BUF": 512 | 4 << CAP_N, "DIV": 9, "TRIG": 0, "CTL": 3 | CAP_ARM}),
+    ("cap_d10", HERE / "firmware" / "cap_arm.s",
+     {"BUF": 512 | 4 << CAP_N, "DIV": 10, "TRIG": 0, "CTL": 3 | CAP_ARM}),
+    ("cap_d16", HERE / "firmware" / "cap_arm.s",
+     {"BUF": 512 | 4 << CAP_N, "DIV": 16, "TRIG": 0, "CTL": 3 | CAP_ARM}),
+    ("cap_d33", HERE / "firmware" / "cap_arm.s",
+     {"BUF": 512 | 4 << CAP_N, "DIV": 33, "TRIG": 0, "CTL": 3 | CAP_ARM}),
+    ("cap_d100", HERE / "firmware" / "cap_arm.s",
+     {"BUF": 512 | 4 << CAP_N, "DIV": 100, "TRIG": 0, "CTL": 3 | CAP_ARM}),
+    ("cap_d4099", HERE / "firmware" / "cap_arm.s",
+     {"BUF": 512 | 4 << CAP_N, "DIV": 4099, "TRIG": 0, "CTL": 3 | CAP_ARM}),
+    ("cap_ring", HERE / "firmware" / "cap_arm.s",
+     {"BUF": 640 | 3 << CAP_N, "DIV": 1, "TRIG": 0xFF | 0xC0 << 8, "CTL": 6 | CAP_ARM}),
+    ("cap_level", HERE / "firmware" / "cap_arm.s",
+     {"BUF": 512 | 6 << CAP_N, "DIV": 1, "TRIG": 1 | 1 << 8, "CTL": 4 | CAP_ARM}),
+    ("cap_edge", HERE / "firmware" / "cap_arm.s",
+     {"BUF": 512 | 6 << CAP_N, "DIV": 1, "TRIG": 1 | 1 << 8, "CTL": 4 | CAP_EDGE | CAP_ARM}),
+    ("cap_chg1", HERE / "firmware" / "cap_arm.s",
+     {"BUF": 768 | 4 << CAP_N, "DIV": 1, "TRIG": 0, "CTL": 8 | CAP_CHG | CAP_ARM}),
+    ("cap_chg2", HERE / "firmware" / "cap_arm.s",
+     {"BUF": 768 | 4 << CAP_N, "DIV": 2, "TRIG": 0, "CTL": 8 | CAP_CHG | CAP_ARM}),
+    ("cap_ui", HERE / "firmware" / "cap_arm.s",
+     {"BUF": 512 | 3 << CAP_N, "DIV": 2, "TRIG": 0, "CTL": 7 | CAP_UI | CAP_ARM}),
+    ("cap_work_on", HERE / "firmware" / "cap_work.s",
+     {"BUF": 512 | 6 << CAP_N, "DIV": 1, "TRIG": 0, "CTL": 110 | CAP_ARM}),
+    ("cap_work_off", HERE / "firmware" / "cap_work.s",
+     {"BUF": 512 | 6 << CAP_N, "DIV": 1, "TRIG": 0, "CTL": 110}),
+    ("cap_ovf", HERE / "firmware" / "cap_ovf.s",
+     {"BUF": 512 | 6 << CAP_N, "DIV": 1, "TRIG": 0, "CTL": 60 | CAP_ARM}),
     ("boot_probe", HERE / "firmware" / "boot_probe.s", {}),
     ("four_threads", HERE / "firmware" / "four_threads.s", {}),
     ("dump_ram", HERE / "firmware" / "dump_ram.s", {}),
