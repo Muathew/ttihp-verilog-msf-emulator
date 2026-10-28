@@ -1,7 +1,9 @@
 name: gds
 
+# On demand only (docs/plan.md decision 7): the run takes about 2.5 h of
+# Actions minutes, so start it from the Actions tab or with
+# `gh workflow run gds.yaml --ref <branch>`.
 on:
-  push:
   workflow_dispatch:
 
 jobs:

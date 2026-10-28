@@ -4,15 +4,18 @@ The brief lists "AI-assisted verification" among the methods it wants to
 see. This page says how we used it on msfcore, which checks stand between
 AI-written work and the chip, and where the AI was wrong.
 
-> Draft (23-24 Oct 2026), written with the AI itself from the repository and
-> its working notes. Sam and Muath to confirm the attributions in §1.
+> Written with the AI itself from the repository and its working notes
+> (23-28 Oct 2026); §1 checked by Sam on 28 Oct.
 
 ## 1. Who did what
 
-* **People** (Sam, Muath): the architecture (a CPU whose instructions hit
-  exact cycles, rather than a state machine or a RISC-V), the priorities,
-  every decision in `docs/plan.md` §6, the review of v1 that found B1–B9
-  (`history.md` §6), the FPGA block design and every run on the board.
+* **The original design, v1, was Sam's**, done at home with an AI coding
+  agent (24 Sep – 11 Oct, `history.md` §4): the architecture (a CPU whose
+  instructions hit exact cycles, rather than a state machine or a RISC-V),
+  ISA v1.0, the first RTL, the assembler and the boot ROM.
+* **People** (Sam, Muath) since then: the priorities, every decision in
+  `docs/plan.md` §6, the review of v1 that found B1–B9 (`history.md` §6),
+  the FPGA block design and every run on the board.
 * **AI** (Claude, Anthropic's model, used as a coding agent in Claude
   Code): most of the code since v2, under those decisions: RTL changes,
   the assembler, the ISA model, firmware, tests, device models, the
@@ -45,7 +48,7 @@ Taken from the commit history; each is visible in `git log`.
 
 | What went wrong | Caught by |
 |---|---|
-| The chip had been hardened for SG13G2, the process of the Tiny Tapeout template the project started from, while the shuttle is CMOS5L; neither we nor the AI had checked it since | a human question ("what is left to win?") led the AI to re-read the competition page against the flow's settings (23 Oct) |
+| The chip had been hardened for SG13G2, the process of the Tiny Tapeout template the project started from, while the shuttle is CMOS5L; neither we nor the AI had checked it since | a human question led the AI to re-read the competition page against the flow's settings (23 Oct) |
 | The slow corner was timed with the *typical* SRAM library: overlapping liberty patterns, and LibreLane loads every match. Every slow-corner sign-off before 23 Oct, including "50 MHz with 3.09 ns to spare", was optimistic | comparing the SRAM clock-to-output in the timing report (3.9 ns) with the slow library (6.7 ns), then reading LibreLane's source |
 | The four-thread design was pushed as "green" while the slow corner missed timing by 3.35 ns: the GDS badge does not fail on timing, and the step's notes said the result was pending | an audit of the hardening metrics (23 Oct); now a `signoff` job in CI fails on any setup or hold violation (`tools/check_signoff.py`) |
 | The formal harness counted a tool error as a caught mutant, so "B1–B3 caught" could have been errors | moving to SymbiYosys: the covers reported 0 of 9 reached, which was impossible; verdicts are now pass, fail or error |
