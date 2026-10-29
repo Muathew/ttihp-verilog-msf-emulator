@@ -119,6 +119,7 @@ no new bitstream:
 | `fw_ws2812` | `test_firmware.py` | 15-cycle bits, 10/5 high, colours in order, latch gap |
 | `filter_*` 4, `rx_manchester_*` 2 | `test_peripherals.py` | glitch filter (widths, every pin, delay, spiky UART); Manchester RX with jitter and loopback |
 | `debug_*` 5, `tmo_per_thread` | `test_debug.py`, `test_threads.py` | the debug view (one core cycle a read: the wrapper captures the pins after a step); per-thread timeouts |
+| `swd_session_model` | — | `hil/firmware/swd_session.s` against the SW-DP model set up as a Cortex-M4: the script and checks of `swd_mcu`, plus WAIT retries |
 
 Where a Python test reads registers or SRAM, small firmware in
 `hil/firmware/` stores the result in RAM and the C side reads it back with
@@ -126,6 +127,39 @@ Where a Python test reads registers or SRAM, small firmware in
 
 Random data comes from a fixed-seed xorshift PRNG, so the byte values differ
 from the Python tests but every run is the same.
+
+## SWD with a microcontroller on PMOD JA (`swd_mcu`)
+
+The one test with a real part: the core is the SWD probe and any Cortex-M
+with an SW-DP is the target (TI's TM4C, MSP432, MSPM0 and others; not the
+MSP430, which has Spy-Bi-Wire instead). It is never in the full run; build
+the `hil` app with `MSF_HIL_MCU` defined (Vitis: C/C++ build settings,
+symbols) and it runs `swd_mcu` alone.
+
+Wiring (PMOD JA is 3.3 V, so a 3.3 V target): SWCLK to JA bit 2 (`uio[2]`),
+SWDIO to JA bit 3 (`uio[3]`), and ground to ground; power the target from
+its own supply. With the usual Pmod numbering bits 0-3 are pins 1-4; check
+it against the board's manual. The target's own debugger must not drive the
+two lines: on a LaunchPad with an XDS110, remove the SWDIO and SWCLK
+jumpers of the isolation block and wire to the target side.
+
+The PS cannot reach the core's UART while PMOD JA is connected (the wrapper
+gives `uio_in` to one or the other), so `swd.s`'s command loop is not used.
+`swd_session.s` takes a list of transactions in data RAM, runs them alone
+(line reset and JTAG-to-SWD switch first, WAITs retried), and the PS reads
+the results back after the pins return. The session reads DPIDR, powers up
+debug, reads AP 0's IDR and the CPUID at `0xE000ED00`, writes two patterns to
+DCRDR (`0xE000EDF8`, a debug data register that is safe to write while the
+core runs) and reads them back, then drops the power-up request. A pass
+prints what it found, e.g.
+`SWD target: DPIDR 2ba01477, AP IDR 24770011, CPUID 410fc241 = Cortex-M4 r0p1`.
+A failure names the transaction and its ACK; ACK 0 or 7 means no answer
+(power, wiring, or the debugger still on the lines).
+
+`swd_session_model` runs the same firmware, script and checks against the C
+model, in simulation and on the board. The hand-over to PMOD JA was checked
+in simulation, where nothing is plugged in: `swd_mcu` stops at the first
+transaction with ACK 0.
 
 ## Adding a protocol test
 

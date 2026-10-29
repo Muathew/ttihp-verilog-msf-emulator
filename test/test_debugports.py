@@ -186,7 +186,8 @@ class SwdTarget:
     # registers ---------------------------------------------------------
     def read(self, ap, a):
         if not ap:
-            return {0x0: self.DPIDR, 0x4: self.ctrl | ((self.ctrl >> 1) & 0x50000000),
+            # CTRL/STAT: each power-up request (bits 30, 28) acknowledged at once (31, 29)
+            return {0x0: self.DPIDR, 0x4: self.ctrl | ((self.ctrl << 1) & 0xA0000000),
                     0x8: 0, 0xC: self.rdbuff}[a]
         reg = (self.select & 0xF0) | a
         val = {0x00: self.csw, 0x04: self.tar, 0xFC: self.IDR}.get(reg)

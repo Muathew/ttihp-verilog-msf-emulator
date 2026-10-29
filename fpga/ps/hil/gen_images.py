@@ -31,6 +31,7 @@ IMAGES = [
     ("thread_demo", REPO / "firmware" / "thread_demo.s", {}),
     ("jtag", REPO / "firmware" / "jtag.s", {}),
     ("swd", REPO / "firmware" / "swd.s", {}),
+    ("swd_session", HERE / "firmware" / "swd_session.s", {}),
     ("onewire", REPO / "firmware" / "onewire.s", {}),
     ("spi_target_m0", REPO / "firmware" / "spi_target.s", {"MODE": 0}),
     ("spi_target_m3", REPO / "firmware" / "spi_target.s", {"MODE": 3}),
