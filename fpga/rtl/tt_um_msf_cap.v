@@ -158,6 +158,13 @@ module tt_um_msf_cap (
 
   assign stat = {run, trig, done, ovf, 2'd0, (base & ~mask) | (wcnt & mask)};
   assign tpos = tp;
+
+`ifdef FORMAL
+  // F9 (also checked in project.v): a capture write takes port B only in a
+  // cycle the core leaves it free. Here core_b is a free input, so every
+  // state and cycle is covered.
+  always @(*) assert(!(core_b && req));
+`endif
 endmodule
 
 `default_nettype wire

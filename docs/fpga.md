@@ -33,6 +33,7 @@ cycle at a time. The core is held in reset until the PS releases it.
 | `fpga/rtl/*` (others) | byte-identical copies of `src/` |
 | `fpga/board/constraints/msf_aup_zu3.xdc` | switch, button, LED and PMOD JA pins |
 | `fpga/vivado/msf_bd.tcl` | Vivado 2024.1 block design |
+| `fpga/vivado/build.tcl` | batch build: project, block design, bitstream, XSA, reports |
 
 `fpga/rtl` is a copy: **a core fix in `src/` must be copied there too.**
 Check with `git diff --no-index --ignore-cr-at-eol --stat src fpga/rtl`
@@ -55,14 +56,40 @@ checking the part.
 
 ## Build
 
-1. In Vivado 2024.1, add the files in `fpga/rtl/sources.f` (never
-   `fpga/tests/sim_models/BUFGCE.v`) and `fpga/board/constraints/msf_aup_zu3.xdc`.
-2. `source fpga/vivado/msf_bd.tcl` in the Tcl console.
-3. Create the HDL wrapper, set it as top, generate the bitstream, export
-   the XSA. Check the reports: timing at 12 MHz including the `BUFGCE`
-   path, the SRAM mapped to block RAM, no unresolved IHP cells.
-4. Build and run the PS apps as in `fpga/ps/README.md`: the protocol tests
-   first, then the loader (`loader/blink.s` blinks LED0 at 1 Hz).
+From the repository root, with Vivado 2024.1:
+
+    vivado -mode batch -source fpga/vivado/build.tcl
+
+It makes a fresh project in `fpga/build/vivado` (or the directory given
+after `-tclargs`), adds `fpga/rtl/sources.f` and the XDC, sources
+`msf_bd.tcl`, synthesises the block design in one run (no out-of-context
+IP runs), and writes `msf_aup_zu3.xsa` with the bitstream, plus
+`utilization.rpt`, `timing.rpt` and `build_info.txt` (commit, WNS, cell
+counts: the figures §2.1 of the plan asks for). After synthesis it stops if
+an IHP cell or a black box is left or the SRAM is not in block RAM, and at
+the end if timing is not met. Expected size: about 3,400 LUTs, 1,700
+flip-flops and one RAMB18 for the core (Yosys `synth_xilinx` estimate), a
+few per cent of the XCZU3EG.
+
+By hand: add the files in `fpga/rtl/sources.f` (never
+`fpga/tests/sim_models/BUFGCE.v`, never anything from `src/`) and the XDC,
+`source fpga/vivado/msf_bd.tcl`, create the HDL wrapper, set it as top,
+generate the bitstream and export the XSA.
+
+Then build and run the PS apps as in `fpga/ps/README.md`: the protocol
+tests first, then the loader (`loader/blink.s` blinks LED0 at 1 Hz).
+
+### SRAM "not connected to power", routing congestion
+
+Both mean the project holds the chip's sources (`src/`). Vivado always
+defines `SYNTHESIS`, so `src/tt_um_msf_sram.v` instantiates the two IHP
+SRAM macros: hard blocks for the chip, whose supply pins only the ASIC flow
+wires (`src/config.json`, `PDN_MACRO_CONNECTIONS`). An FPGA has no such
+pins and Vivado has no logic for the macro. Remove every `src/` file and
+use `fpga/rtl` (or run `build.tcl`, which takes nothing else); its
+`tt_um_msf_sram.v` is one inferred block RAM. A memory built from flip-flops
+and multiplexers instead (8,192 bits a macro) is the likely source of the
+congestion, since the right sources use a few per cent of the device.
 
 ## Verification
 

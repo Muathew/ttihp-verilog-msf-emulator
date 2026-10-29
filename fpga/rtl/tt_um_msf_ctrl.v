@@ -835,6 +835,19 @@ module tt_um_msf_ctrl (
     end
   endgenerate
 
+  // F12 the rotation skips no running thread: each owns at least one cycle in
+  //     any four (F3's multi-thread timeout bound relies on it)
+  generate
+    for (t = 0; t < 4; t = t + 1) begin : g_f12
+      reg [1:0] gap;               // cycles in a row t has run without owning one
+      always @(posedge clk)
+        if (f_init || !run[t] || cur == t) gap <= 2'd0;
+        else if (gap != 2'd3)               gap <= gap + 2'd1;
+      always @(*)
+        if (!f_init && run[t] && cur != t) assert(gap != 2'd3);
+    end
+  endgenerate
+
   // F6 flags change only through the owning thread's flag ops / blocking ops
   wire f_flagev = exec && flag_op || blk_now || rel || exec && x_put;
   generate
