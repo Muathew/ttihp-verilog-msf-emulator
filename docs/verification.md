@@ -316,7 +316,9 @@ The formal properties (§3) and the simulations (§2, §4) are about the RTL.
 tree) behaves the same: one sequential miter of the two designs, the
 cells' logic read from the CMOS5L liberty, proved with ABC's `dprove`
 (latch correspondence, fraiging, then induction). It runs in CI after
-`gds` (job `equiv`).
+`gds` (job `checks / equiv`, from `gds_checks.yaml`); `gh workflow run
+gds_checks.yaml -f run_id=<gds run>` runs it and the sign-off check on an
+earlier run's layout, at the commit that layout was built from.
 
 * **What is proved:** from reset, on every cycle and for every sequence of
   inputs (including later resets), `uo_out`, `uio_out` and `uio_oe` are

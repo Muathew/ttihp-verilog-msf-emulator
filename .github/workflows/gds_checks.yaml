@@ -1,0 +1,91 @@
+name: gds checks
+
+# The checks on a finished layout: sign-off (timing, DRC, antenna, LVS) and
+# netlist = RTL. gds.yaml runs them after every build. Started by hand they
+# check an earlier gds run's layout, at the commit it was built from, without
+# building it again (about 15 min instead of 2.5 h):
+#   gh workflow run gds_checks.yaml -f run_id=<id of the gds run>
+on:
+  workflow_call:
+    inputs:
+      run_id:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "id of the gds run whose tt_submission to check"
+        type: string
+        required: true
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  # The GDS job stays green with timing violations: this one does not.
+  signoff:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Commit the layout was built from
+        id: run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "sha=$(gh api repos/${{ github.repository }}/actions/runs/${{ inputs.run_id }} --jq .head_sha)" >> "$GITHUB_OUTPUT"
+
+      - name: checkout repo
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.run.outputs.sha }}
+
+      # The artifact holds the repository's files and the submission one
+      # level down: artifact/tt_submission/{tt_um_msf.v,stats/metrics.csv}.
+      - name: Download the submission
+        uses: actions/download-artifact@v8
+        with:
+          name: tt_submission
+          path: artifact
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Timing, DRC, antenna and LVS sign-off
+        run: python3 tools/check_signoff.py artifact
+
+  # The hardened netlist must behave as the RTL, cycle for cycle, from reset
+  # (formal/netlist_equiv.py), so the formal results apply to the layout.
+  equiv:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Commit the layout was built from
+        id: run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "sha=$(gh api repos/${{ github.repository }}/actions/runs/${{ inputs.run_id }} --jq .head_sha)" >> "$GITHUB_OUTPUT"
+
+      - name: checkout repo
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.run.outputs.sha }}
+
+      - name: Download the submission
+        uses: actions/download-artifact@v8
+        with:
+          name: tt_submission
+          path: artifact
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Install OSS CAD Suite
+        uses: YosysHQ/setup-oss-cad-suite@v4
+        with:
+          version: '2026-10-01'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # the cells' logic: the typical-corner liberty of the PDK the GDS action uses
+      - name: Cell library
+        run: >
+          curl -sSfL -o stdcell_typ.lib
+          https://raw.githubusercontent.com/IHP-GmbH/IHP-Open-PDK/2bbec755dc67ca3db0261c3d6163e15735d66710/ihp-sg13cmos5l/libs.ref/sg13cmos5l_stdcell/lib/sg13cmos5l_stdcell_typ_1p20V_25C.lib
+
+      - name: Netlist equals RTL
+        run: python3 formal/netlist_equiv.py artifact/tt_submission/tt_um_msf.v --liberty stdcell_typ.lib --pdr-timeout 1800
