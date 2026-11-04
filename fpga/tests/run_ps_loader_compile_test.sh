@@ -25,5 +25,8 @@ for flow in "" "-DSDT"; do
   gcc -std=c99 -Wall -Wextra -Werror -fsyntax-only $flow -DMSF_HIL_MCU \
     -I"$repo_root/fpga/tests/vitis_stubs" -I"$tmp_dir" -I"$ps/common" -I"$ps/hil" \
     "$ps/hil/src/main.c"
+  gcc -std=c99 -Wall -Wextra -Werror -fsyntax-only $flow \
+    -I"$repo_root/fpga/tests/vitis_stubs" -I"$tmp_dir" -I"$ps/common" \
+    "$ps/mcu_test/src/main.c"
 done
 printf '%s\n' "PASS: PS loader and protocol-test sources compile against the Vitis stubs"
