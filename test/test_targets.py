@@ -10,7 +10,7 @@ import random
 import cocotb
 
 from fw_tb import Bench, fw_boot
-from msf_tb import sram
+from msf_tb import sram, uart_decode
 
 SCK, MOSI, MISO, CS = 2, 3, 4, 5
 STATUS = 64
@@ -31,8 +31,11 @@ class SpiController:
     timing() then reports per sampled bit how long MISO had been valid."""
 
     def __init__(self, mode, transfers, half=8, lead=8, lag=0, gap=40, ibg=0,
-                 start=30, abort=None):
+                 start=30, abort=None, sck_pin=SCK, mosi_pin=MOSI,
+                 miso_pin=MISO, cs_pin=CS):
         self.cpol, self.cpha = (mode >> 1) & 1, mode & 1
+        self.sck_pin, self.mosi_pin = sck_pin, mosi_pin
+        self.miso_pin, self.cs_pin = miso_pin, cs_pin
         self.start = start
         self.wave = []                    # (sck, mosi, cs) per cycle from `start`
         self.sample_at = {}               # wave index -> (transfer, byte, bit)
@@ -74,17 +77,18 @@ class SpiController:
             sck, mosi, cs = self.wave[i]
             if i in self.sample_at:
                 ti, n = self.sample_at[i]
-                self.miso[ti].append((bench.out[k] >> MISO) & 1)
+                self.miso[ti].append((bench.out[k] >> self.miso_pin) & 1)
                 self.samples.append((k, ti, n))
-        mask = 1 << SCK | 1 << MOSI | 1 << CS
-        return mask, sck << SCK | mosi << MOSI | cs << CS
+        mask = (1 << self.sck_pin) | (1 << self.mosi_pin) | (1 << self.cs_pin)
+        value = (sck << self.sck_pin) | (mosi << self.mosi_pin) | (cs << self.cs_pin)
+        return mask, value
 
     def timing(self, bench):
         """Per sampled bit after the first of its transfer:
         (transfer, bit, turn, setup) where turn = cycles from the previous
         sampling edge to MISO's last change before this edge (None if MISO
         kept its level) and setup = cycles MISO had been stable at the edge."""
-        lv = bench.bits(MISO, "out")
+        lv = bench.bits(self.miso_pin, "out")
         changes = [c for c in range(1, len(lv)) if lv[c] != lv[c - 1]]
         out, prev = [], None
         for k, ti, n in self.samples:
@@ -423,8 +427,10 @@ class I2cController:
     another one), for latency measurement. violations: SDA moving while SCL
     was high (a START or STOP the controller did not make)."""
 
-    def __init__(self, ops, tlow=60, thigh=60, thd=6, tss=60, tbuf=80, start=40):
+    def __init__(self, ops, tlow=60, thigh=60, thd=6, tss=60, tbuf=80, start=40,
+                 sda_pin=SDA, scl_pin=SCL):
         self.ops, self.tlow, self.thigh, self.thd = ops, tlow, thigh, thd
+        self.sda_pin, self.scl_pin = sda_pin, scl_pin
         self.tss, self.tbuf, self.t0 = tss, tbuf, start
         self.sda_low = self.scl_low = False
         self.results, self.drive, self.violations = [], [], []
@@ -437,7 +443,7 @@ class I2cController:
         return bool((self.bench.oe[self.k] >> pin) & 1)
 
     def sda(self):
-        return 0 if (self.sda_low or self.chip_low(SDA)) else 1
+        return 0 if (self.sda_low or self.chip_low(self.sda_pin)) else 1
 
     def wait(self, n):
         for _ in range(n):
@@ -447,7 +453,7 @@ class I2cController:
         """Release SCL and wait until it is high (the target may hold it
         low: clock stretching); self.rise = first cycle it is high."""
         self.scl_low = False
-        while self.chip_low(SCL):
+        while self.chip_low(self.scl_pin):
             self.stretched += 1
             yield
         self.rise = self.k
@@ -526,7 +532,8 @@ class I2cController:
                 next(self.gen)
             except StopIteration:
                 self.done = True
-        mask = (1 << SDA if self.sda_low else 0) | (1 << SCL if self.scl_low else 0)
+        mask = ((1 << self.sda_pin if self.sda_low else 0) |
+                (1 << self.scl_pin if self.scl_low else 0))
         return mask, 0
 
     def turnarounds(self):
@@ -535,8 +542,8 @@ class I2cController:
         controller made itself, releasing SDA after its ACK, are not the
         target's), and the smallest setup (cycles from that change to the
         SCL rise) seen."""
-        lv = [(p >> SDA) & 1 for p in self.bench.pad]
-        chip = [(o >> SDA) & 1 for o in self.bench.oe]
+        lv = [(p >> self.sda_pin) & 1 for p in self.bench.pad]
+        chip = [(o >> self.sda_pin) & 1 for o in self.bench.oe]
         out, setup = {}, None
         for role, fall, rise in self.drive:
             last = max((c for c in range(fall + 1, rise + 1)
@@ -701,3 +708,49 @@ async def test_i2c_target_start_stop_anywhere(dut):
     assert ctl.results == want, f"{ctl.results} != {want}"
     assert after == want_mem and after[0x20] == 0x77 and after[0x21] == mem[0x21]
     assert after[0x30] == 0x99 and after[0x31] == mem[0x31]
+
+
+class McuUartController:
+    def __init__(self, data, start, bit_cycles=104):
+        self.data, self.start, self.bit_cycles = data, start, bit_cycles
+        self.bits = []
+        for byte in data:
+            self.bits.extend([0] + [(byte >> bit) & 1 for bit in range(8)] + [1])
+
+    def step(self, k, bench):
+        i = k - self.start
+        bit = self.bits[i // self.bit_cycles] if 0 <= i < len(self.bits) * self.bit_cycles else 1
+        return 1, bit
+
+
+@cocotb.test()
+async def test_mcu_protocol_target(dut):
+    """Run the combined Vitis image against the MSPM0 UART, SPI and I2C
+    test vectors, including repeated START and 1 MHz mode-0 SPI."""
+    data = [0x01, 0x02, 0x03]
+    await fw_boot(dut, "mcu_protocol_target.s")
+    bench = Bench(dut, pull=(1 << 2) | (1 << 3))
+
+    uart = McuUartController(data, start=100)
+    bench.add(uart)
+    await bench.run(100 + len(data) * 10 * 104 + 1200)
+    assert uart_decode(bench.out, 104, pin=1)[:len(data)] == data
+
+    i2c_ops = i2c_read(0x50, 1, 0x00)
+    i2c = I2cController(i2c_ops, start=len(bench.out) + 100,
+                        sda_pin=3, scl_pin=2)
+    bench.add(i2c)
+    await bench.until(lambda b: i2c.done, 100000, "MSPM0 I2C register read")
+    assert i2c.results == [0, 0, 0, 0xA5], i2c.results
+    assert not i2c.violations
+
+    spi_data = [0x55, 0xAA, 0x12, 0x34, 0xDE, 0xAD, 0xBE, 0xEF]
+    spi = SpiController(
+        0, [[byte] for byte in spi_data], half=6, lead=20, gap=100,
+        start=len(bench.out) + 100, sck_pin=4, mosi_pin=6, miso_pin=7,
+        cs_pin=5,
+    )
+    bench.add(spi)
+    await bench.run(spi.end - len(bench.out) + 20)
+    assert spi.bytes_read() == [[byte] for byte in spi_data], spi.bytes_read()
+    assert (bench.uo[-1] & 0x01) == 0, "SPI MOSI did not match the test vector"

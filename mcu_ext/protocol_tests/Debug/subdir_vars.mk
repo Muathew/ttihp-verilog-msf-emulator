@@ -14,7 +14,7 @@ C_SRCS += \
 ../main.c \
 ./ti_msp_dl_config.c \
 C:/ti/mspm0_sdk_2_11_00_07/source/ti/devices/msp/m0p/startup_system_files/ticlang/startup_mspm0g351x_ticlang.c \
-../protocol_testh.c \
+../protocol_test.c \
 ../spi_test.c \
 ../uart_test.c 
 
@@ -32,7 +32,7 @@ C_DEPS += \
 ./main.d \
 ./ti_msp_dl_config.d \
 ./startup_mspm0g351x_ticlang.d \
-./protocol_testh.d \
+./protocol_test.d \
 ./spi_test.d \
 ./uart_test.d 
 
@@ -45,7 +45,7 @@ OBJS += \
 ./main.o \
 ./ti_msp_dl_config.o \
 ./startup_mspm0g351x_ticlang.o \
-./protocol_testh.o \
+./protocol_test.o \
 ./spi_test.o \
 ./uart_test.o 
 
@@ -59,7 +59,7 @@ OBJS__QUOTED += \
 "main.o" \
 "ti_msp_dl_config.o" \
 "startup_mspm0g351x_ticlang.o" \
-"protocol_testh.o" \
+"protocol_test.o" \
 "spi_test.o" \
 "uart_test.o" 
 
@@ -73,7 +73,7 @@ C_DEPS__QUOTED += \
 "main.d" \
 "ti_msp_dl_config.d" \
 "startup_mspm0g351x_ticlang.d" \
-"protocol_testh.d" \
+"protocol_test.d" \
 "spi_test.d" \
 "uart_test.d" 
 
@@ -88,7 +88,7 @@ C_SRCS__QUOTED += \
 "../main.c" \
 "./ti_msp_dl_config.c" \
 "C:/ti/mspm0_sdk_2_11_00_07/source/ti/devices/msp/m0p/startup_system_files/ticlang/startup_mspm0g351x_ticlang.c" \
-"../protocol_testh.c" \
+"../protocol_test.c" \
 "../spi_test.c" \
 "../uart_test.c" 
 

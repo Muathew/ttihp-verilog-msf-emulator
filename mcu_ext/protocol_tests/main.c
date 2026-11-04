@@ -4,7 +4,6 @@
 #include "uart_test.h"
 #include "spi_test.h"
 #include "i2c_test.h"
-#include "can_test.h"
 
 int main(void)
 {
@@ -15,14 +14,13 @@ int main(void)
     UART_Test_init();
     SPI_Test_init();
     I2C_Test_init();
-    CAN_Test_init();
 
     /*
      * Run all protocol tests once.
      *
      * Repeat this call when you want to execute another test
-     * cycle. Avoid an unrestricted continuous loop because
-     * the I2C and CAN tests involve timeout waits.
+     * cycle. Avoid an unrestricted continuous loop because the
+     * I2C test involves timeout waits.
      */
     while (1) {
         ProtocolTest_runAll();

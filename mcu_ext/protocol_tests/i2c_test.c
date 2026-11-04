@@ -21,16 +21,21 @@ TestStatus I2C_Test_run(void)
      */
     DL_I2C_fillControllerTXFIFO(I2C_0_INST, &((uint8_t){I2C_TEST_REGISTER}), 1);
 
-    DL_I2C_startControllerTransfer(
+    DL_I2C_startControllerTransferAdvanced(
         I2C_0_INST,
         I2C_TEST_ADDRESS,
         DL_I2C_CONTROLLER_DIRECTION_TX,
-        1
+        1,
+        DL_I2C_CONTROLLER_START_ENABLE,
+        DL_I2C_CONTROLLER_STOP_DISABLE,
+        DL_I2C_CONTROLLER_ACK_DISABLE
     );
 
     timeout = I2C_TEST_TIMEOUT;
 
-    while (DL_I2C_isControllerBusy(I2C_0_INST) && (timeout > 0U)) {
+    while (((DL_I2C_getControllerStatus(I2C_0_INST) &
+                DL_I2C_CONTROLLER_STATUS_BUSY) != 0U) &&
+           (timeout > 0U)) {
         timeout--;
     }
 
@@ -41,17 +46,21 @@ TestStatus I2C_Test_run(void)
     /*
      * Read one byte from the selected register.
      */
-    DL_I2C_startControllerTransfer(
+    DL_I2C_startControllerTransferAdvanced(
         I2C_0_INST,
         I2C_TEST_ADDRESS,
         DL_I2C_CONTROLLER_DIRECTION_RX,
-        1
+        1,
+        DL_I2C_CONTROLLER_START_ENABLE,
+        DL_I2C_CONTROLLER_STOP_ENABLE,
+        DL_I2C_CONTROLLER_ACK_ENABLE
     );
 
     timeout = I2C_TEST_TIMEOUT;
 
     while (DL_I2C_isControllerRXFIFOEmpty(I2C_0_INST) &&
-           DL_I2C_isControllerBusy(I2C_0_INST) &&
+           ((DL_I2C_getControllerStatus(I2C_0_INST) &
+                DL_I2C_CONTROLLER_STATUS_BUSY) != 0U) &&
            (timeout > 0U)) {
         timeout--;
     }
@@ -68,7 +77,9 @@ TestStatus I2C_Test_run(void)
 
     timeout = I2C_TEST_TIMEOUT;
 
-    while (DL_I2C_isControllerBusy(I2C_0_INST) && (timeout > 0U)) {
+    while (((DL_I2C_getControllerStatus(I2C_0_INST) &
+                DL_I2C_CONTROLLER_STATUS_BUSY) != 0U) &&
+           (timeout > 0U)) {
         timeout--;
     }
 
@@ -76,5 +87,5 @@ TestStatus I2C_Test_run(void)
         return TEST_TIMEOUT;
     }
 
-    return TEST_PASS;
+    return (i2cReadByte == 0xA5U) ? TEST_PASS : TEST_FAIL;
 }

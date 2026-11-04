@@ -1,0 +1,16 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "protocol_tests",
+      "type": "ccs-debug",
+      "request": "launch",
+      "projectInfo": {
+        "name": "protocol_tests",
+        "resourceId": "/protocol_tests"
+      }
+    }
+  ]
+}

@@ -3,7 +3,6 @@
 #include "uart_test.h"
 #include "spi_test.h"
 #include "i2c_test.h"
-#include "can_test.h"
 
 TestResults protocolResults[PROTOCOL_COUNT];
 
@@ -54,5 +53,4 @@ void ProtocolTest_runAll(void)
     ProtocolTest_record(PROTOCOL_UART, UART_Test_run());
     ProtocolTest_record(PROTOCOL_SPI,  SPI_Test_run());
     ProtocolTest_record(PROTOCOL_I2C,  I2C_Test_run());
-    ProtocolTest_record(PROTOCOL_CAN,  CAN_Test_run());
 }

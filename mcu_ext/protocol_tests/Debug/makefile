@@ -15,7 +15,7 @@ ORDERED_OBJS += \
 "./main.o" \
 "./ti_msp_dl_config.o" \
 "./startup_mspm0g351x_ticlang.o" \
-"./protocol_testh.o" \
+"./protocol_test.o" \
 "./spi_test.o" \
 "./uart_test.o" \
 $(GEN_CMDS__FLAG) \
@@ -128,7 +128,8 @@ EXE_OUTPUTS__QUOTED += \
 
 
 # All Target
-all: protocol_tests.out
+all: $(OBJS) $(GEN_CMDS)
+	@$(MAKE) --no-print-directory -Onone "protocol_tests.out"
 
 # Tool invocations
 protocol_tests.out: $(OBJS) $(GEN_CMDS)
@@ -140,12 +141,11 @@ protocol_tests.out: $(OBJS) $(GEN_CMDS)
 # Other Targets
 clean:
 	-$(RM) $(GEN_MISC_FILES__QUOTED)$(GEN_FILES__QUOTED)$(EXE_OUTPUTS__QUOTED)
-	-$(RM) "can_test.o" "i2c_test.o" "main.o" "ti_msp_dl_config.o" "startup_mspm0g351x_ticlang.o" "protocol_testh.o" "spi_test.o" "uart_test.o" 
-	-$(RM) "can_test.d" "i2c_test.d" "main.d" "ti_msp_dl_config.d" "startup_mspm0g351x_ticlang.d" "protocol_testh.d" "spi_test.d" "uart_test.d" 
+	-$(RM) "can_test.o" "i2c_test.o" "main.o" "ti_msp_dl_config.o" "startup_mspm0g351x_ticlang.o" "protocol_test.o" "spi_test.o" "uart_test.o"
+	-$(RM) "can_test.d" "i2c_test.d" "main.d" "ti_msp_dl_config.d" "startup_mspm0g351x_ticlang.d" "protocol_test.d" "spi_test.d" "uart_test.d"
 	-@echo ' '
 
 .PHONY: all clean dependents
 .SECONDARY:
 
 -include ../makefile.targets
-
