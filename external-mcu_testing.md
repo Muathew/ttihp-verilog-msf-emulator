@@ -60,11 +60,10 @@ reported that Cortex-A53 #0 could not resume (`EDITR not ready`). Therefore,
 the FPGA peer was not confirmed running during the final MCU rerun. With the
 peer unavailable or unverified, protocol failures are inconclusive.
 
-The project metadata and generated SysConfig identify the device as
-MSPM0G3519, while the initial request named MSPM0G3517. The physical board
-marking has not been confirmed. Earlier PuTTY capture attempts also captured
-the VS Code window rather than the serial console, so there is no verified
-console capture for the latest rerun.
+The physical board is an LP-MSPM0G3519, matching the CCS target configuration
+and generated SysConfig. Earlier PuTTY capture attempts also captured the VS
+Code window rather than the serial console, so there is no verified console
+capture for the latest rerun.
 
 ## Recommended next steps
 
@@ -74,8 +73,8 @@ console capture for the latest rerun.
    read back counters immediately.
 3. Correlate that single run with FPGA UART output and protocol-side evidence;
    investigate UART, SPI, and I2C separately.
-4. Confirm the MCU board marking and align the CCS target if it is not a
-   G3519.
+4. No MCU device/board target mismatch remains; the LP-MSPM0G3519 matches the
+   configured MSPM0G3519 target.
 
 ## Relevant project files
 
