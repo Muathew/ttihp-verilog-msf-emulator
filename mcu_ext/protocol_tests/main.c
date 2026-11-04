@@ -5,6 +5,9 @@
 #include "spi_test.h"
 #include "i2c_test.h"
 
+/* Long enough for the FPGA's monitor to print one pass before the next. */
+#define PASS_PERIOD_CYCLES CPUCLK_FREQ
+
 int main(void)
 {
     SYSCFG_DL_init();
@@ -16,19 +19,11 @@ int main(void)
     I2C_Test_init();
 
     /*
-     * Run all protocol tests once.
-     *
-     * Repeat this call when you want to execute another test
-     * cycle. Avoid an unrestricted continuous loop because the
-     * I2C test involves timeout waits.
+     * Results go to the serial log (see protocol_test.h) and stay in
+     * protocolResults[] for the debugger.
      */
     while (1) {
         ProtocolTest_runAll();
-
-        /*
-         * Results are available in protocolResults[].
-         * Set a breakpoint here to inspect them in CCS.
-         */
-        __WFI();
+        delay_cycles(PASS_PERIOD_CYCLES);
     }
 }

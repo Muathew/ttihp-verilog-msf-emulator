@@ -3,23 +3,96 @@
 
 #define I2C_TEST_ADDRESS  0x50U
 #define I2C_TEST_REGISTER 0x00U
+#define I2C_TEST_VALUE    0xA5U
 #define I2C_TEST_TIMEOUT  100000U
 
+/*
+ * TI errata I2C_ERR_13: BUSY is not set straight after a transfer is started, so
+ * polling it at once can see "finished" before anything happened. TI's examples
+ * wait 3 I2C clock cycles; this is 32 at a 32 MHz I2C clock.
+ */
+#define I2C_BUSY_DELAY_CYCLES 32U
+
+/* Controller status (MSR) at the three points of a read, for the log */
+typedef enum {
+    I2C_AT_START = 0,
+    I2C_AFTER_WRITE,
+    I2C_AFTER_READ,
+    I2C_POINTS
+} I2cPoint;
+
+static const char *const i2cPointName[I2C_POINTS] = {
+    "before", "write ", "read  "
+};
+
+static uint32_t i2cStatus[I2C_POINTS];
+static bool i2cReached[I2C_POINTS];
 static uint8_t i2cReadByte;
+static bool i2cByteValid;
 
 void I2C_Test_init(void)
 {
     i2cReadByte = 0;
+    i2cByteValid = false;
+}
+
+/* Wait for the transfer just started to end and note the status. */
+static TestStatus i2cFinish(I2cPoint point)
+{
+    uint32_t timeout = I2C_TEST_TIMEOUT;
+    uint32_t status;
+
+    delay_cycles(I2C_BUSY_DELAY_CYCLES);
+
+    do {
+        status = DL_I2C_getControllerStatus(I2C_0_INST);
+        timeout--;
+    } while (((status & DL_I2C_CONTROLLER_STATUS_BUSY) != 0U) && (timeout > 0U));
+
+    i2cStatus[point] = status;
+    i2cReached[point] = true;
+
+    if ((status & DL_I2C_CONTROLLER_STATUS_BUSY) != 0U) {
+        return TEST_TIMEOUT;
+    }
+
+    if ((status & (DL_I2C_CONTROLLER_STATUS_ERROR |
+                   DL_I2C_CONTROLLER_STATUS_ARBITRATION_LOST)) != 0U) {
+        return TEST_FAIL;
+    }
+
+    return TEST_PASS;
+}
+
+/* After a failure: leave the bus and the controller ready for the next pass. */
+static void i2cRecover(void)
+{
+    DL_I2C_flushControllerTXFIFO(I2C_0_INST);
+    DL_I2C_flushControllerRXFIFO(I2C_0_INST);
+    DL_I2C_disableController(I2C_0_INST);
+    DL_I2C_resetControllerTransfer(I2C_0_INST);
+    DL_I2C_enableController(I2C_0_INST);
 }
 
 TestStatus I2C_Test_run(void)
 {
-    uint32_t timeout;
+    uint8_t reg = I2C_TEST_REGISTER;
+    uint32_t i;
+    TestStatus status;
+
+    i2cByteValid = false;
+    for (i = 0; i < I2C_POINTS; i++) {
+        i2cStatus[i] = 0;
+        i2cReached[i] = false;
+    }
+
+    i2cStatus[I2C_AT_START] = DL_I2C_getControllerStatus(I2C_0_INST);
+    i2cReached[I2C_AT_START] = true;
 
     /*
-     * Write the register address to the target.
+     * START, address + write, the register, and no STOP.
      */
-    DL_I2C_fillControllerTXFIFO(I2C_0_INST, &((uint8_t){I2C_TEST_REGISTER}), 1);
+    DL_I2C_fillControllerTXFIFO(I2C_0_INST, &reg, 1);
 
     DL_I2C_startControllerTransferAdvanced(
         I2C_0_INST,
@@ -31,20 +104,21 @@ TestStatus I2C_Test_run(void)
         DL_I2C_CONTROLLER_ACK_DISABLE
     );
 
-    timeout = I2C_TEST_TIMEOUT;
-
-    while (((DL_I2C_getControllerStatus(I2C_0_INST) &
-                DL_I2C_CONTROLLER_STATUS_BUSY) != 0U) &&
-           (timeout > 0U)) {
-        timeout--;
-    }
-
-    if (timeout == 0U) {
-        return TEST_TIMEOUT;
+    status = i2cFinish(I2C_AFTER_WRITE);
+    if (status != TEST_PASS) {
+        i2cRecover();
+        return status;
     }
 
     /*
-     * Read one byte from the selected register.
+     * Repeated START, address + read, one byte, NACK, STOP.
+     *
+     * ACK_DISABLE is what makes that a NACK, whatever the comments in dl_i2c.h
+     * say: they are the wrong way round. The register header hw_i2c.h has it right
+     * (MCTR.ACK = 1: "the last received data byte is acknowledged"), and TI's plain
+     * DL_I2C_startControllerTransfer() leaves the bit at 0 for its reads. ACKing
+     * the last byte tells the target another is wanted, and its next bit can then
+     * hold SDA low through the STOP.
      */
     DL_I2C_startControllerTransferAdvanced(
         I2C_0_INST,
@@ -53,39 +127,77 @@ TestStatus I2C_Test_run(void)
         1,
         DL_I2C_CONTROLLER_START_ENABLE,
         DL_I2C_CONTROLLER_STOP_ENABLE,
-        DL_I2C_CONTROLLER_ACK_ENABLE
+        DL_I2C_CONTROLLER_ACK_DISABLE
     );
 
-    timeout = I2C_TEST_TIMEOUT;
+    status = i2cFinish(I2C_AFTER_READ);
 
-    while (DL_I2C_isControllerRXFIFOEmpty(I2C_0_INST) &&
-           ((DL_I2C_getControllerStatus(I2C_0_INST) &
-                DL_I2C_CONTROLLER_STATUS_BUSY) != 0U) &&
-           (timeout > 0U)) {
-        timeout--;
+    if (!DL_I2C_isControllerRXFIFOEmpty(I2C_0_INST)) {
+        i2cReadByte = DL_I2C_receiveControllerData(I2C_0_INST);
+        i2cByteValid = true;
     }
 
-    if (timeout == 0U) {
-        return TEST_TIMEOUT;
+    if (status != TEST_PASS) {
+        i2cRecover();
+        return status;
     }
 
-    if (DL_I2C_isControllerRXFIFOEmpty(I2C_0_INST)) {
+    if (!i2cByteValid) {
         return TEST_FAIL;
     }
 
-    i2cReadByte = DL_I2C_receiveControllerData(I2C_0_INST);
+    return (i2cReadByte == I2C_TEST_VALUE) ? TEST_PASS : TEST_FAIL;
+}
 
-    timeout = I2C_TEST_TIMEOUT;
-
-    while (((DL_I2C_getControllerStatus(I2C_0_INST) &
-                DL_I2C_CONTROLLER_STATUS_BUSY) != 0U) &&
-           (timeout > 0U)) {
-        timeout--;
+static void logStatusFlags(uint32_t status)
+{
+    if ((status & DL_I2C_CONTROLLER_STATUS_BUSY) != 0U) {
+        Log_str(" BUSY");
     }
-
-    if (timeout == 0U) {
-        return TEST_TIMEOUT;
+    if ((status & DL_I2C_CONTROLLER_STATUS_ERROR) != 0U) {
+        Log_str(" ERROR");
     }
+    /* These two bits are set when the ACK did not come. */
+    if ((status & DL_I2C_CONTROLLER_STATUS_ADDR_ACK) != 0U) {
+        Log_str(" ADDRESS-NOT-ACKED");
+    }
+    if ((status & DL_I2C_CONTROLLER_STATUS_DATA_ACK) != 0U) {
+        Log_str(" DATA-NOT-ACKED");
+    }
+    if ((status & DL_I2C_CONTROLLER_STATUS_ARBITRATION_LOST) != 0U) {
+        Log_str(" ARBITRATION-LOST");
+    }
+    if ((status & DL_I2C_CONTROLLER_STATUS_IDLE) != 0U) {
+        Log_str(" IDLE");
+    }
+    if ((status & DL_I2C_CONTROLLER_STATUS_BUSY_BUS) != 0U) {
+        Log_str(" BUS-BUSY");
+    }
+}
 
-    return (i2cReadByte == 0xA5U) ? TEST_PASS : TEST_FAIL;
+void I2C_Test_report(TestStatus status)
+{
+    uint32_t i;
+
+    for (i = 0; i < I2C_POINTS; i++) {
+        if (i2cReached[i]) {
+            Log_str("MCU I2C  ");
+            Log_str(i2cPointName[i]);
+            Log_str(" MSR=");
+            Log_hex32(i2cStatus[i]);
+            logStatusFlags(i2cStatus[i]);
+            Log_str("\r\n");
+        }
+    }
+    Log_str("MCU I2C  expect=");
+    Log_hex8(I2C_TEST_VALUE);
+    Log_str(" rx=");
+    if (i2cByteValid) {
+        Log_hex8(i2cReadByte);
+    } else {
+        Log_str("--");
+    }
+    Log_str(" -> ");
+    Log_status(status);
+    Log_str("\r\n");
 }

@@ -34,7 +34,7 @@ Board.peripheral.swclkPin.$assign = "PA20";
 Board.peripheral.swdioPin.$assign = "PA19";
 
 SPI1.$name                      = "SPI_0";
-SPI1.targetBitRate              = 1000000;
+SPI1.targetBitRate              = 250000;
 SPI1.peripheral.sclkPin.$assign = "PB18";
 SPI1.peripheral.mosiPin.$assign = "PB17";
 SPI1.peripheral.misoPin.$assign = "PB19";
@@ -46,6 +46,7 @@ SPI1.cs0PinConfig.$name         = "ti_driverlib_gpio_GPIOPinGeneric7";
 
 SYSCTL.forceDefaultClkConfig = true;
 UART1.$name                    = "UART_0";
+UART1.targetBaudRate           = 115200;
 UART1.rxFifoThreshold          = "DL_UART_RX_FIFO_LEVEL_ONE_ENTRY";
 UART1.enableDMARX              = false;
 UART1.enableDMATX              = false;

@@ -5,5 +5,6 @@
 
 void SPI_Test_init(void);
 TestStatus SPI_Test_run(void);
+void SPI_Test_report(TestStatus status);
 
 #endif

@@ -5,5 +5,6 @@
 
 void I2C_Test_init(void);
 TestStatus I2C_Test_run(void);
+void I2C_Test_report(TestStatus status);
 
 #endif
