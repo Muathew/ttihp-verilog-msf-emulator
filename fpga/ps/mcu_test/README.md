@@ -1,10 +1,14 @@
-# MSPM0 protocol-test Vitis app
+# MCU protocol-test Vitis app
 
 This standalone A53 app loads [`firmware/mcu_protocol_target.s`](../../../firmware/mcu_protocol_target.s)
-into msfcore and releases PS ownership so PMOD JA connects to all eight UIO
-pins. The core runs UART echo (115200 8N1), I2C target address `0x50` with
-register `0x00 = 0xA5`, and the SPI mode-0 response vector used by the
-MSPM0G3517 tests. CAN is not part of this test.
+into msfcore, connects all eight UIO pins to PMOD JA, and prints what the core
+reports. The core runs UART echo (115200 8N1), an I2C target at address `0x50` with
+register `0x00 = 0xA5`, and the SPI mode-0 vector used by the LP-MSPM0G3519 tests
+in [`mcu_ext/protocol_tests`](../../../mcu_ext/protocol_tests). CAN is not part of
+this test.
+
+How to run the whole test, what to send back and how to read the logs are in
+[`external-mcu_testing.md`](../../../external-mcu_testing.md).
 
 ## Build and run
 
@@ -23,27 +27,46 @@ shared PS sources, and builds it. The app uses its own workspace so it does not 
 workspace. The deployment ELF is
 `fpga/build/vitis/workspace_mcu_test/mcu_test/build/mcu_test.elf`.
 
-Program the matching FPGA bitstream, launch the ELF on the A53 in Vitis, then
-run `mcu_ext/protocol_tests` on the MSPM0 board. The app prints a ready message
-after it has loaded the target image and connected PMOD JA. It then polls the
-MSF `uo_out` monitor register and prints each newly received UART byte to the
-Zynq serial console, for example `FPGA UART RX/echo: 0x01`. The SPI target
-reports a MOSI mismatch as `FPGA SPI mismatch detected.` The monitor channel
-uses `uo_out` for UART bytes, so it displays test bytes `0x00`-`0x7f`; this
-covers the current incrementing MSPM0 UART test sequence.
+Program the matching FPGA bitstream, launch the ELF on the A53 in Vitis, then run
+`mcu_ext/protocol_tests` on the MCU. The firmware is loaded at run time, so changing
+it needs a new ELF but no new bitstream.
 
-The generated image must fit the loader's 384-word frame limit. The current
-firmware is 208 words. Connect the MSPM0 signals as follows:
+The image must fit the loader's 384-word limit, which also keeps it below the
+logic analyser's buffer at SRAM 512. The current firmware is 352 words. Connect the
+MCU signals as follows:
 
-| MSPM0 signal | PMOD JA / UIO |
-|---|---|
-| UART RX / TX | UIO0 / UIO1 |
-| I2C SCL / SDA | UIO2 / UIO3 |
-| SPI SCLK / CS | UIO4 / UIO5 |
-| SPI PICO (MOSI) / POCI (MISO) | UIO6 / UIO7 |
+| MCU signal | MCU pin | PMOD JA / UIO |
+|---|---|---|
+| UART1 TX / RX | PA8 / PA9 | UIO0 / UIO1 |
+| I2C0 SCL / SDA | PA1 / PA0 | UIO2 / UIO3 |
+| SPI0 SCLK / CS0 | PB18 / PC7 | UIO4 / UIO5 |
+| SPI0 PICO (MOSI) / POCI (MISO) | PB17 / PB19 | UIO6 / UIO7 |
 
-I2C SCL/SDA require external pull-ups. The SPI test currently clocks one byte
-per CS-low frame; the target returns and checks the corresponding byte in the
-fixed eight-byte vector across frames. For fast first-bit setup MISO remains
-driven between frames; this target is intended for the dedicated single-device
-PMOD bus, not a shared SPI bus.
+The boards need a common ground. SCL and SDA are pulled up by the LaunchPad: keep its
+J16 and J17 on 1-2 (3.3 V), because 2-3 would put 5 V on the FPGA's 3.3 V pins. MISO
+stays driven between frames, so this target is for the dedicated PMOD bus, not a
+shared SPI bus.
+
+## The monitor
+
+The core has no way to wait for the A53 while the board has the pins, and a line on
+the console takes milliseconds. So the firmware sends its events on `uo_out`, in a
+format that shows every new value (its header documents it), and the app only
+collects while traffic is arriving. At the first firmware heartbeat (about 0.2 s
+apart) with no traffic since the one before, it prints the burst, then a line with the
+pin levels and which pins moved. Heartbeats also say how many events were sent, so
+any missed while printing are reported.
+
+Limits of the target at a 12 MHz core, also in the firmware's header and checked by
+`test_mcu_peer_spi_limits`: SCK period at least 32 cycles (375 kHz), and 10 us from a
+frame's last rising SCK edge to the next frame's first.
+
+## Tests
+
+No board needed:
+
+```sh
+python test/run_tests.py -m test_targets -t mcu_peer_one_pass   # and the other test_mcu_peer_* tests
+python fpga/tests/run_mcu_monitor_test.py                       # the monitor's C code, on the PC
+sh fpga/tests/run_ps_loader_compile_test.sh                     # against the Vitis stubs
+```

@@ -10,7 +10,7 @@ the msfcore in the PL. It talks to the core only through 32 PS EMIO GPIO bits
 | `common/msf_emio_xgpiops.c` | HAL on the PS GPIO controller (board) |
 | `common/msf_link.[ch]` | reset, pin ownership, single-step, boot ROM parallel protocol |
 | `loader/` | loads one image (`generate_image.py`), starts it, hands the pins to PMOD JA |
-| `mcu_test/` | Vitis app and instructions to load the MSPM0 UART/I2C/SPI peer on PMOD JA |
+| `mcu_test/` | Vitis app that loads the UART/I2C/SPI peer for an LP-MSPM0G3519 on PMOD JA and prints what it reports |
 | `hil/msf_proto.[ch]` | protocol models in C: UART, SPI slave, I2C slave, USB LS, 10BASE-T, CRCs |
 | `hil/msf_tests.[ch]` | the firmware tests of `test/test_firmware.py` and the parallel boot tests |
 | `hil/firmware/` | HIL helpers: `dump_ram.s` (reads data RAM back), `boot_probe.s` |
@@ -85,10 +85,10 @@ every 6,000,000 cycles, so it blinks at exactly 1 Hz on the 12 MHz
 `pl_clk0`, with nothing connected to PMOD JA. To re-run whatever is
 already in SRAM without reloading it, call `msf_restart()`.
 
-To run the MSPM0G3517 UART, I2C and SPI tests, follow
+To run the LP-MSPM0G3519 UART, I2C and SPI tests, follow
 [`mcu_test/README.md`](mcu_test/README.md). Its Vitis app loads
-`firmware/mcu_protocol_target.s`, then releases PS ownership so PMOD JA
-connects to UIO[0:7].
+`firmware/mcu_protocol_target.s`, releases PS ownership so PMOD JA
+connects to UIO[0:7], and prints the events the firmware sends on `uo_out`.
 
 ## Tests
 
