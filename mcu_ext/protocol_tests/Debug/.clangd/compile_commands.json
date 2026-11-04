@@ -1,0 +1,37 @@
+[
+   {
+      "directory" : "D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests/Debug",
+      "command"   : "clang++ -D__MSPM0G3519__ -D__USE_SYSCONFIG__ -I\"D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests\" -I\"D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests/Debug\" -I\"C:/ti/mspm0_sdk_2_11_00_07/source/third_party/CMSIS/Core/Include\" -I\"C:/ti/mspm0_sdk_2_11_00_07/source\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/include/armv7em-ti-none-eabihf/c++/v1\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/include/c++/v1\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/lib/clang/22/include\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/include/c\" -xc",
+      "file"      : "D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests/Debug/ti_msp_dl_config.c"
+   },
+   {
+      "directory" : "D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests/Debug",
+      "command"   : "clang++ -D__MSPM0G3519__ -D__USE_SYSCONFIG__ -I\"D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests\" -I\"D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests/Debug\" -I\"C:/ti/mspm0_sdk_2_11_00_07/source/third_party/CMSIS/Core/Include\" -I\"C:/ti/mspm0_sdk_2_11_00_07/source\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/include/armv7em-ti-none-eabihf/c++/v1\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/include/c++/v1\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/lib/clang/22/include\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/include/c\" -xc",
+      "file"      : "D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests/can_test.c"
+   },
+   {
+      "directory" : "D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests/Debug",
+      "command"   : "clang++ -D__MSPM0G3519__ -D__USE_SYSCONFIG__ -I\"D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests\" -I\"D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests/Debug\" -I\"C:/ti/mspm0_sdk_2_11_00_07/source/third_party/CMSIS/Core/Include\" -I\"C:/ti/mspm0_sdk_2_11_00_07/source\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/include/armv7em-ti-none-eabihf/c++/v1\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/include/c++/v1\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/lib/clang/22/include\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/include/c\" -xc",
+      "file"      : "D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests/i2c_test.c"
+   },
+   {
+      "directory" : "D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests/Debug",
+      "command"   : "clang++ -D__MSPM0G3519__ -D__USE_SYSCONFIG__ -I\"D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests\" -I\"D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests/Debug\" -I\"C:/ti/mspm0_sdk_2_11_00_07/source/third_party/CMSIS/Core/Include\" -I\"C:/ti/mspm0_sdk_2_11_00_07/source\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/include/armv7em-ti-none-eabihf/c++/v1\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/include/c++/v1\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/lib/clang/22/include\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/include/c\" -xc",
+      "file"      : "D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests/main.c"
+   },
+   {
+      "directory" : "D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests/Debug",
+      "command"   : "clang++ -D__MSPM0G3519__ -D__USE_SYSCONFIG__ -I\"D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests\" -I\"D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests/Debug\" -I\"C:/ti/mspm0_sdk_2_11_00_07/source/third_party/CMSIS/Core/Include\" -I\"C:/ti/mspm0_sdk_2_11_00_07/source\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/include/armv7em-ti-none-eabihf/c++/v1\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/include/c++/v1\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/lib/clang/22/include\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/include/c\" -xc",
+      "file"      : "D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests/protocol_testh.c"
+   },
+   {
+      "directory" : "D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests/Debug",
+      "command"   : "clang++ -D__MSPM0G3519__ -D__USE_SYSCONFIG__ -I\"D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests\" -I\"D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests/Debug\" -I\"C:/ti/mspm0_sdk_2_11_00_07/source/third_party/CMSIS/Core/Include\" -I\"C:/ti/mspm0_sdk_2_11_00_07/source\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/include/armv7em-ti-none-eabihf/c++/v1\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/include/c++/v1\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/lib/clang/22/include\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/include/c\" -xc",
+      "file"      : "D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests/spi_test.c"
+   },
+   {
+      "directory" : "D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests/Debug",
+      "command"   : "clang++ -D__MSPM0G3519__ -D__USE_SYSCONFIG__ -I\"D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests\" -I\"D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests/Debug\" -I\"C:/ti/mspm0_sdk_2_11_00_07/source/third_party/CMSIS/Core/Include\" -I\"C:/ti/mspm0_sdk_2_11_00_07/source\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/include/armv7em-ti-none-eabihf/c++/v1\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/include/c++/v1\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/lib/clang/22/include\" -isystem\"C:/ti/ccs2101/ccs/tools/compiler/ti-cgt-armllvm_5.1.1.LTS/include/c\" -xc",
+      "file"      : "D:/fpga/ttihp-verilog-msf-emulator/mcu_ext/protocol_tests/uart_test.c"
+   }
+]
