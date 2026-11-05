@@ -95,13 +95,14 @@ congestion, since the right sources use a few per cent of the device.
 
 | Check | Command | Status |
 |---|---|---|
-| cocotb regression on `fpga/rtl` | `run_tests.py` with `SRC` pointed at `fpga/rtl` | 130/130 |
+| cocotb regression on `fpga/rtl` | `run_tests.py` with `SRC` pointed at `fpga/rtl` | 191/191 |
 | FPGA SRAM | `sh fpga/tests/run_sram_test.sh` | pass |
 | Wrapper: ownership, reset, status, step mode | `sh fpga/tests/run_aup_zu3_io_test.sh` | pass |
 | PS apps compile (Vitis stubs, classic and SDT drivers) | `sh fpga/tests/run_ps_loader_compile_test.sh` | pass |
 | PS C protocol tests against the RTL | `python fpga/tests/run_ps_hil.py` | 66/66 (28 Oct; 52 of them not yet run on the board) |
 | **PS C protocol tests on the AUP-ZU3 board** | the `hil` app on the PS | **14/14 (23 Oct 2026)** |
 | **Loader on the board** | `loader/blink.s` | **LED0 blinks** |
+| **UART, I2C, SPI against an LP-MSPM0G3519, core running free** | `fpga/ps/mcu_test` and `mcu_ext/protocol_tests` | **first run 5 Nov**, open: see [`external-mcu_testing.md`](../external-mcu_testing.md) |
 
 First Vivado run (19 Oct, Vivado 2024.1): `msf_bd.tcl` created the block
 design, it validated, and its HDL wrapper generated. Out-of-context
@@ -124,6 +125,14 @@ the SRAM wrapper and the boot ROM (`tools/check_fpga_sync.py`, run in CI).
 The PS steps the core one clock at a time, so this checks logic and
 protocol behaviour on real hardware, not timing at speed. Still to record:
 the commit that was built, and Vivado's timing and utilisation.
+
+The MCU test is different: the core runs free from `pl_clk0` at 12 MHz with
+a real LP-MSPM0G3519 as controller, and the PS only watches `uo_out`. By
+burst 2662 of the first run (5 Nov, firmware v2) the FPGA's counts had UART
+and I2C exact, and SPI with 23 bad bytes and 60 extra ones, all before burst
+2600. The firmware has since changed and has not been run again, the MCU's own
+log has not been read, and the same Vivado figures are still to record.
+[`external-mcu_testing.md`](../external-mcu_testing.md) has the details.
 
 ## Open items
 

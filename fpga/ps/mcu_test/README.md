@@ -2,10 +2,11 @@
 
 This standalone A53 app loads [`firmware/mcu_protocol_target.s`](../../../firmware/mcu_protocol_target.s)
 into msfcore, connects all eight UIO pins to PMOD JA, and prints what the core
-reports. The core runs UART echo (115200 8N1), an I2C target at address `0x50` with
-register `0x00 = 0xA5`, and the SPI mode-0 vector used by the LP-MSPM0G3519 tests
-in [`mcu_ext/protocol_tests`](../../../mcu_ext/protocol_tests). CAN is not part of
-this test.
+reports. The core runs free at 12 MHz: UART echo (115200 8N1), an I2C target at
+address `0x50` with register `0x00 = 0xA5`, and an SPI mode-0 target that checks the
+bytes sent by the LP-MSPM0G3519 tests in
+[`mcu_ext/protocol_tests`](../../../mcu_ext/protocol_tests) and answers each with its
+complement. CAN is not part of this test.
 
 How to run the whole test, what to send back and how to read the logs are in
 [`external-mcu_testing.md`](../../../external-mcu_testing.md).
@@ -58,7 +59,7 @@ pin levels and which pins moved. Heartbeats also say how many events were sent, 
 any missed while printing are reported.
 
 Limits of the target at a 12 MHz core, also in the firmware's header and checked by
-`test_mcu_peer_spi_limits`: SCK period at least 32 cycles (375 kHz), and 10 us from a
+`test_mcu_peer_spi_limits`: SCK period at least 36 cycles (333 kHz), and 10 us from a
 frame's last rising SCK edge to the next frame's first.
 
 ## Tests

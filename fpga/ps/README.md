@@ -89,6 +89,7 @@ To run the LP-MSPM0G3519 UART, I2C and SPI tests, follow
 [`mcu_test/README.md`](mcu_test/README.md). Its Vitis app loads
 `firmware/mcu_protocol_target.s`, releases PS ownership so PMOD JA
 connects to UIO[0:7], and prints the events the firmware sends on `uo_out`.
+Unlike the C tests below, the core runs free at 12 MHz there, not stepped.
 
 ## Tests
 

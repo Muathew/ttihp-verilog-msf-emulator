@@ -144,7 +144,7 @@ finish; `--top top` runs it alone.
 | `test_firmware` | the `firmware/` demos against independent decoders and slave models (SPI slave all modes, wired-AND I2C slave with stretching, USB NRZI/CRC16/EOP, 10BASE-T Manchester/FCS/TP_IDL/NLP) |
 | `test_protocols`, `test_extensions`, `test_reprogrammable`, `test_crv_invariants` | the original v1 bit-bang demos and constrained-random invariants, kept as regression |
 | `test_golden_model` | lock-step RTL vs model on a fixed image; protocol/CRC reference self-checks |
-| `test_targets` | the chip as an SPI and an I2C device against controller models: data, response latencies at the pins against the values derived from the ISA costs, speed limits (a faster bus must fail) |
+| `test_targets` | the chip as an SPI and an I2C device against controller models: data, response latencies at the pins against the values derived from the ISA costs, speed limits (a faster bus must fail); the board's MCU peer with the MSPM0's timing: one whole pass, limits, every I2C hold, floating pins, a MOSI that only follows MISO |
 | `test_monitors` | UART, I2C and SPI bus monitors: decoding, timing faults reported with their lengths, no event on legal buses (random phases), limits |
 | `test_bridge` | UART to SPI bridge across the two threads, all SPI modes, against a shift-register device model |
 | `test_faults` | the controllers' timing knobs measured at the pins; a UART bit-time sweep finds a receiver's theoretical limits |
@@ -167,6 +167,13 @@ it does not depend on the PS's speed (the same at 2 and 7 PL clocks per GPIO
 access), so a board log can be compared with the simulation's test by test.
 Details in [`docs/fpga.md`](fpga.md) and
 [`fpga/ps/README.md`](../fpga/ps/README.md).
+
+One board test works differently: the core runs free at 12 MHz and a real
+LP-MSPM0G3519 drives its UART, I2C and SPI. By burst 2662 of the first run
+(5 Nov) the FPGA's counts had UART and I2C exact, and SPI with 23 bad bytes and
+60 extra ones, all before burst 2600. The likely cause is reproduced in
+simulation and fixed, but not confirmed on the board, and the MCU's own log has
+not been read ([`external-mcu_testing.md`](../external-mcu_testing.md)).
 
 ## 6. Pre-hardening check — `tools/synth_check.py`
 
@@ -425,6 +432,7 @@ change behaviour.
 | No firmware deadline is ever missed, on any path | `tools/msf_timing.py` (§6b): every `WAIT_CMP` in the firmware issues at least 9 cycles before its target; cross-checked against the ISA model; rejects a too-fast UART |
 | A missed deadline is never silent | `WAIT_CMP` with a passed target releases at once with Z=1 and sets LATE (isa.md §5): `test_wait_cmp_late_boundaries` (0 and 255 cycles behind are late, 256 behind and 1 ahead are not), `test_late_flags_per_thread`; formal F10, F11 and mutant B4 (§3); random programs with late targets, RTL == model (§2) |
 | UART, SPI, I2C, USB LS, 10BASE-T TX run as firmware | `test_firmware` against independent decoders and device models; the same checks in C on the AUP-ZU3 board, 14/14 (§5) |
+| Running free at 12 MHz on the FPGA, the core takes UART, I2C and SPI traffic from a real LP-MSPM0G3519 | First run on the AUP-ZU3 (§5): the FPGA's own counts. Still open: the MCU's log, and a run of the current firmware ([`external-mcu_testing.md`](../external-mcu_testing.md)) |
 | The chip can be an SPI device at up to 750 kHz with no dummy byte, and an I2C device at 100 kHz (400 kHz with stretching) | `test_targets`: data in all modes, latencies 4 / 5 / 8 / 13 cycles as derived, a 16-cycle SCK works and 14 fails, 400 kHz needs `STRETCH` |
 | The chip can stand in for a 25xx SPI flash: ID, status, read, page program and erase, with WIP set while an erase runs | `test_targets` flash tests against a controller model and a reference model: all modes, the 512-byte wrap, program with and without WEL, every erase command polled during the erase; a 28-cycle SCK works and 26 fails |
 | A bus monitor never reports a timing fault on a legal I2C bus, and reports the real faults with their lengths | `test_monitors`: random legal buses raise no event; single faults at every data bit, at 100 kHz and the legal minimum, reported once each within the stated accuracy |
@@ -444,12 +452,13 @@ change behaviour.
 
 What is **not** validated yet:
 
-* Nothing has run on silicon. On the FPGA board the PS steps the core one
-  clock at a time, so the board run checks logic and protocols, not timing
-  at speed.
-* The other end of every bus is a model written by us from the protocol
-  specs, not a real device: no USB host, Ethernet link partner, EEPROM or
-  logic analyser has been connected.
+* Nothing has run on silicon. In the C board tests the PS steps the core one
+  clock at a time, so they check logic and protocols, not timing at speed.
+  Only the MCU test (§5) runs it free, at 12 MHz on the FPGA, and it is not
+  finished.
+* Apart from that LP-MSPM0G3519, the other end of every bus is a model written
+  by us from the protocol specs, not a real device: no USB host, Ethernet link
+  partner, EEPROM or logic analyser has been connected.
 * Electrical behaviour is not modelled: pad drive, rise times with real
   pull-ups, USB and 10BASE-T signal levels.
 * Timing is checked by static analysis only (§7): the gate-level

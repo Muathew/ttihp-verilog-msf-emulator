@@ -32,6 +32,10 @@ Application/User UART** COM port on the PC. Open it at 115200 8N1. Each pass pri
 protocol, the I2C controller's status register at each step with its flags named,
 and running totals. The same counters stay in `protocolResults[]` for the debugger.
 
+The SPI test sends `55 AA 12 34 DE AD BE EF` and expects the complement of each byte
+back, `AA 55 ED CB 21 52 41 10`, so MISO can not pass by picking up MOSI. A `rx=` line
+equal to `tx=` means the FPGA is on old firmware or MISO is doing just that.
+
 A pass runs all three tests before it logs anything, so that its traffic on the wires
 is one short burst. `SPI_FRAME_GAP_CYCLES` in `spi_test.c` and the rates in
 `p_test.syscfg` follow the FPGA target's limits (`firmware/mcu_protocol_target.s`).

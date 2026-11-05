@@ -131,10 +131,10 @@ single-step, stop at a PC and read every register.
    and high, SCK high and low.
 
 4. In simulation: `cd test && make` (or `python run_tests.py --all` on
-   Windows) runs 158 cocotb tests including a random differential check of
+   Windows) runs 191 cocotb tests including a random differential check of
    the RTL against an independent ISA model; `python formal/run_formal.py`
    runs the formal properties; `python tools/mutation.py` measures how many
-   seeded RTL faults the tests catch (38 of 40; the two left cannot change behaviour).
+   seeded RTL faults the tests catch (37 of 40; the three left cannot change behaviour).
 
 ## External hardware
 

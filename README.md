@@ -54,7 +54,7 @@ claim to its evidence):
 
 1. **An ISA model** written from [`isa.md`](docs/isa.md), not from the RTL,
    compared with the RTL on every issue of random programs.
-2. **181 cocotb tests** in 21 modules, with peer models written from the
+2. **191 cocotb tests** in 21 modules, with peer models written from the
    protocol standards (USB, Ethernet, I2C, SPI, IEEE 1149.1, ADIv5, CAN,
    1-Wire, PS/2), not from the firmware.
 3. **Formal properties** (SymbiYosys and ABC, in CI) with free memory and
@@ -66,7 +66,9 @@ claim to its evidence):
    certifies that no `WAIT_CMP` in the firmware is ever late, on any path,
    and is itself cross-checked against the ISA model.
 6. **The FPGA board** (AUP-ZU3): 14 of 14 C protocol tests pass on the same
-   core, stepped by the Zynq.
+   core, stepped by the Zynq. Running free at 12 MHz, the core has also taken
+   UART, I2C and SPI traffic from a real LP-MSPM0G3519
+   ([first run, still open](external-mcu_testing.md)).
 7. **Sign-off in CI**: a job that fails on any setup or hold violation, DRC,
    antenna or LVS error, because the GDS badge alone does not.
 8. **The routed netlist equals the RTL**, proved formally
@@ -80,8 +82,9 @@ claim to its evidence):
   about 28 ns; 50 MHz is met only at the typical corner
   ([verification](docs/verification.md) §7). Every firmware we ship needs
   20 MHz or less.
-* The board tests step the core one clock at a time: they check logic and
-  protocols on real hardware, not timing at speed.
+* The C board tests step the core one clock at a time: they check logic and
+  protocols on real hardware, not timing at speed. Only the
+  [MCU test](external-mcu_testing.md) runs it free, at 12 MHz on the FPGA.
 * Firmware is written in assembly.
 * 10BASE-T is transmit only: receiving needs about 80 MHz.
 * Most formal properties are proved for all time, but four of the
