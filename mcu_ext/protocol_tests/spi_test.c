@@ -16,6 +16,16 @@ static const uint8_t spiTxData[SPI_TEST_LENGTH] = {
     0xDE, 0xAD, 0xBE, 0xEF
 };
 
+/*
+ * The FPGA target answers with the complement of each byte. Every bit differs from
+ * what is on MOSI, so MISO can not pass by picking up MOSI from the wire next to it
+ * (and the target's check of MOSI can not pass by picking up MISO).
+ */
+static const uint8_t spiExpectedRx[SPI_TEST_LENGTH] = {
+    0xAA, 0x55, 0xED, 0xCB,
+    0x21, 0x52, 0x41, 0x10
+};
+
 static uint8_t spiRxData[SPI_TEST_LENGTH];
 static uint32_t spiRxCount;
 static uint32_t spiStale;
@@ -74,7 +84,7 @@ TestStatus SPI_Test_run(void)
         spiRxData[i] = DL_SPI_receiveData8(SPI_0_INST);
         spiRxCount++;
 
-        if (spiRxData[i] != spiTxData[i]) {
+        if (spiRxData[i] != spiExpectedRx[i]) {
             status = TEST_FAIL;
         }
 
@@ -90,16 +100,25 @@ TestStatus SPI_Test_run(void)
     return status;
 }
 
+static void logBytes(const char *label, const uint8_t *bytes)
+{
+    uint32_t i;
+
+    Log_str(label);
+    for (i = 0; i < SPI_TEST_LENGTH; i++) {
+        Log_hex8(bytes[i]);
+        Log_str(" ");
+    }
+    Log_str("\r\n");
+}
+
 void SPI_Test_report(TestStatus status)
 {
     uint32_t i;
 
-    Log_str("MCU SPI  tx=");
-    for (i = 0; i < SPI_TEST_LENGTH; i++) {
-        Log_hex8(spiTxData[i]);
-        Log_str(" ");
-    }
-    Log_str("\r\nMCU SPI  rx=");
+    logBytes("MCU SPI  tx=    ", spiTxData);
+    logBytes("MCU SPI  expect=", spiExpectedRx);
+    Log_str("MCU SPI  rx=    ");
     for (i = 0; i < SPI_TEST_LENGTH; i++) {
         if (i < spiRxCount) {
             Log_hex8(spiRxData[i]);

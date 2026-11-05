@@ -22,8 +22,8 @@ PS = REPO / "fpga" / "ps"
 
 SENT, UART, SPI_OK, SPI_BAD, SPI_EXP, SPI_RST, I2C_ADR, I2C_ADX, I2C_PTR, I2C_WR, I2C_RD, \
     I2C_RDA, BUS, LA, PINS, ACT = range(16)
-BOOT = (BUS, 0x82)
-IDLE_PINS = 0x2F                    # RX, TX, SCL, SDA and CS high
+BOOT = (BUS, 0x83)
+IDLE_PINS = 0xAF                    # RX, TX, SCL, SDA, CS and MISO high (0xAA is next)
 
 
 class Trace:
@@ -102,8 +102,8 @@ def main():
         t = Trace()
         t.events(BOOT)
         t.beat(0)
-        check("boot", run(exe, t.reads), "firmware v2 is running",
-              "pins RX=1 TX=1 SCL=1 SDA=1 SCK=0 CS=1 MOSI=0 MISO=0 moved: none\n",
+        check("boot", run(exe, t.reads), "firmware v3 is running",
+              "pins RX=1 TX=1 SCL=1 SDA=1 SCK=0 CS=1 MOSI=0 MISO=1 moved: none\n",
               absent=("WARNING", "hint", "---- burst"))
 
         t = Trace()

@@ -5,7 +5,9 @@ specs. Besides the data, the tests measure the response latencies at the
 pins and assert the exact values derived from the ISA's cycle costs
 (docs/instruments.md), then find the fastest bus each target keeps up with.
 """
+import os
 import random
+import re
 
 import cocotb
 
@@ -718,7 +720,9 @@ RX, TX, MSCL, MSDA, MSCK, MCS, MMOSI, MMISO = range(8)
 (EV_SENT, EV_UART, EV_SPI_OK, EV_SPI_BAD, EV_SPI_EXP, EV_SPI_RST, EV_I2C_ADR, EV_I2C_ADX,
  EV_I2C_PTR, EV_I2C_WR, EV_I2C_RD, EV_I2C_RDA, EV_BUS, EV_LA, EV_PINS, EV_ACT) = range(16)
 BUS_STOP, BUS_RSTART, BUS_WATCHDOG, BUS_BOOT = 0, 1, 2, 0x80
-MCU_VECTOR = [0x55, 0xAA, 0x12, 0x34, 0xDE, 0xAD, 0xBE, 0xEF]
+MCU_FW_VERSION = 3
+MCU_VECTOR = [0x55, 0xAA, 0x12, 0x34, 0xDE, 0xAD, 0xBE, 0xEF]    # MOSI
+MCU_ANSWER = [b ^ 0xFF for b in MCU_VECTOR]                      # MISO
 # Times that only make a simulation longer (the firmware's defaults are for a
 # host that polls slowly and prints in between).
 MCU_FAST = {"BOOT_HOLD": 8, "HEARTBEAT": 64, "EMIT_HOLD": 1}
@@ -775,7 +779,7 @@ def mcu_events(uo):
 def mcu_traffic(uo):
     """The events about the buses: no heartbeat, capture or boot event."""
     return [e for e in mcu_events(uo) if e[0] not in (EV_SENT, EV_LA, EV_PINS, EV_ACT)
-            and e != (EV_BUS, BUS_BOOT | 2)]
+            and e != (EV_BUS, BUS_BOOT | MCU_FW_VERSION)]
 
 
 async def mcu_boot(dut, owned=0, **defines):
@@ -810,6 +814,32 @@ def spi_frames(n=len(MCU_VECTOR)):
     return [[b] for b in MCU_VECTOR[:n]]
 
 
+def spi_answers(n=len(MCU_ANSWER)):
+    return [[b] for b in MCU_ANSWER[:n]]
+
+
+class MosiFollowsMiso:
+    """A MOSI wire nothing drives, picking up MISO from the pin next to it."""
+
+    def step(self, k, bench):
+        return 1 << MMOSI, ((bench.out[k] >> MMISO) & 1) << MMOSI
+
+
+class FloatingMcu:
+    """An MCU not driving its pins, as they float: SCK high, CS low, MOSI at a level
+    or (None) following MISO. From cycle `until` it lets go, and the bench idles
+    the pins as an MCU does once it has configured them."""
+
+    def __init__(self, mosi, until):
+        self.mosi, self.until = mosi, until
+
+    def step(self, k, bench):
+        if k >= self.until:
+            return 0, 0
+        mosi = (bench.out[k] >> MMISO) & 1 if self.mosi is None else self.mosi
+        return 1 << MSCK | 1 << MCS | 1 << MMOSI, 1 << MSCK | mosi << MMOSI
+
+
 # One read as the MCU does it: pointer, repeated START, one byte, NACK, STOP.
 MCU_I2C_EVENTS = [(EV_I2C_ADR, 0xA0), (EV_I2C_PTR, 0), (EV_BUS, BUS_RSTART),
                   (EV_I2C_ADR, 0xA1), (EV_I2C_RD, 0xA5)]
@@ -827,7 +857,7 @@ async def test_mcu_peer_one_pass(dut):
     await bench.run(uart.end - len(bench.out) + 1200)
     assert uart_decode(bench.out, 104, pin=TX)[:2] == data
     spi = await mcu_spi(bench, spi_frames())
-    assert spi.bytes_read() == spi_frames(), spi.bytes_read()
+    assert spi.bytes_read() == spi_answers(), spi.bytes_read()
     i2c = await mcu_i2c(bench, i2c_read(0x50, 1, 0x00))
     assert i2c.results == [0, 0, 0, 0xA5], i2c.results
     assert not i2c.violations
@@ -836,7 +866,7 @@ async def test_mcu_peer_one_pass(dut):
     assert mcu_traffic(bench.uo) == want, mcu_traffic(bench.uo)
 
     events = mcu_events(bench.uo)
-    assert events[0] == (EV_BUS, BUS_BOOT | 2)
+    assert events[0] == (EV_BUS, BUS_BOOT | MCU_FW_VERSION)
     sent = [d for c, d in events if c == EV_SENT]
     assert sent[-1] == len(want) and sent == sorted(sent)
     moved = 0
@@ -905,18 +935,18 @@ async def test_mcu_peer_i2c_watchdog(dut):
 
 @cocotb.test()
 async def test_mcu_peer_spi_limits(dut):
-    """The limits in the firmware's header: SCK period 32 cycles works and 30 does
+    """The limits in the firmware's header: SCK period 36 cycles works and 34 does
     not, 96 cycles from a frame's last rising edge to the next frame's first works
     and 88 does not (the header asks for 110); slow clocks work, which they did not
     when the bit loop waited only for SCK high."""
     frames = spi_frames(4)
-    for half, gap, works in ((16, 240, True), (15, 240, False), (24, 48, True),
+    for half, gap, works in ((18, 240, True), (17, 240, False), (24, 48, True),
                              (24, 40, False), (60, 240, True)):
         bench = await mcu_boot(dut)
         await bench.run(100)
         spi = await mcu_spi(bench, frames, half=half, lead=half, gap=gap)
         await bench.run(400)
-        good = (spi.bytes_read() == frames and
+        good = (spi.bytes_read() == spi_answers(4) and
                 mcu_traffic(bench.uo) == [(EV_SPI_OK, f[0]) for f in frames])
         assert good == works, (half, gap, spi.bytes_read(), mcu_traffic(bench.uo))
 
@@ -929,13 +959,59 @@ async def test_mcu_peer_spi_mismatch_and_silence(dut):
     bench = await mcu_boot(dut, SPI_QUIET=1024)
     await bench.run(100)
     spi = await mcu_spi(bench, [[0x55], [0xA0], [0x12], [0x34]], abort=(3, 3))
-    assert spi.bytes_read()[:3] == spi_frames(3), spi.bytes_read()
+    assert spi.bytes_read()[:3] == spi_answers(3), spi.bytes_read()
     await bench.run(1400)
     assert mcu_traffic(bench.uo) == [
         (EV_SPI_OK, 0x55), (EV_SPI_BAD, 0xA0), (EV_SPI_EXP, 0xAA), (EV_SPI_OK, 0x12),
         (EV_SPI_RST, 5 << 4 | 3)], mcu_traffic(bench.uo)
     again = await mcu_spi(bench, spi_frames(2))
-    assert again.bytes_read() == spi_frames(2), again.bytes_read()
+    assert again.bytes_read() == spi_answers(2), again.bytes_read()
+
+
+@cocotb.test()
+async def test_mcu_peer_spi_floating_pins(dut):
+    """SCK stuck high with CS low used to be taken for a clock at every timeout, so
+    an MCU not driving its pins got bytes reported that it never sent (the likely
+    cause of 60 extra SPI bytes on the first board run). That state now counts as
+    silence, whatever MOSI does, and the next burst is clean."""
+    for mosi in (None, 0, 1):
+        bench = await mcu_boot(dut, SPI_QUIET=300)
+        await bench.run(100)
+        floating = 6000                  # long enough for two such bytes
+        mcu_add(bench, FloatingMcu(mosi, len(bench.out) + floating))
+        await bench.run(floating + 800)
+        assert mcu_traffic(bench.uo) == [], (mosi, mcu_traffic(bench.uo))
+        spi = await mcu_spi(bench, spi_frames())
+        await bench.run(400)
+        assert spi.bytes_read() == spi_answers(), (mosi, spi.bytes_read())
+        assert mcu_traffic(bench.uo) == [(EV_SPI_OK, b) for b in MCU_VECTOR], (mosi, mcu_traffic(bench.uo))
+
+
+@cocotb.test()
+async def test_mcu_peer_spi_mosi_cannot_copy_miso(dut):
+    """Real clocks, but a MOSI wire that only follows MISO: every byte is reported
+    as wrong, because MISO carries the complement of what MOSI has to."""
+    bench = await mcu_boot(dut)
+    await bench.run(100)
+    bench.add(MosiFollowsMiso())         # last, so it wins over the controller's MOSI
+    await mcu_spi(bench, spi_frames())
+    await bench.run(400)
+    want = []
+    for sent, expected in zip(MCU_ANSWER, MCU_VECTOR):
+        want += [(EV_SPI_BAD, sent), (EV_SPI_EXP, expected)]
+    assert mcu_traffic(bench.uo) == want, mcu_traffic(bench.uo)
+
+
+@cocotb.test()
+async def test_mcu_peer_tables_match_the_mcu_code(dut):
+    """The MCU's C code can not run here, so at least check it uses the same bytes."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "mcu_ext",
+                        "protocol_tests", "spi_test.c")
+    with open(path) as f:
+        source = f.read()
+    for name, want in (("spiTxData", MCU_VECTOR), ("spiExpectedRx", MCU_ANSWER)):
+        body = re.search(name + r"\[[^]]*\]\s*=\s*\{([^}]*)\}", source).group(1)
+        assert [int(v, 16) for v in re.findall(r"0x[0-9A-Fa-f]+", body)] == want, name
 
 
 @cocotb.test()

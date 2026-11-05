@@ -7,16 +7,18 @@
 ;   UART: 115200 8N1 byte echo
 ;   I2C : 7-bit address 0x50, 32 registers, register 0 = 0xA5; pointer write,
 ;         repeated START, read, clock stretching
-;   SPI : mode 0, MSB first, one byte a frame: returns the next byte of
-;         55 AA 12 34 DE AD BE EF and checks MOSI carries the same byte. Five
-;         ms with no clock starts again from the first byte.
+;   SPI : mode 0, MSB first, one byte a frame: checks MOSI carries the next byte
+;         of 55 AA 12 34 DE AD BE EF and returns that byte's complement
+;         (AA 55 ED CB 21 52 41 10). Every bit differs between the two wires,
+;         so neither can pass by picking up the other. Five ms with no clock
+;         starts again from the first byte.
 ;
 ; Four threads run, so every thread gets one instruction per 4 cycles whatever
 ; the others do (isa.md section 7). At a 12 MHz core:
-;   SPI: SCK period >= 32 cycles (375 kHz), and >= 110 cycles (10 us) from a
+;   SPI: SCK period >= 36 cycles (333 kHz), and >= 110 cycles (10 us) from a
 ;        byte's last rising SCK edge to the next byte's first. The MCU uses
 ;        250 kHz with a gap between frames. 1 MHz can not work: 12 cycles a
-;        bit is 3 instructions and the bit loop needs 8.
+;        bit is 3 instructions and the bit loop needs 9.
 ;   I2C: 100 kHz, with any SDA hold after SCL falls (tested from 1 cycle up).
 ;
 ; ---- what the host sees ----
@@ -75,7 +77,7 @@
 .equ I2C_REG_MASK, 0x1F            ; registers 0..31; RAM_SENT and the FIFO are above
 .equ SPI_MISO, 1 << SPI_MISOP
 .equ RAM_SENT, 32
-.equ FW_VERSION, 2
+.equ FW_VERSION, 3
 
 ; Inputs ignore pulses under 3 cycles (250 ns): bench wires ring, and one extra
 ; SCK or SCL edge loses a whole byte. Every input arrives 3 cycles later for it.
@@ -449,11 +451,14 @@ i2c_restart:
         JMP      i2c_start
 
 ; ---- T3: SPI target ----
-; R0 = 0 (never written), R2 = this byte, R3 = MOSI byte, R4 = bits to go,
-; R5 = byte index, R6 = table, R7 = the byte's address, R1 = scratch.
+; R0 = 0 (never written), R2 = this byte's table word, R3 = MOSI byte, R4 = bits
+; to go, R5 = byte index, R6 = table, R7 = the byte's address, R1 = scratch.
 ; Waits for SCK low and then high for every bit, so any SCK slower than the
-; limit works. MISO is loaded before the wait for CS, and stays driven between
-; frames: this is the only device on the bus.
+; limit works. Either wait timing out is silence: if only the wait for high were
+; checked, SCK stuck high with CS low (an MCU not driving its pins, as PMOD JA
+; has no pulls) would count a bit at every timeout and report bytes nobody sent.
+; MISO is loaded before the wait for CS, and stays driven between frames: this
+; is the only device on the bus.
 spi_target:
         LDI      R1, SPI_QUIET
         TMO      R1                ; a wait that times out means silence
@@ -463,8 +468,7 @@ spi_target:
 spi_load:
         ADDS     R7, R6, R5
         LD       R2, R7
-        SWAP     R1, R2
-        SR_LD    R1
+        SR_LD    R2
         SHIFT_OUT R0               ; bit 7 on MISO before the first clock
         LDR      R4, #8
 spi_select:
@@ -472,6 +476,7 @@ spi_select:
         JZ       spi_silence
 spi_bit:
         WAIT_EDGE SPI_SCKP, low
+        JZ       spi_silence
         WAIT_EDGE SPI_SCKP, high
         JZ       spi_silence
         XFER                       ; MOSI in, next bit on MISO
@@ -485,9 +490,9 @@ spi_bit:
         AND      R5, R5, R1
         ADDS     R7, R6, R5
         LD       R1, R7
-        SWAP     R1, R1
         SR_LD    R1
         SHIFT_OUT R0
+        LDH      R2, #0            ; the MOSI byte this one should have been
         SUBS     R1, R3, R2
         JZ       spi_ok
         LDH      R3, #EV_SPI_BAD
@@ -517,6 +522,6 @@ spi_silence:
         LDR      R5, #0
         JMP      spi_load
 
-spi_bytes:
-        .word 0x0055, 0x00AA, 0x0012, 0x0034
-        .word 0x00DE, 0x00AD, 0x00BE, 0x00EF
+spi_bytes:                         ; MISO byte << 8 | the MOSI byte to expect
+        .word 0xAA55, 0x55AA, 0xED12, 0xCB34
+        .word 0x21DE, 0x52AD, 0x41BE, 0x10EF

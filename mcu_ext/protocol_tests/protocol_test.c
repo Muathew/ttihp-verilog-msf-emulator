@@ -98,7 +98,7 @@ void ProtocolTest_init(void)
     Log_str("MCU SPI ");
     Log_dec((CPUCLK_FREQ / 2000U) /
             (DL_SPI_getBitRateSerialClockDivider(SPI_0_INST) + 1U));
-    Log_str(" kHz (the FPGA target needs at most 375), I2C ");
+    Log_str(" kHz (the FPGA target needs at most 333), I2C ");
     Log_dec((CPUCLK_FREQ / 10000U) /
             ((uint32_t) DL_I2C_getTimerPeriod(I2C_0_INST) + 1U));
     Log_str(" kHz, CPU ");
