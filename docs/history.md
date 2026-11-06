@@ -25,6 +25,8 @@ Where an early decision was later changed, the entry says so.
 | 2026-10-18 | Muath, Sam | AUP-ZU3 FPGA port; PS-stepped core and C protocol tests (14/14); 1 Hz blink; competitor survey updated (research.md) |
 | 2026-10-19..21 | Sam | Instruments from the survey: SPI and I2C targets, UART / I2C / SPI bus monitors, UART-to-SPI bridge, timing-fault knobs, CI hardening table, mutation score (39/40), WS2812 and a PIO comparison; 130 tests |
 | 2026-10-21 | Sam | Branch `rtl-changes`: 50 MHz sign-off, a timeout per thread, a hardware FIFO between the threads, the debug view, a second SRAM bank (1024 words), a capture engine (logic analyser), Manchester receive, a glitch filter, four threads; 158 tests |
+| 2026-11-05 | Muath, Sam | First free-running board test: a real LP-MSPM0G3519 against the core on PMOD JA, over 2600 passes of UART, I2C and SPI on the FPGA's count. SPI counted bytes no pass sent, which led to a firmware fix and different SPI bytes each way ([details](../external-mcu_testing.md)) |
+| 2026-11-06 | Muath, Sam | Firmware v3 on the board: UART and SPI pass at both ends, with both logs read. I2C is right on the wires; the MCU's own test turned out to be reading each byte a pass late, and was fixed. UART, SPI and I2C then passed at both ends on all 148 passes ([details](../external-mcu_testing.md)). Muath's earlier board run of all 67 C tests was recorded, and the MCU test merged into `main` |
 
 ## 1. Architecture decision (24 Sep)
 

@@ -1187,6 +1187,198 @@ static int test_swd_probe(void)
     return 0;
 }
 
+/* ---- an SWD session with a Cortex-M (hil/firmware/swd_session.s) -------
+ * The core runs a list of transactions by itself, with no UART host, so the
+ * same session runs against the C model (the PS owns the pins) and against a
+ * real microcontroller on PMOD JA (the pins handed to the board): SWCLK on
+ * uio2, SWDIO on uio3, and a common ground. */
+
+#define SWD_DP(a, rnw) ((uint16_t)((rnw) << 1 | (((a) >> 2) & 3U) << 2))
+#define SWD_AP(a, rnw) ((uint16_t)(1U | (rnw) << 1 | (((a) >> 2) & 3U) << 2))
+#define SWD_PAT        0x5AC3A50FU   /* written to DCRDR and read back, then ~SWD_PAT */
+#define CM_CPUID       0xE000ED00U
+#define CM_DCRDR       0xE000EDF8U
+#define HEX32(v)       (unsigned)((v) >> 16), (unsigned)((v) & 0xFFFFU)   /* "%04x%04x" */
+
+enum {
+    SS_DPIDR, SS_ABORT, SS_PWRUP, SS_STAT0, SS_STAT, SS_SEL_F, SS_IDR_POST, SS_IDR,
+    SS_SEL_0, SS_CSW, SS_TAR_CPUID, SS_CPUID_POST, SS_CPUID, SS_TAR_DCRDR,
+    SS_W1, SS_R1_POST, SS_R1, SS_W2, SS_R2_POST, SS_R2, SS_PWRDN, SS_N
+};
+
+static const struct {
+    uint16_t h;          /* APnDP | RnW << 1 | A[3:2] << 2, as swd.s */
+    uint32_t v;          /* the value a write sends */
+    const char *what;
+} swd_script[SS_N] = {
+    {SWD_DP(0x0, 1), 0, "read DPIDR"},
+    {SWD_DP(0x0, 0), 0x1EU, "ABORT: clear the sticky errors"},
+    {SWD_DP(0x4, 0), 0x50000000U, "CTRL/STAT: debug and system power-up"},
+    {SWD_DP(0x4, 1), 0, "read CTRL/STAT"},
+    {SWD_DP(0x4, 1), 0, "read CTRL/STAT again"},
+    {SWD_DP(0x8, 0), 0xF0U, "SELECT AP 0, bank F"},
+    {SWD_AP(0xC, 1), 0, "read the AP's IDR (posted)"},
+    {SWD_DP(0xC, 1), 0, "RDBUFF: the IDR"},
+    {SWD_DP(0x8, 0), 0x00U, "SELECT AP 0, bank 0"},
+    {SWD_AP(0x0, 0), 0x23000002U, "CSW: 32-bit, no increment"},
+    {SWD_AP(0x4, 0), CM_CPUID, "TAR = CPUID"},
+    {SWD_AP(0xC, 1), 0, "read DRW (posted)"},
+    {SWD_DP(0xC, 1), 0, "RDBUFF: CPUID"},
+    {SWD_AP(0x4, 0), CM_DCRDR, "TAR = DCRDR"},
+    {SWD_AP(0xC, 0), SWD_PAT, "write DCRDR"},
+    {SWD_AP(0xC, 1), 0, "read DRW (posted)"},
+    {SWD_DP(0xC, 1), 0, "RDBUFF: DCRDR"},
+    {SWD_AP(0xC, 0), ~SWD_PAT, "write DCRDR, inverted"},
+    {SWD_AP(0xC, 1), 0, "read DRW (posted)"},
+    {SWD_DP(0xC, 1), 0, "RDBUFF: DCRDR"},
+    {SWD_DP(0x4, 0), 0, "CTRL/STAT: power-down request"},
+};
+
+typedef struct {
+    uint16_t stop;       /* the transaction that stopped the run, or SS_N */
+    uint32_t v[SS_N];    /* the data read (a write's own value) */
+    uint16_t res[SS_N];  /* ACK | parity bit as read << 4 | WAIT retries << 8 */
+} swd_session;
+
+static int parity32(uint32_t v)
+{
+    int p = 0;
+
+    for (; v; v >>= 1)
+        p ^= (int)(v & 1U);
+    return p;
+}
+
+/* Boot swd_session.s with the script, run it to DONE and read the results
+ * back. With dev == 0 the pins go to PMOD JA once the boot ROM has read the
+ * direct-boot strap (the firmware waits ~400 cycles before its first SWCLK
+ * edge); otherwise dev answers on SWDIO, as in the other probe tests. */
+static int swd_session_run(swd_session *s, uint8_t (*dev)(void *, msf_pins), void *ctx)
+{
+    uint16_t data[4 + 4 * SS_N], got[4 + 4 * SS_N];
+    uint32_t c, i;
+    uint8_t uio = 0x08U;                       /* SWDIO pulled up */
+
+    memset(data, 0, sizeof data);
+    data[0] = SS_N;
+    for (i = 0; i < SS_N; ++i) {
+        data[4 + 4 * i] = swd_script[i].h;
+        data[5 + 4 * i] = (uint16_t)(swd_script[i].v & 0xFFFFU);
+        data[6 + 4 * i] = (uint16_t)(swd_script[i].v >> 16);
+    }
+    if (fw_boot(&img_swd_session, data, (uint16_t)(4 + 4 * SS_N), uio))
+        return -1;
+    if (!dev) {
+        for (c = 0; c < 64U; ++c)
+            cycle(uio);
+        msf_release_pins();
+    }
+    for (c = 0; c < 3000000U; ++c) {
+        msf_pins p = cycle(uio);
+
+        if (p.uo == DONE)
+            break;
+        if (dev)
+            uio = dev(ctx, p);
+    }
+    CHECK(c < 3000000U, "the SWD session never finished");
+    if (dump_ram(0, (uint16_t)(4 + 4 * SS_N), got))
+        return -1;
+    s->stop = got[1];
+    for (i = 0; i < SS_N; ++i) {
+        s->v[i] = got[5 + 4 * i] | (uint32_t)got[6 + 4 * i] << 16;
+        s->res[i] = got[7 + 4 * i];
+    }
+    return 0;
+}
+
+static const char *cortex_m_name(uint32_t cpuid)
+{
+    switch ((cpuid >> 4) & 0xFFFU) {
+    case 0xC20: return "Cortex-M0";
+    case 0xC60: return "Cortex-M0+";
+    case 0xC21: return "Cortex-M1";
+    case 0xC23: return "Cortex-M3";
+    case 0xC24: return "Cortex-M4";
+    case 0xC27: return "Cortex-M7";
+    case 0xD20: return "Cortex-M23";
+    case 0xD21: return "Cortex-M33";
+    default:    return "an unknown Arm core";
+    }
+}
+
+/* What any Cortex-M with an SW-DP answers: every ACK OK, the read parity
+ * right, a DPIDR designed by Arm, the power-up acknowledged, a MEM-AP at
+ * AP 0, an Arm CPUID, and DCRDR (a debug data register, harmless to write
+ * while the core runs) reading back both patterns. Prints what it found. */
+static int swd_check_cortex_m(const swd_session *s)
+{
+    uint32_t i;
+
+    if (s->stop < SS_N) {
+        unsigned ack = s->res[s->stop] & 7U;
+
+        CHECK(0, "transaction %d (%s): ACK %d%s", (int)s->stop, swd_script[s->stop].what,
+              (int)ack, ack == 2U ? " (WAIT, on every retry)" : ack == 4U ? " (FAULT)"
+              : " (no answer: is the target powered, SWCLK on JA uio2, SWDIO on uio3, GND?)");
+    }
+    CHECK(s->stop == SS_N, "the session stopped at %d of %d", (int)s->stop, SS_N);
+    for (i = 0; i < SS_N; ++i)
+        if (swd_script[i].h & 2U)
+            CHECK(((s->res[i] >> 4) & 1U) == (unsigned)parity32(s->v[i]),
+                  "transaction %d (%s): parity error on %04x%04x", (int)i, swd_script[i].what,
+                  HEX32(s->v[i]));
+    CHECK((s->v[SS_DPIDR] & 0xFFFU) == 0x477U, "DPIDR %04x%04x: not an Arm SW-DP",
+          HEX32(s->v[SS_DPIDR]));
+    CHECK((s->v[SS_STAT] & 0xA0000000U) == 0xA0000000U,
+          "CTRL/STAT %04x%04x: power-up not acknowledged", HEX32(s->v[SS_STAT]));
+    CHECK(((s->v[SS_IDR] >> 13) & 0xFU) == 8U, "AP 0 IDR %04x%04x: not a MEM-AP",
+          HEX32(s->v[SS_IDR]));
+    CHECK((s->v[SS_CPUID] >> 24) == 0x41U, "CPUID %04x%04x: not an Arm core",
+          HEX32(s->v[SS_CPUID]));
+    CHECK(s->v[SS_R1] == SWD_PAT && s->v[SS_R2] == (uint32_t)~SWD_PAT,
+          "DCRDR read back %04x%04x and %04x%04x after writing %04x%04x and %04x%04x",
+          HEX32(s->v[SS_R1]), HEX32(s->v[SS_R2]), HEX32(SWD_PAT), HEX32(~SWD_PAT));
+    msf_printf("    SWD target: DPIDR %04x%04x, AP IDR %04x%04x, CPUID %04x%04x = %s r%dp%d\r\n",
+               HEX32(s->v[SS_DPIDR]), HEX32(s->v[SS_IDR]), HEX32(s->v[SS_CPUID]),
+               cortex_m_name(s->v[SS_CPUID]), (int)((s->v[SS_CPUID] >> 20) & 0xFU),
+               (int)(s->v[SS_CPUID] & 0xFU));
+    return 0;
+}
+
+/* The session against the C model, set up as a Cortex-M4 r0p1: the script,
+ * firmware and checks of swd_mcu, plus two WAITs the firmware retries. */
+static int test_swd_session_model(void)
+{
+    static const uint32_t addr[2] = {CM_CPUID, CM_DCRDR}, val[2] = {0x410FC241U, 0};
+    msf_swd_target t;
+    swd_session s;
+
+    msf_swd_init(&t, addr, val, 2, 2U);        /* the first DRW access: WAIT twice */
+    if (swd_session_run(&s, swd_dev, &t) || swd_check_cortex_m(&s))
+        return -1;
+    CHECK(s.v[SS_DPIDR] == MSF_SWD_DPIDR && s.v[SS_IDR] == MSF_SWD_IDR &&
+          s.v[SS_CPUID] == 0x410FC241U, "DPIDR %04x%04x IDR %04x%04x CPUID %04x%04x",
+          HEX32(s.v[SS_DPIDR]), HEX32(s.v[SS_IDR]), HEX32(s.v[SS_CPUID]));
+    CHECK((s.res[SS_CPUID_POST] >> 8) == 2U && (s.res[SS_TAR_CPUID] >> 8) == 0U,
+          "WAIT retries %d, want 2", s.res[SS_CPUID_POST] >> 8);
+    CHECK(t.mode == 2 && t.errors == 0U && t.ctrl == 0U && t.csw == 0x23000002U &&
+          msf_swd_mem(&t, CM_DCRDR) == (uint32_t)~SWD_PAT,
+          "target mode %d, %d errors, CTRL %04x%04x, CSW %04x%04x, DCRDR %04x%04x", t.mode,
+          (int)t.errors, HEX32(t.ctrl), HEX32(t.csw), HEX32(msf_swd_mem(&t, CM_DCRDR)));
+    return 0;
+}
+
+/* Board only: the same session with a real Cortex-M on PMOD JA (3.3 V). */
+static int test_swd_mcu(void)
+{
+    swd_session s;
+
+    if (swd_session_run(&s, 0, 0))
+        return -1;
+    return swd_check_cortex_m(&s);
+}
+
 /* four hardware threads (test_threads): three exact square waves at once,
  * and the FIFO handing T0's counts to T3 in order (four_threads.s) */
 static int test_four_threads_fifo(void)
@@ -3897,6 +4089,7 @@ static const msf_test tests[] = {
     {"spi_flash", test_spi_flash},
     {"i2c_target_eeprom", test_i2c_target_eeprom},
     {"swd_probe", test_swd_probe},
+    {"swd_session_model", test_swd_session_model},
     {"four_threads_fifo", test_four_threads_fifo},
     {"mon_uart_decodes_and_times", test_mon_uart_decodes_and_times},
     {"mon_uart_break", test_mon_uart_break},
@@ -3945,7 +4138,14 @@ static const msf_test tests[] = {
     {"cap_overflow_flag", test_cap_overflow_flag},
 };
 
+/* Tests that need a part on PMOD JA: never in the full run, only by name
+ * (msf_tests_run("swd_mcu")). */
+static const msf_test board_tests[] = {
+    {"swd_mcu", test_swd_mcu},
+};
+
 #define NTESTS ((int)(sizeof tests / sizeof tests[0]))
+#define NBOARD ((int)(sizeof board_tests / sizeof board_tests[0]))
 
 int msf_tests_count(void)
 {
@@ -3966,27 +4166,26 @@ int msf_tests_run(const char *only)
         msf_printf("msf-hil: PS EMIO GPIO initialisation failed\r\n");
         return -1;
     }
-    for (i = 0; i < NTESTS; ++i) {
+    for (i = 0; i < NTESTS + NBOARD && !msf_link_fault(); ++i) {
+        const msf_test *t = i < NTESTS ? &tests[i] : &board_tests[i - NTESTS];
         int rc;
 
-        if (only && strcmp(only, tests[i].name) != 0)
+        if (only ? strcmp(only, t->name) != 0 : i >= NTESTS)
             continue;
-        msf_printf("msf-hil: %s\r\n", tests[i].name);
+        msf_printf("msf-hil: %s\r\n", t->name);
         msf_digest_reset();
-        rc = tests[i].run();
+        rc = t->run();
         if (msf_link_fault()) {
             msf_printf("    FAIL: the PL never acknowledged a step request\r\n");
             rc = -1;
         }
         digest = msf_digest(&steps);
-        msf_printf("msf-hil: digest %s %04x%04x over %d steps\r\n", tests[i].name,
+        msf_printf("msf-hil: digest %s %04x%04x over %d steps\r\n", t->name,
                    (unsigned)(digest >> 16), (unsigned)(digest & 0xFFFFU), (int)steps);
-        msf_printf("msf-hil: %s %s\r\n", rc ? "FAIL" : "PASS", tests[i].name);
+        msf_printf("msf-hil: %s %s\r\n", rc ? "FAIL" : "PASS", t->name);
         ++ran;
         if (rc)
             ++failed;
-        if (msf_link_fault())
-            break;
     }
     msf_reset(0, 0, 0);
     msf_release_pins();

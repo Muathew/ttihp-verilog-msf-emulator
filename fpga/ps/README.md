@@ -10,6 +10,7 @@ the msfcore in the PL. It talks to the core only through 32 PS EMIO GPIO bits
 | `common/msf_emio_xgpiops.c` | HAL on the PS GPIO controller (board) |
 | `common/msf_link.[ch]` | reset, pin ownership, single-step, boot ROM parallel protocol |
 | `loader/` | loads one image (`generate_image.py`), starts it, hands the pins to PMOD JA |
+| `mcu_test/` | Vitis app that loads the UART/I2C/SPI peer for an LP-MSPM0G3519 on PMOD JA and prints what it reports |
 | `hil/msf_proto.[ch]` | protocol models in C: UART, SPI slave, I2C slave, USB LS, 10BASE-T, CRCs |
 | `hil/msf_tests.[ch]` | the firmware tests of `test/test_firmware.py` and the parallel boot tests |
 | `hil/firmware/` | HIL helpers: `dump_ram.s` (reads data RAM back), `boot_probe.s` |
@@ -84,6 +85,12 @@ every 6,000,000 cycles, so it blinks at exactly 1 Hz on the 12 MHz
 `pl_clk0`, with nothing connected to PMOD JA. To re-run whatever is
 already in SRAM without reloading it, call `msf_restart()`.
 
+To run the LP-MSPM0G3519 UART, I2C and SPI tests, follow
+[`mcu_test/README.md`](mcu_test/README.md). Its Vitis app loads
+`firmware/mcu_protocol_target.s`, releases PS ownership so PMOD JA
+connects to UIO[0:7], and prints the events the firmware sends on `uo_out`.
+Unlike the C tests below, the core runs free at 12 MHz there, not stepped.
+
 ## Tests
 
 | C test | Ports (cocotb) | Checks at the pins |
@@ -102,8 +109,8 @@ already in SRAM without reloading it, call `msf_restart()`.
 | `threads_blink_and_echo` | `test_fw_threads_blink_and_echo` | PS is the UART host on uio1; T1 echo on uio0; T0 half period exactly 500 |
 
 The tests above passed on the AUP-ZU3 (23 Oct 2026). These were ported
-since and so far pass in simulation only (`docs/plan.md` §2.3); they need
-no new bitstream:
+since, and all 67 then passed on the board in a later run
+([the FPGA port doc](../../docs/fpga.md)):
 
 | C tests | Ports (cocotb) | Checks at the pins |
 |---|---|---|
@@ -119,6 +126,7 @@ no new bitstream:
 | `fw_ws2812` | `test_firmware.py` | 15-cycle bits, 10/5 high, colours in order, latch gap |
 | `filter_*` 4, `rx_manchester_*` 2 | `test_peripherals.py` | glitch filter (widths, every pin, delay, spiky UART); Manchester RX with jitter and loopback |
 | `debug_*` 5, `tmo_per_thread` | `test_debug.py`, `test_threads.py` | the debug view (one core cycle a read: the wrapper captures the pins after a step); per-thread timeouts |
+| `swd_session_model` | — | `hil/firmware/swd_session.s` against the SW-DP model set up as a Cortex-M4: the script and checks of `swd_mcu`, plus WAIT retries |
 
 Where a Python test reads registers or SRAM, small firmware in
 `hil/firmware/` stores the result in RAM and the C side reads it back with
@@ -126,6 +134,39 @@ Where a Python test reads registers or SRAM, small firmware in
 
 Random data comes from a fixed-seed xorshift PRNG, so the byte values differ
 from the Python tests but every run is the same.
+
+## SWD with a microcontroller on PMOD JA (`swd_mcu`)
+
+The one test with a real part: the core is the SWD probe and any Cortex-M
+with an SW-DP is the target (TI's TM4C, MSP432, MSPM0 and others; not the
+MSP430, which has Spy-Bi-Wire instead). It is never in the full run; build
+the `hil` app with `MSF_HIL_MCU` defined (Vitis: C/C++ build settings,
+symbols) and it runs `swd_mcu` alone.
+
+Wiring (PMOD JA is 3.3 V, so a 3.3 V target): SWCLK to JA bit 2 (`uio[2]`),
+SWDIO to JA bit 3 (`uio[3]`), and ground to ground; power the target from
+its own supply. With the usual Pmod numbering bits 0-3 are pins 1-4; check
+it against the board's manual. The target's own debugger must not drive the
+two lines: on a LaunchPad with an XDS110, remove the SWDIO and SWCLK
+jumpers of the isolation block and wire to the target side.
+
+The PS cannot reach the core's UART while PMOD JA is connected (the wrapper
+gives `uio_in` to one or the other), so `swd.s`'s command loop is not used.
+`swd_session.s` takes a list of transactions in data RAM, runs them alone
+(line reset and JTAG-to-SWD switch first, WAITs retried), and the PS reads
+the results back after the pins return. The session reads DPIDR, powers up
+debug, reads AP 0's IDR and the CPUID at `0xE000ED00`, writes two patterns to
+DCRDR (`0xE000EDF8`, a debug data register that is safe to write while the
+core runs) and reads them back, then drops the power-up request. A pass
+prints what it found, e.g.
+`SWD target: DPIDR 2ba01477, AP IDR 24770011, CPUID 410fc241 = Cortex-M4 r0p1`.
+A failure names the transaction and its ACK; ACK 0 or 7 means no answer
+(power, wiring, or the debugger still on the lines).
+
+`swd_session_model` runs the same firmware, script and checks against the C
+model, in simulation and on the board. The hand-over to PMOD JA was checked
+in simulation, where nothing is plugged in: `swd_mcu` stops at the first
+transaction with ACK 0.
 
 ## Adding a protocol test
 

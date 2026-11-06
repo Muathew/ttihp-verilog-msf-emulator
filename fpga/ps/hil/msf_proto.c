@@ -1041,7 +1041,7 @@ static uint32_t swd_read(msf_swd_target *t, int ap, int a)
     uint32_t reg, val = 0, old;
 
     if (!ap)
-        return a == 0x0 ? MSF_SWD_DPIDR : a == 0x4 ? t->ctrl | ((t->ctrl >> 1) & 0x50000000U)
+        return a == 0x0 ? MSF_SWD_DPIDR : a == 0x4 ? t->ctrl | ((t->ctrl << 1) & 0xA0000000U)
              : a == 0x8 ? 0U : t->rdbuff;
     reg = (t->select & 0xF0U) | (uint32_t)a;
     if (reg == 0x00U)

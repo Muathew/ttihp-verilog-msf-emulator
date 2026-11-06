@@ -21,5 +21,12 @@ for flow in "" "-DSDT"; do
     -I"$repo_root/fpga/tests/vitis_stubs" -I"$tmp_dir" -I"$ps/common" -I"$ps/hil" \
     "$ps/hil/src/main.c" "$ps/hil/msf_tests.c" "$ps/hil/msf_proto.c" \
     "$ps/common/msf_link.c" "$ps/common/msf_emio_xgpiops.c"
+  # the swd_mcu-only build (a microcontroller on PMOD JA)
+  gcc -std=c99 -Wall -Wextra -Werror -fsyntax-only $flow -DMSF_HIL_MCU \
+    -I"$repo_root/fpga/tests/vitis_stubs" -I"$tmp_dir" -I"$ps/common" -I"$ps/hil" \
+    "$ps/hil/src/main.c"
+  gcc -std=c99 -Wall -Wextra -Werror -fsyntax-only $flow \
+    -I"$repo_root/fpga/tests/vitis_stubs" -I"$tmp_dir" -I"$ps/common" \
+    "$ps/mcu_test/src/main.c"
 done
 printf '%s\n' "PASS: PS loader and protocol-test sources compile against the Vitis stubs"
