@@ -169,11 +169,13 @@ Details in [`docs/fpga.md`](fpga.md) and
 [`fpga/ps/README.md`](../fpga/ps/README.md).
 
 One board test works differently: the core runs free at 12 MHz and a real
-LP-MSPM0G3519 drives its UART, I2C and SPI. By burst 2662 of the first run
-(5 Nov) the FPGA's counts had UART and I2C exact, and SPI with 23 bad bytes and
-60 extra ones, all before burst 2600. The likely cause is reproduced in
-simulation and fixed, but not confirmed on the board, and the MCU's own log has
-not been read ([`external-mcu_testing.md`](../external-mcu_testing.md)).
+LP-MSPM0G3519 drives its UART, I2C and SPI. An early run on firmware v2 counted
+60 SPI bytes that no pass sent, which led to firmware v3. With v3 (6 Nov), UART
+and SPI passed at both ends on all 39 passes with no bad bytes at the FPGA, and
+the on-chip logic analyser shows a correct I2C read on the wires. The MCU's own
+I2C test read each byte a pass late, which failed pass 1 after each reset; its
+fix has not yet run on the board
+([`external-mcu_testing.md`](../external-mcu_testing.md)).
 
 ## 6. Pre-hardening check — `tools/synth_check.py`
 
@@ -432,7 +434,7 @@ change behaviour.
 | No firmware deadline is ever missed, on any path | `tools/msf_timing.py` (§6b): every `WAIT_CMP` in the firmware issues at least 9 cycles before its target; cross-checked against the ISA model; rejects a too-fast UART |
 | A missed deadline is never silent | `WAIT_CMP` with a passed target releases at once with Z=1 and sets LATE (isa.md §5): `test_wait_cmp_late_boundaries` (0 and 255 cycles behind are late, 256 behind and 1 ahead are not), `test_late_flags_per_thread`; formal F10, F11 and mutant B4 (§3); random programs with late targets, RTL == model (§2) |
 | UART, SPI, I2C, USB LS, 10BASE-T TX run as firmware | `test_firmware` against independent decoders and device models; the same checks in C on the AUP-ZU3 board, 14/14 (§5) |
-| Running free at 12 MHz on the FPGA, the core takes UART, I2C and SPI traffic from a real LP-MSPM0G3519 | First run on the AUP-ZU3 (§5): the FPGA's own counts. Still open: the MCU's log, and a run of the current firmware ([`external-mcu_testing.md`](../external-mcu_testing.md)) |
+| Running free at 12 MHz on the FPGA, the core takes UART, I2C and SPI traffic from a real LP-MSPM0G3519 | On the AUP-ZU3 with firmware v3 (§5, 6 Nov): both logs and the on-chip logic analyser agree on UART and SPI, and I2C is right on the wires. Still open: a run of the MCU's I2C test fix, and Vivado's timing at that clock ([`external-mcu_testing.md`](../external-mcu_testing.md)) |
 | The chip can be an SPI device at up to 750 kHz with no dummy byte, and an I2C device at 100 kHz (400 kHz with stretching) | `test_targets`: data in all modes, latencies 4 / 5 / 8 / 13 cycles as derived, a 16-cycle SCK works and 14 fails, 400 kHz needs `STRETCH` |
 | The chip can stand in for a 25xx SPI flash: ID, status, read, page program and erase, with WIP set while an erase runs | `test_targets` flash tests against a controller model and a reference model: all modes, the 512-byte wrap, program with and without WEL, every erase command polled during the erase; a 28-cycle SCK works and 26 fails |
 | A bus monitor never reports a timing fault on a legal I2C bus, and reports the real faults with their lengths | `test_monitors`: random legal buses raise no event; single faults at every data bit, at 100 kHz and the legal minimum, reported once each within the stated accuracy |

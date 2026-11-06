@@ -39,7 +39,57 @@ The 60 extra bytes and the 23 bad ones all came before burst 2600. At least 37 o
 60 carried the right value, so they were not noise. The likely cause was the MCU's pins
 floating during a flash or a reset, with the first bug in the next section. This was
 reproduced in simulation but not confirmed on the board: if it is right, burst 1 of that
-run has 98 events (14 for the pass, 37 ok, 2 each for the 23 bad, 1 quiet-reset).
+run has 98 events (14 for the pass, 37 ok, 2 each for the 23 bad, 1 quiet-reset). The
+6 November logic analyser table does show that pin state on the board, below.
+
+## Later board runs, 5 and 6 November
+
+| Run | FPGA firmware | Up first | UART at the MCU | SPI at the MCU | I2C at the MCU |
+| --- | --- | --- | --- | --- | --- |
+| 5 Nov, second | v2 | MCU, about 15 passes ahead | `TIMEOUT` 314 of 314, with `OVERRUN` whenever the FPGA echoed | `FAIL` 314 of 314, as expected: the MCU wanted v3's bytes | `rx=A5` in the 59 passes shown with the FPGA up |
+| 6 Nov | v3 | FPGA | `PASS` 39 of 39 | `PASS` 39 of 39 | `PASS` 37 of 39, `rx=--` on pass 1 of both MCU runs |
+
+The 6 November FPGA log covers the second MCU run (31 passes). It starts at the `LA`
+table, so it has no boot lines or burst 1, though its totals include them. They end at
+UART 31, SPI ok 248, bad 0, quiet-resets 0, I2C acked 62, read-nack 31, read-ack 0,
+watchdog 0, framing 0, with every burst 14 events and `lost 14` for the pass missed
+while the table printed. The `peer firmware v3` line is not in the file, but MISO idles
+high and answers with the complement, which only v3 does.
+
+What that run shows:
+
+- **The wires carry a correct pass.** Decoding its `LA` table: UART `01` each way; eight
+  SPI frames, MOSI `55 AA 12 34 DE AD BE EF` and MISO `AA 55 ED CB 21 52 41 10`, with
+  MISO steady at least 2.3 us before every SCK rise; I2C `START, A0 ACK, 00 ACK, repeated
+  START, A1 ACK, A5 NACK, STOP`.
+- **The I2C failure is the MCU's test, not the bus.** The FPGA sent `0xA5` on the very
+  pass the MCU marks as failed. The manual (SLAU846, "Bus Status Flags") has BUSY set
+  only after the repeated START, about 12 us after the MCU starts the read, and the test
+  checked BUSY after 1 us. So it looked in the FIFO about 190 us too early, found nothing
+  on pass 1, and left that byte for pass 2 to read, and so on: every `PASS` was the byte
+  of the pass before. `read MSR=00000040 BUS-BUSY` on all 39 passes is the sign, as a
+  read that has ended with its STOP shows `IDLE`. This comes from the logs and the manual
+  and is not yet seen directly: the next section's fix is the test of it.
+- **The UART echo is real.** The MCU starts SPI 6 us after the middle of the echo's stop
+  bit, and 82 us after that of its own byte, so it did wait for the FPGA's byte and not
+  its own TX picked up on RX. `spins` is 565 to 567 on every pass.
+- **Starting the FPGA first cured the UART, most likely.** The earlier failure never
+  cleared once the MCU had started first, and it is gone with no MCU code change. The
+  FPGA's firmware changed between those runs too, though only in SPI. Why that start
+  stuck the UART is not known.
+- **The floating-pin state is real.** The FPGA reads `SCK=1 CS=0 MOSI=1` until the MCU's
+  first SPI frame after a reset, and then `SCK=0 CS=1 MOSI=0` between frames. SCK high
+  with CS low is the state in which v2 counted false bytes; v3 counts none (bad 0,
+  quiet-resets 0).
+
+## What changed on 6 November
+
+MCU code only, so the FPGA needs no rebuild.
+
+| Where | Change | Why |
+| --- | --- | --- |
+| MCU, I2C | The read waits for `IDLE` instead of BUSY, then takes the byte. The FIFO is emptied at the start of each pass, and the log counts what was there as `stale=` | See above: the old wait ended at once, so the verdict was always a pass late |
+| MCU, UART | Each pass starts by reading any byte left in the receive register | A full register sets no new interrupt, so a byte left there could block every later one. This should clear whatever the MCU-first start left behind |
 
 ## What changed on 5 November
 
@@ -76,14 +126,14 @@ uses the MSPM0's timing from its generated configuration.
 
 ## Running it
 
-No new bitstream is needed: the A53 loads the firmware at run time. Both sides need
-rebuilding after the changes above.
+No new bitstream is needed: the A53 loads the firmware at run time. After 6 November
+only the MCU needs rebuilding, if the FPGA's app is already on firmware v3.
 
-1. Turn on logging in PuTTY for both consoles, as a long run soon outgrows the
-   scrollback: Session, Logging, *All session output*, with a file name.
+1. Turn on logging in PuTTY for both consoles before anything starts, as a long run soon
+   outgrows the scrollback: Session, Logging, *All session output*, with a file name.
 2. FPGA: on the Vitis machine, `vitis -s fpga/ps/mcu_test/build_vitis.py`, then
    program the same bitstream and launch the ELF as before. Open PuTTY on the Zynq
-   console (COM3) first.
+   console (COM3) first. Load the FPGA before the MCU starts.
 3. MCU: rebuild `mcu_ext/protocol_tests` in CCS and flash it.
 4. Open a second terminal on the LaunchPad's **XDS110 Application/User UART** port
    (Device Manager shows both XDS110 ports), 115200 8N1. J12 and J13 must be in their
@@ -93,6 +143,9 @@ rebuilding after the changes above.
 5. Let it run for at least 5 passes (one a second).
 6. Hold the MCU's reset button for about 3 s and let go. With firmware v3 this should
    add no SPI bytes.
+7. To test the UART's recovery, start the MCU with the FPGA not loaded, then load the
+   FPGA. UART should pass from the first pass after that, perhaps with `stray=` above 0
+   once. A UART that keeps timing out would mean the 6 November change did not cure it.
 
 ### What to send back
 
@@ -123,7 +176,7 @@ MCU SPI  rx=    AA 55 ED CB 21 52 41 10 stale=0 -> PASS
 MCU I2C  before MSR=... IDLE
 MCU I2C  write  MSR=... BUS-BUSY          (no STOP yet)
 MCU I2C  read   MSR=... IDLE
-MCU I2C  expect=A5 rx=A5 -> PASS
+MCU I2C  expect=A5 rx=A5 stale=0 -> PASS
 
 FPGA peer firmware v3 is running
 FPGA ---- burst 1: 14 events ----
@@ -138,9 +191,10 @@ FPGA totals: UART 1 | SPI ok 8 bad 0 quiet-resets 0 | I2C acked 2 other 0 ptr 1 
 FPGA pins RX=1 TX=1 SCL=1 SDA=1 SCK=0 CS=1 MOSI=0 MISO=1 moved: RX TX SCL SDA SCK CS MOSI MISO
 ```
 
-That is the shape of a good pass. The FPGA lines are as the board printed them on
-5 November, apart from the firmware version and MISO's idle level, which v3 changes.
-The MCU lines come from the code, as no MCU log has been read yet.
+That is the shape of a good pass. The lines are as the board printed them on 6 November,
+except for `peer firmware v3`, which came before that log file starts, and the I2C
+`read` status and `stale=`, which the 6 November change sets and no board has printed
+yet.
 
 A normal burst is 14 events: 1 UART, 8 SPI and 5 I2C. The totals should keep these
 sums: `SPI ok` + `bad` = 8 x `UART`, and `I2C acked` = 2 x `UART`. One pass is lost
@@ -162,6 +216,9 @@ The two sides together say where a fault is:
 | MCU `rx=` wrong, FPGA says MOSI ok | MISO wire, or MISO timing; compare with the `LA` table |
 | MCU `rx=` the same as `tx=` | The FPGA is on old firmware (no `v3` line), or MISO is only picking up MOSI: the MISO wire |
 | `SPI ok` + `bad` above 8 x `UART`, or a burst well over 14 events | SPI bytes no pass sent. With v3 that means SCK really toggles while the MCU is not driving it (its reset, say), which would take pulls on the JA pins in the XDC and a new bitstream |
+| MCU I2C `rx=--` or `stale=` above 0, FPGA says `sent 0xA5` | The byte was on the wire and the MCU did not take it in time: its test, not the bus. It should not happen since 6 November |
+| MCU UART `stray=` above 0 once, then 0 | Bytes came in with no test waiting, as when the MCU starts before the FPGA. Harmless |
+| MCU UART `TIMEOUT` and `OVERRUN` on every pass, FPGA says `UART got` | Echoes reach the MCU and its interrupt does not take them, as on 5 November. It should not happen since 6 November |
 | MCU `ADDRESS-NOT-ACKED`, no FPGA `address byte` line | SCL or SDA swapped or not connected, or MCU address wrong |
 | FPGA `controller ACK`, then `WATCHDOG` | The MCU read is ACKing its last byte again |
 | FPGA `WARNING: missed N events` once, right after the `LA` table | Expected: the table takes over a second to print (14 events, one pass, on 5 November) |
@@ -174,28 +231,36 @@ after its rising edges.
 
 ## Status
 
-**On the board:** firmware v2 and the MCU code of 4 November, in the first run above.
-The MCU's log and the start of the FPGA's have not been read.
+**On the board, 6 November:** firmware v3 and the MCU code of 5 November, FPGA started
+first. UART and SPI pass both ways on every pass. I2C is correct on the wires and `0xA5`
+reaches the MCU, but the MCU's test counted each one a pass late.
 
-**Not on the board yet:** firmware v3 and the MCU's new SPI check. Run again as above:
-the aim is 0 bad and `SPI ok` = 8 x `UART` from the first burst, with the MCU's totals
-showing no failures.
+**Not on the board yet:** the MCU's I2C and UART changes of 6 November. Rebuild the MCU
+and run again as above. The aim is no failures in the MCU's totals from pass 1, with
+`stale=0` and `read MSR=... IDLE`, and 0 bad and `SPI ok` = 8 x `UART` at the FPGA as
+now. Step 6 is also still to show: neither 6 November log shows a 3 s reset hold for
+certain.
 
 Checked in simulation (RTL of both `src/` and `fpga/rtl`): one whole pass with the
 MSPM0's timing, SPI and I2C limits, I2C SDA holds 1-60 cycles against 16 clock
 phases, floating pins, and a MOSI that only follows MISO. The monitor's C code was run
-on the PC on a real `uo_out` trace from that simulation. The MCU's new SPI code ran on
-the PC against a stand-in for the SPI peripheral, but has not been through TI's
-compiler. MSPM0 timing is modelled from its configuration and TI's documents, so its
-real waveforms may still differ. That is what the `LA` table is for.
+on the PC on a real `uo_out` trace from that simulation. MSPM0 timing is modelled from
+its configuration and TI's documents, so its real waveforms may still differ. That is
+what the `LA` table is for.
+
+The MCU's 6 November changes ran on the PC against a stand-in for its UART, SPI and I2C,
+written from TI's manual and the board's timing. On it the old I2C code prints the
+board's lines, with `rx=--` on pass 1 and `BUS-BUSY` throughout, and the new code passes
+from pass 1 and also handles an address NACK, a read that never ends and a stale byte.
+A stuck UART, set up by hand, stays stuck with the old code and clears with the new. They
+are type-checked against TI's headers but have not been through TI's compiler.
 
 Still open:
 
 - The core's timing at 12 MHz on the ZU3 has no Vivado report on record yet
   ([`docs/fpga.md`](docs/fpga.md)).
-- The UART test still echoes the same byte both ways, as an echo does, so a TX picked
-  up on RX would also read as a pass at the MCU. The FPGA log does show it received
-  each byte, and the MCU's `spins` count should show the longer wait of a real echo.
+- Why starting the MCU first stuck the UART is not known, and neither TI's manual nor its
+  errata describe it. Step 7 tests the cure, not the cause.
 
 PA0 (SDA) also drives the LaunchPad's red LED through J18, so that LED may flicker
 with I2C traffic. It should be harmless; if SDA looks wrong in the table, try with J18

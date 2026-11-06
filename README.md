@@ -66,9 +66,10 @@ claim to its evidence):
    certifies that no `WAIT_CMP` in the firmware is ever late, on any path,
    and is itself cross-checked against the ISA model.
 6. **The FPGA board** (AUP-ZU3): 14 of 14 C protocol tests pass on the same
-   core, stepped by the Zynq. Running free at 12 MHz, the core has also taken
-   UART, I2C and SPI traffic from a real LP-MSPM0G3519
-   ([first run, still open](external-mcu_testing.md)).
+   core, stepped by the Zynq. Running free at 12 MHz, the core has also passed
+   UART and SPI both ways with a real LP-MSPM0G3519, and answered its I2C
+   correctly on the wires
+   ([one MCU test fix still to run](external-mcu_testing.md)).
 7. **Sign-off in CI**: a job that fails on any setup or hold violation, DRC,
    antenna or LVS error, because the GDS badge alone does not.
 8. **The routed netlist equals the RTL**, proved formally
