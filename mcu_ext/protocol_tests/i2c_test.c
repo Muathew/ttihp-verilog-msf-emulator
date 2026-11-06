@@ -29,15 +29,31 @@ static uint32_t i2cStatus[I2C_POINTS];
 static bool i2cReached[I2C_POINTS];
 static uint8_t i2cReadByte;
 static bool i2cByteValid;
+static uint32_t i2cStale;
 
 void I2C_Test_init(void)
 {
     i2cReadByte = 0;
     i2cByteValid = false;
+    i2cStale = 0;
 }
 
-/* Wait for the transfer just started to end and note the status. */
-static TestStatus i2cFinish(I2cPoint point)
+/* Note the status where a wait ended, and what it means. */
+static TestStatus i2cResult(I2cPoint point, uint32_t status, bool ended)
+{
+    i2cStatus[point] = status;
+    i2cReached[point] = true;
+
+    if ((status & (DL_I2C_CONTROLLER_STATUS_ERROR |
+                   DL_I2C_CONTROLLER_STATUS_ARBITRATION_LOST)) != 0U) {
+        return TEST_FAIL;
+    }
+
+    return ended ? TEST_PASS : TEST_TIMEOUT;
+}
+
+/* Wait for the write just started to end: BUSY falls, with no STOP on the bus. */
+static TestStatus i2cFinishWrite(void)
 {
     uint32_t timeout = I2C_TEST_TIMEOUT;
     uint32_t status;
@@ -49,19 +65,33 @@ static TestStatus i2cFinish(I2cPoint point)
         timeout--;
     } while (((status & DL_I2C_CONTROLLER_STATUS_BUSY) != 0U) && (timeout > 0U));
 
-    i2cStatus[point] = status;
-    i2cReached[point] = true;
+    return i2cResult(I2C_AFTER_WRITE, status,
+                     (status & DL_I2C_CONTROLLER_STATUS_BUSY) == 0U);
+}
 
-    if ((status & DL_I2C_CONTROLLER_STATUS_BUSY) != 0U) {
-        return TEST_TIMEOUT;
-    }
+/*
+ * Wait for the read just started to end with its STOP. Not by BUSY: the manual
+ * (SLAU846, "Bus Status Flags") has BUSY set only after the repeated START, about
+ * 12 us after the read is started here, against the 1 us of the delay above. So BUSY
+ * looked finished at once and the byte was looked for about 190 us too soon: on the
+ * board that was rx=-- on pass 1, then each pass read the byte of the pass before.
+ * IDLE stays clear from the end of the write until the STOP.
+ */
+static TestStatus i2cFinishRead(void)
+{
+    uint32_t timeout = I2C_TEST_TIMEOUT;
+    uint32_t status;
 
-    if ((status & (DL_I2C_CONTROLLER_STATUS_ERROR |
-                   DL_I2C_CONTROLLER_STATUS_ARBITRATION_LOST)) != 0U) {
-        return TEST_FAIL;
-    }
+    do {
+        status = DL_I2C_getControllerStatus(I2C_0_INST);
+        timeout--;
+    } while (((status & (DL_I2C_CONTROLLER_STATUS_IDLE |
+                         DL_I2C_CONTROLLER_STATUS_ERROR |
+                         DL_I2C_CONTROLLER_STATUS_ARBITRATION_LOST)) == 0U) &&
+             (timeout > 0U));
 
-    return TEST_PASS;
+    return i2cResult(I2C_AFTER_READ, status,
+                     (status & DL_I2C_CONTROLLER_STATUS_IDLE) != 0U);
 }
 
 /* After a failure: leave the bus and the controller ready for the next pass. */
@@ -86,6 +116,13 @@ TestStatus I2C_Test_run(void)
         i2cReached[i] = false;
     }
 
+    /* Whatever is still in the FIFO is not the answer to this read. */
+    i2cStale = 0;
+    while (!DL_I2C_isControllerRXFIFOEmpty(I2C_0_INST)) {
+        (void) DL_I2C_receiveControllerData(I2C_0_INST);
+        i2cStale++;
+    }
+
     i2cStatus[I2C_AT_START] = DL_I2C_getControllerStatus(I2C_0_INST);
     i2cReached[I2C_AT_START] = true;
 
@@ -104,7 +141,7 @@ TestStatus I2C_Test_run(void)
         DL_I2C_CONTROLLER_ACK_DISABLE
     );
 
-    status = i2cFinish(I2C_AFTER_WRITE);
+    status = i2cFinishWrite();
     if (status != TEST_PASS) {
         i2cRecover();
         return status;
@@ -130,7 +167,7 @@ TestStatus I2C_Test_run(void)
         DL_I2C_CONTROLLER_ACK_DISABLE
     );
 
-    status = i2cFinish(I2C_AFTER_READ);
+    status = i2cFinishRead();
 
     if (!DL_I2C_isControllerRXFIFOEmpty(I2C_0_INST)) {
         i2cReadByte = DL_I2C_receiveControllerData(I2C_0_INST);
@@ -197,6 +234,8 @@ void I2C_Test_report(TestStatus status)
     } else {
         Log_str("--");
     }
+    Log_str(" stale=");
+    Log_dec(i2cStale);
     Log_str(" -> ");
     Log_status(status);
     Log_str("\r\n");

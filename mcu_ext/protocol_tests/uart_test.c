@@ -36,7 +36,15 @@ TestStatus UART_Test_run(void)
     /*
      * Whatever came in since the last run is not the answer to this byte: RX
      * floats until the FPGA has loaded its firmware, and a late echo lands here.
+     * The interrupt normally takes it, but read here too: on the board an MCU started
+     * before the FPGA once timed out on every pass, every echo overrunning a byte
+     * that no interrupt came for. The manual sets the interrupt when a byte fills the
+     * empty register, so a byte left there can block the next, until it is read.
      */
+    while (!DL_UART_Main_isRXFIFOEmpty(UART_1_INST)) {
+        (void) DL_UART_Main_receiveData(UART_1_INST);
+        uartRxCount++;
+    }
     uartStray = uartRxCount;
     uartRxCount = 0;
     DL_UART_Main_clearInterruptStatus(UART_1_INST, UART_RX_ERRORS);
