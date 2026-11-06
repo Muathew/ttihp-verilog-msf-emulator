@@ -40,5 +40,6 @@ A pass runs all three tests before it logs anything, so that its traffic on the 
 is one short burst. `SPI_FRAME_GAP_CYCLES` in `spi_test.c` and the rates in
 `p_test.syscfg` follow the FPGA target's limits (`firmware/mcu_protocol_target.s`).
 
-The CCS build regenerates the `Debug/` files from `p_test.syscfg`. To add a source
+The CCS build regenerates the `Debug/` files from `p_test.syscfg`, so they are not kept
+in git. To add a source
 file, let CCS rebuild its makefiles; a plain `gmake` in `Debug/` will not see it.

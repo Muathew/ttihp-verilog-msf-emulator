@@ -14,7 +14,7 @@ PS software (loader, protocol tests, EMIO bit map, how to build in Vitis):
 |---|---|---|
 | `PL_USER_SW[7:0]` | `ui_in[7:0]` | inputs while the PS doesn't own the pins |
 | `PL_USER_LED[7:0]` | `uo_out[7:0]` | status / firmware output |
-| `PL_USER_PB[0]` | reset | manual reset while pressed; the board's buttons are active high (reference manual: "All GPIO inputs and outputs are active high"; `BUTTON_ACTIVE_LOW` = 0 in the wrapper) |
+| `PL_USER_PB[0]` | reset | manual reset while pressed; the board's buttons are active high (reference manual: "All GPIO inputs and outputs are active high"; `BUTTON_ACTIVE_LOW` = 0 in the wrapper). It resets the core, not the SRAM. Once the PS has released the pins, `PL_USER_SW` then picks what runs: SW0 up the SRAM's firmware, SW0 down the boot ROM, which drives `uio[0]` ([`external-mcu_testing.md`](../external-mcu_testing.md#resets)) |
 | PMOD JA `[7:0]` | `uio[7:0]` | protocol pins (3.3 V), high-Z while the PS owns the pins |
 | PS EMIO GPIO bank 3 (32 bits) | everything above | loading, single-step, pin read-back |
 
@@ -99,10 +99,10 @@ congestion, since the right sources use a few per cent of the device.
 | FPGA SRAM | `sh fpga/tests/run_sram_test.sh` | pass |
 | Wrapper: ownership, reset, status, step mode | `sh fpga/tests/run_aup_zu3_io_test.sh` | pass |
 | PS apps compile (Vitis stubs, classic and SDT drivers) | `sh fpga/tests/run_ps_loader_compile_test.sh` | pass |
-| PS C protocol tests against the RTL | `python fpga/tests/run_ps_hil.py` | 66/66 (28 Oct; 52 of them not yet run on the board) |
-| **PS C protocol tests on the AUP-ZU3 board** | the `hil` app on the PS | **14/14 (23 Oct 2026)** |
+| PS C protocol tests against the RTL | `python fpga/tests/run_ps_hil.py` | 66/66 on 28 Oct; `swd_session_model`, added 29 Oct, also passes |
+| **PS C protocol tests on the AUP-ZU3 board** | the `hil` app on the PS | **67/67, after 29 Oct; 14/14 on 23 Oct 2026** |
 | **Loader on the board** | `loader/blink.s` | **LED0 blinks** |
-| **UART, I2C, SPI against an LP-MSPM0G3519, core running free** | `fpga/ps/mcu_test` and `mcu_ext/protocol_tests` | **6 Nov, firmware v3: UART and SPI pass both ways, I2C right on the wires**; one MCU test fix still to run: see [`external-mcu_testing.md`](../external-mcu_testing.md) |
+| **UART, I2C, SPI against an LP-MSPM0G3519, core running free** | `fpga/ps/mcu_test` and `mcu_ext/protocol_tests` | **6 Nov, firmware v3: UART, SPI and I2C pass both ways on all 148 passes**: see [`external-mcu_testing.md`](../external-mcu_testing.md) |
 
 First Vivado run (19 Oct, Vivado 2024.1): `msf_bd.tcl` created the block
 design, it validated, and its HDL wrapper generated. Out-of-context
@@ -122,21 +122,40 @@ all 14 C protocol tests passed, as in simulation: `crc_check_values`,
 board's core is the four-thread v2.1 RTL: `fpga/rtl` matches `src/` except
 the SRAM wrapper and the boot ROM (`tools/check_fpga_sync.py`, run in CI).
 
+A later board run of the `hil` app, then on branch `mcu`, passed all 67 tests,
+ending `67 of 67 tests passed` and `ALL PASSED`. It came after 29 Oct, when
+the 67th test was added, and before the MCU test; its date and full log were
+not kept. A screenshot shows the last 27 tests, including CAN, the fault
+knobs, the filter, Manchester receive, the debug view and the capture engine.
+The 11 shortest of those were simulated on 6 Nov from the current `fpga/rtl`,
+and all 11 digests match the board's, so on those tests the board and the
+simulation agree on every core cycle at the pins. The bitstream came from the
+latest commit at the time (Muath); its hash was not noted. Nothing in
+`fpga/rtl` that reaches synthesis has changed since 23 Oct (`e5c391d`): the
+later edits are formal checks and the unused `tt_um_msf_bootrom_data.v`.
+
 The PS steps the core one clock at a time, so this checks logic and
 protocol behaviour on real hardware, not timing at speed. Still to record:
-the commit that was built, and Vivado's timing and utilisation.
+Vivado's timing and utilisation.
 
 The MCU test is different: the core runs free from `pl_clk0` at 12 MHz with
 a real LP-MSPM0G3519 as controller, and the PS only watches `uo_out`. With
-firmware v3 (6 Nov), UART and SPI passed at both ends on all 39 passes and the
-FPGA counted no bad bytes. I2C is right on the wires, but the MCU's test read
-each byte a pass late, which failed pass 1 after each reset. Its fix has not yet
-run on the board, and the same Vivado figures are still to record.
+firmware v3 and the MCU's I2C test fixed (6 Nov), UART, SPI and I2C passed at
+both ends on all 148 passes, from pass 1, and the FPGA counted no bad bytes. The
+same Vivado figures are still to record, so this shows the core ran at 12 MHz,
+not that timing was met.
 [`external-mcu_testing.md`](../external-mcu_testing.md) has the details.
 
 ## Open items
 
 * `fpga/rtl/tt_um_msf_bootrom_data.v` is unused (the ROM is pasted into
   `tt_um_msf_bootrom.v`).
+* The pasted ROM is one fix behind `src/`: words 79 and 80 are still in the
+  order from before 24 Oct, so on the FPGA the loader stops its TX engine before
+  releasing `uio[0]`, which drives the pin low for one cycle at handover. The PS
+  owns the pins during its boots, so JA is high-Z and nothing outside sees it.
+  It is left as it is to match the bitstream behind the board results;
+  `tools/check_fpga_sync.py` skips this file. Paste the new words before any
+  new bitstream.
 * The XDC header refers to `fpga/board/constraints/zu3.xdc`, which isn't in
   the repository; check the pins against the board schematic.

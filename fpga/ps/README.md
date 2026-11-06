@@ -109,8 +109,8 @@ Unlike the C tests below, the core runs free at 12 MHz there, not stepped.
 | `threads_blink_and_echo` | `test_fw_threads_blink_and_echo` | PS is the UART host on uio1; T1 echo on uio0; T0 half period exactly 500 |
 
 The tests above passed on the AUP-ZU3 (23 Oct 2026). These were ported
-since and so far pass in simulation only (`docs/plan.md` §2.3); they need
-no new bitstream:
+since, and all 67 then passed on the board in a later run
+([the FPGA port doc](../../docs/fpga.md)):
 
 | C tests | Ports (cocotb) | Checks at the pins |
 |---|---|---|

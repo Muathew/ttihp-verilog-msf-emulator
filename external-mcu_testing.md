@@ -47,9 +47,10 @@ run has 98 events (14 for the pass, 37 ok, 2 each for the 23 bad, 1 quiet-reset)
 | Run | FPGA firmware | Up first | UART at the MCU | SPI at the MCU | I2C at the MCU |
 | --- | --- | --- | --- | --- | --- |
 | 5 Nov, second | v2 | MCU, about 15 passes ahead | `TIMEOUT` 314 of 314, with `OVERRUN` whenever the FPGA echoed | `FAIL` 314 of 314, as expected: the MCU wanted v3's bytes | `rx=A5` in the 59 passes shown with the FPGA up |
-| 6 Nov | v3 | FPGA | `PASS` 39 of 39 | `PASS` 39 of 39 | `PASS` 37 of 39, `rx=--` on pass 1 of both MCU runs |
+| 6 Nov, first | v3 | FPGA | `PASS` 39 of 39 | `PASS` 39 of 39 | `PASS` 37 of 39, `rx=--` on pass 1 of both MCU runs |
+| 6 Nov, rerun with the MCU's fixes | v3 | FPGA | `PASS` 148 of 148 | `PASS` 148 of 148 | `PASS` 148 of 148 |
 
-The 6 November FPGA log covers the second MCU run (31 passes). It starts at the `LA`
+The first 6 November FPGA log covers the second MCU run (31 passes). It starts at the `LA`
 table, so it has no boot lines or burst 1, though its totals include them. They end at
 UART 31, SPI ok 248, bad 0, quiet-resets 0, I2C acked 62, read-nack 31, read-ack 0,
 watchdog 0, framing 0, with every burst 14 events and `lost 14` for the pass missed
@@ -68,8 +69,8 @@ What that run shows:
   checked BUSY after 1 us. So it looked in the FIFO about 190 us too early, found nothing
   on pass 1, and left that byte for pass 2 to read, and so on: every `PASS` was the byte
   of the pass before. `read MSR=00000040 BUS-BUSY` on all 39 passes is the sign, as a
-  read that has ended with its STOP shows `IDLE`. This comes from the logs and the manual
-  and is not yet seen directly: the next section's fix is the test of it.
+  read that has ended with its STOP shows `IDLE`. The rerun bears this out: with the
+  test waiting for `IDLE`, pass 1 passes and `stale=` stays 0.
 - **The UART echo is real.** The MCU starts SPI 6 us after the middle of the echo's stop
   bit, and 82 us after that of its own byte, so it did wait for the FPGA's byte and not
   its own TX picked up on RX. `spins` is 565 to 567 on every pass.
@@ -81,6 +82,18 @@ What that run shows:
   first SPI frame after a reset, and then `SCK=0 CS=1 MOSI=0` between frames. SCK high
   with CS low is the state in which v2 counted false bytes; v3 counts none (bad 0,
   quiet-resets 0).
+
+What the rerun shows: both log files start at pass and burst 33, so they have no banner,
+version line or `LA` table, but the totals in them count from the start.
+
+- **MCU:** the last totals are 148 passes each for UART, SPI and I2C, with no failures or
+  timeouts, so pass 1 passed too. All 116 passes in the file show `rx=A5`, `stale=0`,
+  `stray=0` and `read MSR=00000020 IDLE`.
+- **FPGA:** the last totals are UART 148, SPI ok 1184, bad 0, quiet-resets 0, I2C acked
+  296, ptr 148, read-nack 148, read-ack 0, watchdog 0, framing 0, and `lost 14` for the
+  pass missed while the `LA` table printed. All 116 bursts in the file have 14 events,
+  and `SPI ok` = 8 x `UART` and `I2C acked` = 2 x `UART` hold on every totals line. The
+  last burst is the MCU's pass 149, one past the end of the MCU's file.
 
 ## What changed on 6 November
 
@@ -141,9 +154,11 @@ only the MCU needs rebuilding, if the FPGA's app is already on firmware v3.
    the factory. Then reset the MCU, so its first pass is the one the FPGA's logic
    analyser records.
 5. Let it run for at least 5 passes (one a second).
-6. Hold the MCU's reset button for about 3 s and let go. With firmware v3 this should
-   add no SPI bytes.
-7. To test the UART's recovery, start the MCU with the FPGA not loaded, then load the
+6. Optional: with the FPGA left running, hold the LaunchPad's RESET button (S3) for about
+   3 s and let go. This is the MCU's reset, not PB0 on the FPGA board (see [Resets](#resets)).
+   The MCU starts again from pass 1. With firmware v3 this should add no SPI bytes: at the
+   FPGA, `SPI ok` + `bad` stays 8 x `UART` and `quiet-resets` stays 0.
+7. Optional: to test the UART's recovery, start the MCU with the FPGA not loaded, then load the
    FPGA. UART should pass from the first pass after that, perhaps with `stray=` above 0
    once. A UART that keeps timing out would mean the 6 November change did not cure it.
 
@@ -192,9 +207,7 @@ FPGA pins RX=1 TX=1 SCL=1 SDA=1 SCK=0 CS=1 MOSI=0 MISO=1 moved: RX TX SCL SDA SC
 ```
 
 That is the shape of a good pass. The lines are as the board printed them on 6 November,
-except for `peer firmware v3`, which came before that log file starts, and the I2C
-`read` status and `stale=`, which the 6 November change sets and no board has printed
-yet.
+except for `peer firmware v3`, which came before those log files start.
 
 A normal burst is 14 events: 1 UART, 8 SPI and 5 I2C. The totals should keep these
 sums: `SPI ok` + `bad` = 8 x `UART`, and `I2C acked` = 2 x `UART`. One pass is lost
@@ -222,6 +235,7 @@ The two sides together say where a fault is:
 | MCU `ADDRESS-NOT-ACKED`, no FPGA `address byte` line | SCL or SDA swapped or not connected, or MCU address wrong |
 | FPGA `controller ACK`, then `WATCHDOG` | The MCU read is ACKing its last byte again |
 | FPGA `WARNING: missed N events` once, right after the `LA` table | Expected: the table takes over a second to print (14 events, one pass, on 5 November) |
+| FPGA `WARNING: nothing from the peer: uo=0x01 uio_out=0x01 uio_oe=0x01`, and the MCU's tests fail | The core is in its boot ROM: PB0 was pressed with SW0 down. See [Resets](#resets) |
 
 The `LA` table is an on-chip logic analyser: one line per change on the eight pins
 as the FPGA sees them, starting just before the first UART start bit, 333 ns
@@ -229,17 +243,59 @@ resolution. It takes no bench equipment, so timing questions can be answered fro
 the copied text. For one, a driven MOSI changes near SCK's falling edges, and MISO just
 after its rising edges.
 
+## Resets
+
+The core has one reset, `rst_n`, with three sources in `fpga/rtl/aup_zu3_io.v`: the PS's
+`pl_resetn0`, `RUN` (EMIO bit 9) and PB0. PB0 appears twice there because it asserts at
+once and releases through a synchroniser. Every `if (!rst_n)` in the core's modules is
+that same net. It restarts the logic but does not clear the SRAM:
+`fpga/rtl/tt_um_msf_sram.v` does not use it. What follows depends on who picks the core
+up:
+
+| Reset | Resets | Then |
+| --- | --- | --- |
+| LaunchPad RESET (S3), or CCS | The MCU only | The MCU starts again from pass 1; the core keeps running and its totals keep counting |
+| Launching the app again from Vitis | The app, and the core through `RUN` | The A53 takes the pins, writes the firmware again and starts it; the totals start from 0 |
+| PB0 | The core only | Nothing reloads it and the app just keeps watching. `ui_in` comes from the switches, so SW0 picks what runs |
+
+**PB0 with SW0 down** starts the boot ROM's loader, which waits for a frame. That is
+`uo=0x01`, and `uio_out=0x01 uio_oe=0x01` is its UART TX idling on UIO[0]. After a few
+seconds the app prints `WARNING: nothing from the peer`, and the MCU's tests fail, as
+nothing is driving the echo, MISO or the I2C ACK. It is not a fault in the core, and the
+board showed exactly this on 6 November.
+
+Do not leave the boards in that state. UIO[0] is also the MCU's TX wire, so the FPGA
+holds it high against each low bit the MCU sends, up to about 78 us a pass. Whether
+either board limits that current is not known to us: the XDC sets no drive strength, and
+the AUP-ZU3's PMOD circuit has not been checked. Launching the app again ends it, as the
+A53 takes the pins and JA goes high-Z. The cause is that the peer's UART pins are the
+reverse of the boot ROM's (RX on UIO[0] and TX on UIO[1], against TX on UIO[0] and RX on
+UIO[1]).
+
+**PB0 with only SW0 up** restarts the peer from the SRAM. Keep SW2 down, as high during
+reset selects the debug view. The peer does not read `ui_in`, so the switches do not
+matter once it runs. The console then prints the `peer firmware v3` line and the `LA`
+table again, loses a pass to the table, and prints one false `missed N events`, because
+the peer's event count starts again. `lost` means nothing after a press, though `SPI ok`
+= 8 x `UART` still holds.
+
+Both cases were checked in a throwaway simulation of `aup_zu3_io` with the peer and a
+model of the MCU. With SW0 down the A53's reads are those same three values, no firmware
+word changes and UART, SPI and I2C all fail; with SW0 up all three pass again. The false
+`missed` line comes from replaying that run through the monitor. The SW0-up restart has
+not been tried on the board.
+
 ## Status
 
-**On the board, 6 November:** firmware v3 and the MCU code of 5 November, FPGA started
-first. UART and SPI pass both ways on every pass. I2C is correct on the wires and `0xA5`
-reaches the MCU, but the MCU's test counted each one a pass late.
+**On the board, 6 November:** firmware v3 and the MCU code with its I2C and UART changes,
+FPGA started first. UART, SPI and I2C pass both ways on all 148 passes at the MCU, from
+pass 1, with 0 bad and `SPI ok` = 8 x `UART` at the FPGA.
 
-**Not on the board yet:** the MCU's I2C and UART changes of 6 November. Rebuild the MCU
-and run again as above. The aim is no failures in the MCU's totals from pass 1, with
-`stale=0` and `read MSR=... IDLE`, and 0 bad and `SPI ok` = 8 x `UART` at the FPGA as
-now. Step 6 is also still to show: neither 6 November log shows a 3 s reset hold for
-certain.
+**Not run, and not needed:** steps 6 and 7. Step 6 would only stretch what has already
+been seen: the first 6 November `LA` table caught the floating pins with v3 counting
+nothing, and the rerun's count is exact from pass 1 with the FPGA up first. PB0 is a
+different reset and does not test this. Step 7 only matters if the MCU starts first, and
+the steps above start the FPGA first. Neither result could change the chip's design.
 
 Checked in simulation (RTL of both `src/` and `fpga/rtl`): one whole pass with the
 MSPM0's timing, SPI and I2C limits, I2C SDA holds 1-60 cycles against 16 clock
@@ -248,12 +304,12 @@ on the PC on a real `uo_out` trace from that simulation. MSPM0 timing is modelle
 its configuration and TI's documents, so its real waveforms may still differ. That is
 what the `LA` table is for.
 
-The MCU's 6 November changes ran on the PC against a stand-in for its UART, SPI and I2C,
-written from TI's manual and the board's timing. On it the old I2C code prints the
-board's lines, with `rx=--` on pass 1 and `BUS-BUSY` throughout, and the new code passes
-from pass 1 and also handles an address NACK, a read that never ends and a stale byte.
-A stuck UART, set up by hand, stays stuck with the old code and clears with the new. They
-are type-checked against TI's headers but have not been through TI's compiler.
+Before the rerun, the MCU's 6 November changes ran on the PC against a stand-in for its
+UART, SPI and I2C, written from TI's manual and the board's timing. On it the old I2C code
+prints the board's lines, with `rx=--` on pass 1 and `BUS-BUSY` throughout, and the new
+code passes from pass 1 and also handles an address NACK, a read that never ends and a
+stale byte. Those error cases and a stuck UART, set up by hand, have only been shown on
+the stand-in.
 
 Still open:
 
