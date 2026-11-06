@@ -24,7 +24,7 @@ Updated as work lands. The §6 decisions were taken provisionally as
 | 1.2 slow-corner timing | done | **Signed off at 30 ns (33 MHz) in every corner.** Place and route aim at 20 ns (`pnr.sdc`), sign-off checks 30 ns (`signoff.sdc`): aiming at 30 the tools optimised less and the slow corner missed (−3.21 ns, path 33.2 ns); aiming at 20 the path is ~27.8 ns. CI 40085473871 (6ea46bd): slow +2.17 ns, typical +10.72, fast +13.27, hold +0.11, no DRC, antenna or LVS errors, 114 max-slew and 32 max-cap warnings; precheck and the gate-level tests pass (run locally: CI jobs were refused, decision 7). Design repair after global routing (300 µm wires, 30 % margins), local run S (44a7d31): +2.49 ns slow, 6 max-slew and 2 max-cap warnings, all on SRAM pins, +1 400 buffers. **Adopted in `config.json` (28 Oct)**: local run F (6ea46bd's RTL with repair) signed off at slow +1.24 ns, typical +11.02, hold +0.07, no DRC, antenna or LVS errors, 2 max-slew and 2 max-cap warnings, all on SRAM pins (the worst path from the overloaded `A_DOUT[11]` has +3.04 ns); precheck and the five gate-level tests pass on it, and its netlist equals the RTL (`netlist_equiv.py`, 2 min 26 s: the repair added 1 729 buffers and no logic). On the same RTL the repair cost 0.93 ns of slow-corner slack (S gained 0.88): noise either way. **CI gds 41669584983 (a166e6d, 3 Nov) gives run F's numbers**: slow +1.243 ns, typical +11.02, fast +13.42, hold +0.067; no DRC, antenna or LVS errors; 2 max-slew and 2 max-cap warnings; precheck passes (KLayout DRC 0 errors), and so do the gate-level tests and the netlist = RTL proof. Decided (decision 2): 33 MHz; typical silicon still makes 50 MHz. `verification.md` §7 |
 | 1.3 formal CI | done | SymbiYosys + ABC (`--engine abc`) in CI with OSS CAD Suite: depth-16 BMC, covers and mutants passed in ~11 min (CI 40085473891). The v2.1 properties and their mutants (24 Oct): F12, every running thread owns a cycle in any four (no starvation); F8 and F9 already there, F9 now also in the capture module alone. Each has a mutant that must fail, and does: a push into a full FIFO (caught by F8 alone), capture ignoring the core on port B (F9), the rotation skipping a thread (F1 first, F12 alone too). A mutant stops at its first counterexample. CI 40910559975 (a166e6d, 3 Nov): BMC of the three targets passes and all seven mutants are caught, in 16 min. Fixed earlier: SBY errors had counted as caught mutants |
 | 1.4 tape-out branch | done | Sam (28 Oct): `fixes` merged into `main` the same day (fast-forward to `2592db0`), without waiting for CI, so that Muath can harden `main` locally; `main` is what gets taped out. No RTL freeze: `main` is the working version until the deadline, experiments go on branches (§6, decisions 1 and 5) |
-| 2.1 record board pass | done (Vivado figures to come) | `fpga.md`, `verification.md` §5/§9 |
+| 2.1 record board pass | done | `fpga.md`, `verification.md` §5/§9; Vivado figures recorded 6 Nov (setup +74.354 ns, hold +0.012 ns at 12 MHz, 3.71 % of the LUTs) |
 | 2.2 stale metadata | done | `info.yaml`, `info.md` |
 | 2.3 wider board tests | done, 67 of 67 on the board | in `msf_tests.c`, passing in the HIL simulation and on the board: `jtag_probe`, `onewire_probe`, `swd_probe` (DPIDR, MEM-AP read/write, WAIT, no target), `spi_target_regs`, `spi_flash`, `i2c_target_eeprom` (100 kHz, and 400 kHz with clock stretching), `four_threads_fifo` (three exact square waves at once, and T0's counts reaching T3 through the FIFO in order), the bus monitors (`mon_uart_*` 3, `mon_i2c_*` 6, `mon_spi_*` 3: the same waves, faults and accuracy checks as `test_monitors.py`), `bridge_modes` (UART-to-SPI, modes 0-3), `fw_logic_analyzer` (capture: trigger, pre/post samples against a reference), `ps2_device_*` 3 (keyboard against a host model: scancodes, commands with ACK and resend, host inhibit), `can_*` 3 (receive and ACK, transmit, arbitration and no ACK, against CAN nodes with CRC-15 and stuffing), `fault_*` 4 (UART, I2C and SPI timing knobs move edges by exact amounts; UART tolerance 99-109 cycles against a 104 receiver), `fw_ws2812`, `filter_*` 4 (short pulses, every pin, delay, a spiky UART), `rx_manchester_*` 2 (jitter at ±2 %, TX-to-RX loopback), `debug_*` 5 (the debug view: registers, PC in bank 1, no strap, single step, page 1) and `tmo_per_thread`, with C models of a TAP chain, 1-Wire devices, an SW-DP with a MEM-AP, a UART host, an SPI controller, an I2C controller, a PS/2 host and CAN nodes (`msf_proto.c`, `msf_tests.c`). Where a Python test reads registers or the SRAM, small firmware in `fpga/ps/hil/firmware/` stores the result in RAM and the C side reads it back (`dump_ram`), or reads it on the debug view. On the board the PS sees the pins only after a step, so each view read is one core cycle; the tests read parked state or count it. `cap_*` 8 (the capture engine against `cap_ref`: sample mode, divisors to 4099, pre-trigger ring, edge against level, change mode, `ui` pins, no effect on core timing, overflow; the bench reads CNT once on the debug view and counts it, so the pins follow CNT exactly; a one-cycle error fails). Step 1 of §2.3 is done: every item on its list has C tests, and all 67 passed on the board in a run after 29 Oct (`fpga.md`). Step 2, free-running against real parts: an LP-MSPM0G3519 as UART, I2C and SPI controller, first run 5 Nov. On 6 Nov, with firmware v3 and the MCU's own I2C test fixed, UART, SPI and I2C pass at both ends on all 148 passes (`external-mcu_testing.md`). `swd_mcu`, the core as SWD probe for a real MCU, has not been run |
 | 2.4 `fpga/rtl` sync | done | `tools/check_fpga_sync.py` in the `test` workflow; the repo copies were already identical (CRLF only in this checkout) |
@@ -42,10 +42,9 @@ Updated as work lands. The §6 decisions were taken provisionally as
 
 **Left to finish (6 Nov):**
 
-1. Vivado's timing and utilisation from the existing build (Muath).
-2. Photos and a short video of the board, plus the `67 of 67` screenshot (Sam, Muath).
-3. One GDS run on the final `main`, so the commit submitted has its own clean run.
-4. The submission, when Jane Street publishes the form (deadline 18 Jan 2027).
+1. Photos and a short video of the board, plus the `67 of 67` screenshot (Sam, Muath).
+2. One GDS run on the final `main`, so the commit submitted has its own clean run.
+3. The submission, when Jane Street publishes the form (deadline 18 Jan 2027).
 
 Extras that nothing depends on: `swd_mcu` against the LP-MSPM0G3519; CAN against
 it, which needs a new peer and a shared bus; the top-level formal proof.
@@ -216,8 +215,8 @@ signed off again (GDS, `check_signoff.py`, `netlist_equiv.py`).
   timing and utilisation, the screenshot and a photo of the board.
 * State the limit honestly: the PS steps the core, so the board run checks
   logic and protocols, not at-speed timing (see §2.3).
-* Needed from Muath: the commit that was built, Vivado WNS and utilisation,
-  and the screenshot.
+* From Muath, 6 Nov: Vivado WNS and utilisation, now in `fpga.md`. The commit
+  built was the latest at the time; its hash was not noted.
 
 ### 2.2 Stale metadata
 * `info.yaml`: the description says 2 threads; `clock_hz` is 12 MHz; check
@@ -242,8 +241,8 @@ threads with `TSTART #t`, the debug view and per-thread timeouts.
    needs no extra hardware; every other bus stays verified against the C
    models, in simulation and stepped on the board. First run (5 Nov): an
    LP-MSPM0G3519 as UART, I2C and SPI controller, in
-   `external-mcu_testing.md`; all three pass since 6 Nov. Vivado's timing at
-   that clock is still to record.
+   `external-mcu_testing.md`; all three pass since 6 Nov, and Vivado reports
+   timing met at that clock inside the FPGA (`fpga.md`).
 
 ### 2.4 Keep `fpga/rtl` in step with `src`
 `fpga/rtl` is a copy. Only the SRAM wrapper and the boot ROM differ for

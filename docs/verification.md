@@ -438,7 +438,7 @@ change behaviour.
 | No firmware deadline is ever missed, on any path | `tools/msf_timing.py` (§6b): every `WAIT_CMP` in the firmware issues at least 9 cycles before its target; cross-checked against the ISA model; rejects a too-fast UART |
 | A missed deadline is never silent | `WAIT_CMP` with a passed target releases at once with Z=1 and sets LATE (isa.md §5): `test_wait_cmp_late_boundaries` (0 and 255 cycles behind are late, 256 behind and 1 ahead are not), `test_late_flags_per_thread`; formal F10, F11 and mutant B4 (§3); random programs with late targets, RTL == model (§2) |
 | UART, SPI, I2C, USB LS, 10BASE-T TX run as firmware | `test_firmware` against independent decoders and device models; the same checks in C on the AUP-ZU3 board, among its 67 C tests, all passing (§5) |
-| Running free at 12 MHz on the FPGA, the core takes UART, I2C and SPI traffic from a real LP-MSPM0G3519 | On the AUP-ZU3 with firmware v3 (§5, 6 Nov): UART, SPI and I2C pass at both ends on all 148 passes, and the on-chip logic analyser showed a correct pass on the wires. Still open: Vivado's timing at that clock ([`external-mcu_testing.md`](../external-mcu_testing.md)) |
+| Running free at 12 MHz on the FPGA, the core takes UART, I2C and SPI traffic from a real LP-MSPM0G3519 | On the AUP-ZU3 with firmware v3 (§5, 6 Nov): UART, SPI and I2C pass at both ends on all 148 passes, and the on-chip logic analyser showed a correct pass on the wires ([`external-mcu_testing.md`](../external-mcu_testing.md)). Vivado reports timing met at that clock inside the FPGA: setup +74.354 ns, hold +0.012 ns, pins not timed ([`fpga.md`](fpga.md#vivado-results)) |
 | The chip can be an SPI device at up to 750 kHz with no dummy byte, and an I2C device at 100 kHz (400 kHz with stretching) | `test_targets`: data in all modes, latencies 4 / 5 / 8 / 13 cycles as derived, a 16-cycle SCK works and 14 fails, 400 kHz needs `STRETCH` |
 | The chip can stand in for a 25xx SPI flash: ID, status, read, page program and erase, with WIP set while an erase runs | `test_targets` flash tests against a controller model and a reference model: all modes, the 512-byte wrap, program with and without WEL, every erase command polled during the erase; a 28-cycle SCK works and 26 fails |
 | A bus monitor never reports a timing fault on a legal I2C bus, and reports the real faults with their lengths | `test_monitors`: random legal buses raise no event; single faults at every data bit, at 100 kHz and the legal minimum, reported once each within the stated accuracy |
@@ -460,8 +460,9 @@ What is **not** validated yet:
 
 * Nothing has run on silicon. In the C board tests the PS steps the core one
   clock at a time, so they check logic and protocols, not timing at speed.
-  Only the MCU test (§5) runs it free, at 12 MHz on the FPGA, and Vivado's
-  timing at that clock is not on record.
+  Only the MCU test (§5) runs it free, at 12 MHz on the FPGA. Vivado reports
+  timing met at that clock inside the FPGA but does not time the pins, and FPGA
+  timing says nothing about the chip's.
 * Apart from that LP-MSPM0G3519, the other end of every bus is a model written
   by us from the protocol specs, not a real device: no USB host, Ethernet link
   partner, EEPROM or logic analyser has been connected.

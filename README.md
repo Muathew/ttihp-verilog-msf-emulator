@@ -68,7 +68,9 @@ claim to its evidence):
 6. **The FPGA board** (AUP-ZU3): 67 of 67 C protocol tests pass on the same
    core, stepped by the Zynq. Running free at 12 MHz, the core has also passed
    UART, SPI and I2C both ways on all 148 passes of a run with a real
-   LP-MSPM0G3519 ([MCU test](external-mcu_testing.md)).
+   LP-MSPM0G3519 ([MCU test](external-mcu_testing.md)), and Vivado reports
+   timing met at that clock inside the FPGA
+   ([figures](docs/fpga.md#vivado-results)).
 7. **Sign-off in CI**: a job that fails on any setup or hold violation, DRC,
    antenna or LVS error, because the GDS badge alone does not.
 8. **The routed netlist equals the RTL**, proved formally

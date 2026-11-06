@@ -34,6 +34,7 @@ cycle at a time. The core is held in reset until the PS releases it.
 | `fpga/board/constraints/msf_aup_zu3.xdc` | switch, button, LED and PMOD JA pins |
 | `fpga/vivado/msf_bd.tcl` | Vivado 2024.1 block design |
 | `fpga/vivado/build.tcl` | batch build: project, block design, bitstream, XSA, reports |
+| `fpga/reports/` | Vivado's reports from the routed design, 6 Nov (all but the pin report) |
 
 `fpga/rtl` is a copy: **a core fix in `src/` must be copied there too.**
 Check with `git diff --no-index --ignore-cr-at-eol --stat src fpga/rtl`
@@ -135,16 +136,59 @@ latest commit at the time (Muath); its hash was not noted. Nothing in
 later edits are formal checks and the unused `tt_um_msf_bootrom_data.v`.
 
 The PS steps the core one clock at a time, so this checks logic and
-protocol behaviour on real hardware, not timing at speed. Still to record:
-Vivado's timing and utilisation.
+protocol behaviour on real hardware, not timing at speed.
 
 The MCU test is different: the core runs free from `pl_clk0` at 12 MHz with
 a real LP-MSPM0G3519 as controller, and the PS only watches `uo_out`. With
 firmware v3 and the MCU's I2C test fixed (6 Nov), UART, SPI and I2C passed at
-both ends on all 148 passes, from pass 1, and the FPGA counted no bad bytes. The
-same Vivado figures are still to record, so this shows the core ran at 12 MHz,
-not that timing was met.
+both ends on all 148 passes, from pass 1, and the FPGA counted no bad bytes.
+Vivado reports timing met at that clock inside the FPGA (below).
 [`external-mcu_testing.md`](../external-mcu_testing.md) has the details.
+
+## Vivado results
+
+From Muath's routed design: Vivado 2024.1, part `xczu3eg-sfvc784-2-e`, reports
+dated 6 Nov 2026, in [`fpga/reports/`](../fpga/reports). They do not name a commit (see above), but a rebuild of
+the same sources would not come close to these limits.
+
+| Timing at 12 MHz (83.333 ns), slow and fast corners | Worst slack |
+|---|---|
+| Setup | +74.354 ns |
+| Hold | +0.012 ns |
+| Reset recovery | +80.378 ns |
+| Reset removal | +0.300 ns |
+| Pulse width | +41.124 ns |
+
+No endpoint fails: 0 of 4750 for setup and hold, reset paths included, and 0 of
+1653 for pulse width. DRC finds no violations.
+
+| Utilisation | Used | Available | % |
+|---|---|---|---|
+| LUTs | 2620 | 70560 | 3.71 |
+| Flip-flops | 1648 | 141120 | 1.17 |
+| RAMB18 | 2 | 432 | 0.46 |
+| DSPs | 0 | 360 | 0 |
+| Bonded I/O | 25 | 252 | 9.92 |
+
+What these figures do and do not show:
+
+* **Margin.** The worst setup path, from the boot ROM's output to a register file
+  bit, uses about 9 ns of the 83 ns, so 12 MHz is far from this FPGA's limit. A
+  small positive hold slack is normal, as the router only fixes hold until it is
+  met; the worst hold path is inside the controller.
+* **Inside the FPGA only.** The 36 pin paths on JA, the switches, the buttons and
+  the LEDs have no input or output delays (`TIMING-18`), so the pins are not timed.
+  Inputs reach the core through two-flop synchronisers. `report_cdc` is empty
+  because the design has one clock, so it says nothing about the pins or the PS's
+  EMIO signals, which the same kind of synchronisers handle.
+* **A reset warning that stays on the board.** `LUTAR-1`: `rst_n` in `aup_zu3_io.v`
+  is a four-input AND driving 1552 asynchronous clears, and a LUT can glitch. It can
+  only do so when an input changes, which is already a reset, and the MCU run shows
+  no false reset. On the chip, `rst_n` is a pin.
+* **`CLKC-9`** is advisory: the core's `BUFGCE` sits behind the PS's clock buffer.
+  The skew this adds is already in the figures above.
+* **Not the chip.** The chip's timing has its own sign-off
+  ([`verification.md`](verification.md) §7).
 
 ## Open items
 

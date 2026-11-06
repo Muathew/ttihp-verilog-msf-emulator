@@ -1,0 +1,31 @@
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2024 Advanced Micro Devices, Inc. All Rights Reserved.
+---------------------------------------------------------------------------------------------------------------------------------------------
+| Tool Version : Vivado v.2024.1 (win64) Build 5076996 Wed May 22 18:37:14 MDT 2024
+| Date         : Fri Nov  6 18:06:47 2026
+| Host         : Hellrider running 64-bit major release  (build 9200)
+| Command      : report_high_fanout_nets -file D:/fpga/msf/msf_high_fanout.rpt
+| Design       : msf_zynq_system_wrapper
+| Device       : xczu3eg
+---------------------------------------------------------------------------------------------------------------------------------------------
+
+High Fan-out Nets Information
+
+1. Summary
+----------
+
++----------------------------------------------------------------------------+--------+-------------+
+| Net Name                                                                   | Fanout | Driver Type |
++----------------------------------------------------------------------------+--------+-------------+
+| msf_zynq_system_i/aup_zu3_io_0/inst/u_core/u_ctrl/u_rf3/button_sync_reg[1] |   1552 | LUT4        |
+| msf_zynq_system_i/aup_zu3_io_0/inst/u_core/u_ctrl/Q[1]                     |    295 | FDCE        |
+| msf_zynq_system_i/aup_zu3_io_0/inst/u_core/u_ctrl/Q[0]                     |    268 | FDCE        |
+| msf_zynq_system_i/aup_zu3_io_0/inst/u_core/ui_in[3]                        |    177 | LUT5        |
+| msf_zynq_system_i/aup_zu3_io_0/inst/u_core/ui_in[4]                        |    157 | LUT5        |
+| msf_zynq_system_i/aup_zu3_io_0/inst/u_core/u_ctrl/u_rf/bub_reg_6           |    128 | LUT3        |
+| msf_zynq_system_i/aup_zu3_io_0/inst/u_core/u_rom/imem_sel_sram_reg_29      |    128 | LUT3        |
+| msf_zynq_system_i/aup_zu3_io_0/inst/u_core/u_ctrl/u_rf/bub_reg_7           |    128 | LUT4        |
+| msf_zynq_system_i/aup_zu3_io_0/inst/u_core/u_rom/imem_sel_sram_reg_31      |    128 | LUT4        |
+| msf_zynq_system_i/aup_zu3_io_0/inst/u_core/u_crc/refl_reg_0                |     91 | FDCE        |
++----------------------------------------------------------------------------+--------+-------------+
+
+

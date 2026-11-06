@@ -311,12 +311,11 @@ code passes from pass 1 and also handles an address NACK, a read that never ends
 stale byte. Those error cases and a stuck UART, set up by hand, have only been shown on
 the stand-in.
 
-Still open:
+Vivado reports timing met at 12 MHz inside the FPGA, though it does not time the pins
+([`docs/fpga.md`](docs/fpga.md#vivado-results)).
 
-- The core's timing at 12 MHz on the ZU3 has no Vivado report on record yet
-  ([`docs/fpga.md`](docs/fpga.md)).
-- Why starting the MCU first stuck the UART is not known, and neither TI's manual nor its
-  errata describe it. Step 7 tests the cure, not the cause.
+Still open: why starting the MCU first stuck the UART is not known, and neither TI's manual
+nor its errata describe it. Step 7 tests the cure, not the cause.
 
 PA0 (SDA) also drives the LaunchPad's red LED through J18, so that LED may flicker
 with I2C traffic. It should be harmless; if SDA looks wrong in the table, try with J18
