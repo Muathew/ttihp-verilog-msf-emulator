@@ -10,7 +10,7 @@ settle at least two cycles before TCK rises.
 """
 import cocotb
 
-from fw_tb import Bench, fw_boot
+from fw_tb import Bench, fw_boot, save_trace
 from msf_tb import uart_decode
 from test_monitors import Wave, uart_wave
 
@@ -116,6 +116,9 @@ async def test_jtag_idcode(dut):
     back = await jtag_run(dut, chain, ["R", "D", 32, 0, 0, 0, 0], 5)
     assert back == [ord("R")] + le(0x12345679, 4), [hex(b) for b in back]
     assert chain.taps[0].state == "RTI"
+    save_trace("jtag", Bench.last.pad, f"jtag:tdi={TDIP}:tdo={TDOP}:tck={TCKP}:tms={TMSP}",
+               "jtag=bitstring-tdo", [f"DR TDO: {0x12345679:032b} (0x12345679), 32 bits"],
+               {"pin": TDOP, "hold": 40})
 
 
 @cocotb.test()
@@ -334,6 +337,10 @@ async def test_swd_dpidr(dut):
     back = await swd_run(dut, t, [["L"], rd(0, 0x0)], 7)
     assert back == [ord("L")] + ok_read(SwdTarget.DPIDR), [hex(b) for b in back]
     assert t.mode == "swd"
+    save_trace("swd", Bench.last.pad, f"swd:swclk={CLKP}:swdio={DIOP}",
+               "swd=reset:enable:read:write:ack:data",
+               ["LINERESET", "JTAG->SWD", "LINERESET", "IDCODE", "OK",
+                f"0x{SwdTarget.DPIDR:08x}"], {"pin": DIOP, "hold": 40})
 
 
 @cocotb.test()

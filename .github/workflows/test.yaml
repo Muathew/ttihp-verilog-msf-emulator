@@ -13,8 +13,8 @@ jobs:
       - name: FPGA RTL matches src
         run: python3 tools/check_fpga_sync.py
 
-      # Static deadline check: no WAIT_CMP in the firmware is ever late (and the
-      # analysis agrees with the ISA model); a UART at 9 cycles a bit must fail.
+      # Static deadline check: no WAIT_CMP in the firmware is ever late; a UART at 9
+      # cycles a bit must fail. The check against the RTL comes after the tests.
       - name: Firmware deadlines
         run: |
           python3 tools/msf_timing.py --all --check-model 20000
@@ -22,7 +22,7 @@ jobs:
 
       - name: Install iverilog
         shell: bash
-        run: sudo apt-get update && sudo apt-get install -y iverilog
+        run: sudo apt-get update && sudo apt-get install -y iverilog sigrok-cli
 
       # Set Python up and install cocotb
       - name: Setup python
@@ -41,6 +41,23 @@ jobs:
           make
           # make will return success even if the test fails, so check for failure in the results.xml
           ! grep failure results.xml
+
+      # Every deadline reached on the RTL, with the tests' peers, and none below
+      # what the checker promised (DeadlineWatch in test/fw_tb.py wrote the log).
+      - name: Deadlines against the RTL
+        run: python3 tools/msf_timing.py --all --rtl-log test/deadlines_seen.json
+
+      # A sample of planted timing bugs: a certified one must not run late.
+      - name: Planted timing bugs
+        run: python3 tools/fw_mutants.py --sample 1 --jobs 2
+
+      # The waveforms read by decoders written by other people.
+      - name: sigrok decoders
+        run: python3 tools/sigrok_check.py
+
+      # Protocols nobody designed, drawn at random: decoded exactly or refused.
+      - name: Learning a protocol
+        run: pip install pytest && python3 -m pytest test/test_learn_tool.py -q
 
       - name: Test Summary
         uses: test-summary/action@v2.4

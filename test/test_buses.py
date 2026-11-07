@@ -13,7 +13,7 @@ CLK is high when the device is sending.
 """
 import cocotb
 
-from fw_tb import Bench, fw_boot
+from fw_tb import Bench, fw_boot, save_trace
 from msf_tb import uart_decode
 from test_monitors import Wave, uart_wave
 
@@ -105,6 +105,28 @@ class Ps2Host:
         return mask, 0
 
 
+def ps2_extra_clock(pad, clk=CLKP, low=40):
+    """For sigrok's PS/2 decoder only: its handle_bits takes a 12th falling edge
+    to end a frame of 11, so without one it eats the next frame's start bit and
+    reads every later frame one bit off (decoders/ps2/pd.py). One short CLK pulse in
+    the idle gap after each frame gives it that edge. The frames are untouched."""
+    out, n, i = list(pad) + [pad[-1]] * 400, 0, 1
+    mask = 1 << clk
+    while i < len(out):
+        if out[i - 1] & mask and not out[i] & mask:
+            n += 1
+            if n == 11:
+                n = 0
+                while not out[i] & mask:   # the stop bit's low phase ends
+                    i += 1
+                i += 100
+                for j in range(i, i + low):
+                    out[j] &= ~mask
+                i += low
+        i += 1
+    return out
+
+
 async def ps2_run(dut, host, uart_bytes, cycles, q=240):
     items = [("byte", b, BIT, 1, 20 * BIT) for b in uart_bytes]
     line = Wave(1 << RXP, uart_wave(items, pin=RXP) if items else [1 << RXP], start=400)
@@ -129,6 +151,10 @@ async def test_ps2_device_types_scancodes(dut):
     phases = [p for p in host.phases if p < 100 * US]
     assert phases and all(30 * US <= p <= 50 * US for p in phases), \
         (min(phases), max(phases))
+    save_trace("ps2", ps2_extra_clock(Bench.last.pad), f"ps2:clk={CLKP}:data={DATP}",
+               "ps2=word:parity-ok:parity-err",
+               [x for c in codes for x in (f"Data: {c:02x}", "Parity OK")],
+               {"pin": DATP, "hold": 80 * US})
 
 
 @cocotb.test()
@@ -354,6 +380,11 @@ async def test_can_transmit(dut):
     back = await can_run(dut, [node], [tcmd(0x2A5, data)], 400 + 40 * BIT * 13 + 200 * CBT)
     assert node.got == [(0x2A5, 8, data)], node.got
     assert back == [ord("K")], [hex(b) for b in back]
+    save_trace("can", Bench.last.pad[100:], f"can:can_rx={CRXP}:nominal_bitrate=25000",
+               "can=sof:id:dlc:data:ack-slot",
+               ["Start of frame", "Identifier: 677 (0x2a5)", "Data length code: 8"]
+               + [f"Data byte {i}: 0x{b:02x}" for i, b in enumerate(data)] + ["ACK slot: ACK"],
+               {"pin": CRXP, "hold": CBT})
 
 
 @cocotb.test()
@@ -529,6 +560,12 @@ async def test_onewire_reset_read_rom_scratchpad(dut):
     sp = back[12:21]
     assert back[10:12] == [ord("P"), ord("W")] and sp == dev.scratch, [hex(b) for b in back]
     assert crc8_maxim(sp[:8]) == sp[8]
+    rom64 = int.from_bytes(bytes(rom), "little")
+    save_trace("onewire", Bench.last.pad, f"onewire_link:owr={DQP},onewire_network",
+               "onewire_network=text",
+               ["Reset/presence: true", "ROM command: 0x33 'Read ROM'", f"ROM: 0x{rom64:016x}",
+                "Reset/presence: true", "ROM command: 0xcc 'Skip ROM'", "Data: 0xbe"]
+               + [f"Data: 0x{b:02x}" for b in sp], {"pin": DQP, "hold": 70 * US})
     back = await ow_run(dut, [], [["R"]])
     assert back == [ord("N")], back
 

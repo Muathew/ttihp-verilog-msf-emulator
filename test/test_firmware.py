@@ -10,7 +10,7 @@ import random
 import cocotb
 from cocotb.triggers import ClockCycles, RisingEdge, ReadOnly, Timer
 
-from fw_tb import DONE, spawn, fw_boot, Recorder
+from fw_tb import DONE, spawn, fw_boot, Recorder, save_trace
 from msf_tb import sram, uart_decode, uart_send
 from golden_model import usb_crc16, eth_fcs
 
@@ -26,6 +26,8 @@ async def test_fw_uart_tx_drift_free(dut):
     await rec.until_uo(lambda v: v == DONE, 40000)
     await ClockCycles(dut.clk, 200)
     assert bytes(uart_decode(rec.out, 104, pin=0)) == msg
+    save_trace("uart", rec.out, "uart:rx=0:baudrate=115200", "uart=rx-data",
+               [f"{b:02X}" for b in msg], {"pin": 0, "hold": 104})
     # every edge sits on the 104-cycle grid of the first start bit: no drift
     bits = [v & 1 for v in rec.out]
     first_start = next(i for i in range(1, len(bits)) if bits[i - 1] == 1 and bits[i] == 0)
@@ -57,6 +59,8 @@ async def test_fw_ws2812(dut):
     assert got == data, got
     last_fall = rises[-1] + (10 if bits[-1] else 5)
     assert len(line) - last_fall >= 600, "reset (latch) too short"
+    save_trace("ws2812", rec.out, "rgb_led_ws281x:din=0", "rgb_led_ws281x=rgb",
+               [f"#{r:02x}{g:02x}{b:02x}" for g, r, b in leds], {"pin": 0, "hold": 15})
 
 
 # ============================================================================
@@ -119,6 +123,11 @@ async def test_fw_spi_all_modes_full_duplex(dut):
         assert got_back == back, f"mode {mode}: master got {got_back}, slave sent {back}"
         idle = (rec.out[-1] >> 2) & 1
         assert idle == (mode >> 1), "SCK idle level = CPOL"
+        save_trace(f"spi_mode{mode}", rec.pad,
+                   f"spi:clk=2:mosi=3:miso=4:cs=5:cpol={mode >> 1}:cpha={mode & 1}",
+                   "spi=mosi-data:miso-data",
+                   [f"{x:02X}" for pair in zip(back, out) for x in pair],
+                   {"pin": 3, "hold": 12})
 
 
 # ============================================================================
@@ -246,6 +255,12 @@ async def test_fw_i2c_write_then_read_repeated_start(dut):
     assert [sram(dut, 64 + i) for i in range(4)] == [0xDE, 0xAD, 0xBE, 0xEF]
     assert slave.master_acks == [True, True, True, False], "ACK all but the last byte"
     assert slave.events == ["S", "S", "P"], "repeated START"
+    save_trace("i2c", Recorder.last.pad, "i2c:scl=6:sda=5",
+               "i2c=start:repeat-start:stop:ack:nack:address-read:address-write:data-read:data-write",
+               ["Start", "Write", "Address write: 50", "ACK", "Data write: 00", "ACK",
+                "Start repeat", "Read", "Address read: 50", "ACK", "Data read: DE", "ACK",
+                "Data read: AD", "ACK", "Data read: BE", "ACK", "Data read: EF", "NACK", "Stop"],
+               {"pin": 5, "hold": 120})
 
 
 @cocotb.test()
@@ -320,6 +335,10 @@ async def test_fw_usb_ls_tx_packet(dut):
         j += 1
     assert j == 8, f"J after EOP must last one bit (8 cycles), got {j}"
     assert states[eop + se0 + j] == "z", "pins released after the EOP"
+    save_trace("usb", rec.out, "usb_signalling:dm=0:dp=1:signalling=low-speed,usb_packet:signalling=low-speed",
+               "usb_packet=sync-ok:pid:data:crc16-ok",
+               ["SYNC: 00000001", "PID: DATA0"] + [f"Databyte: {b:02X}" for b in payload]
+               + [f"CRC16: 0x{crc:04X}"], {"pin": 0, "hold": 8})
 
 
 def usb_levels(pkt_bytes, corrupt=False):
