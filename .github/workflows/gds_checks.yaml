@@ -85,7 +85,7 @@ jobs:
       - name: Cell library
         run: >
           curl -sSfL -o stdcell_typ.lib
-          https://raw.githubusercontent.com/IHP-GmbH/IHP-Open-PDK/2bbec755dc67ca3db0261c3d6163e15735d66710/ihp-sg13cmos5l/libs.ref/sg13cmos5l_stdcell/lib/sg13cmos5l_stdcell_typ_1p20V_25C.lib
+          https://raw.githubusercontent.com/IHP-GmbH/IHP-Open-PDK/89d42ee6d2fd9b50b86a1aada6fee6673c3e6008/ihp-sg13cmos5l/libs.ref/sg13cmos5l_stdcell/lib/sg13cmos5l_stdcell_typ_1p20V_25C.lib
 
       - name: Netlist equals RTL
         run: python3 formal/netlist_equiv.py artifact/tt_submission/tt_um_msf.v --liberty stdcell_typ.lib --pdr-timeout 1800
