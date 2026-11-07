@@ -54,6 +54,7 @@ ALL_MODULES = [
     "test_margin",
     "test_pinfind",
     "test_learn",
+    "test_interpose",
     "test_debugports",
     "test_buses",
 ]

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Formal verification of msfcore with Yosys: SymbiYosys + ABC, or `sat`.
 
-Properties live in the RTL under `ifdef FORMAL` (F1-F6, F8 and F10-F12 in
+Properties live in the RTL under `ifdef FORMAL` (F1-F6, F8 and F10-F13 in
 tt_um_msf_ctrl.v, F7 and F9 in project.v, F9 also in tt_um_msf_cap.v, where
 the core's use of port B is a free input). Every input -- including the instruction memory read data,
 data-RAM read data, pins and peripheral status -- is unconstrained, so a
@@ -17,7 +17,7 @@ For each target this script runs
 and a *mutation check*: the same properties are run against copies of the
 RTL with the review's bugs re-introduced (B1 pc not advanced on release,
 B2 WAIT kinds not separated, B3 combinational bank select), the v2.1 late
-`WAIT_CMP` behaviour (B4) and one bug for each of F8, F9 and F12. Each
+`WAIT_CMP` behaviour (B4) and one bug for each of F8, F9, F12 and F13. Each
 mutant must FAIL -- this shows the properties actually detect those bugs.
 
 Engines (--engine):
@@ -68,6 +68,8 @@ MUTANTS = [
      "wire       pop   = (qn != 2'd0) && !core_b;", "wire       pop   = (qn != 2'd0);"),
     ("F12: the rotation skips the next thread", "tt_um_msf_ctrl.v",
      "for (k = 3; k >= 1; k = k - 1) begin", "for (k = 3; k >= 2; k = k - 1) begin"),
+    ("F13: a stalled thread holds on to the next slot", "tt_um_msf_ctrl.v",
+     "          own <= fth; bub <= 1'b0;", "          own <= st_c ? cur : fth; bub <= 1'b0;"),
 ]
 
 

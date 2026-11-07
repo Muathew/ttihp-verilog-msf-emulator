@@ -848,6 +848,20 @@ module tt_um_msf_ctrl (
     end
   endgenerate
 
+  // F13 a thread's timing depends only on which threads run, never on what they do
+  //     (isa.md section 7): in a cycle with no TSTART or TSTOP, the running set stays
+  //     as it is, and in multi-thread mode the next owner follows from this owner and
+  //     that set alone, with no bubble, whatever this cycle's instruction, stall or
+  //     pin event. It says nothing about shared memory, pins or peripherals.
+  always @(posedge clk)
+    if (!f_init && !$past(f_init) && !$past(do_tstart) && !$past(do_tstop)) begin
+      assert(run == $past(run));
+      if ($past(multi)) begin
+        assert(own == $past(fth));
+        assert(!bub);
+      end
+    end
+
   // F6 flags change only through the owning thread's flag ops / blocking ops
   wire f_flagev = exec && flag_op || blk_now || rel || exec && x_put;
   generate

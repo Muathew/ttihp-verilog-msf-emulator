@@ -3,6 +3,11 @@ name: formal
 on:
   push:
   workflow_dispatch:
+    inputs:
+      prove:
+        description: "also prove the controller's properties for all time (ABC pdr)"
+        type: boolean
+        default: false
 
 jobs:
   formal:
@@ -24,3 +29,8 @@ jobs:
       # each give a counterexample; a tool error never counts as caught).
       - name: Formal (SymbiYosys + ABC)
         run: python3 formal/run_formal.py --engine abc --depth 16
+
+      # Started by hand: PDR on each of the controller's properties, an hour at most.
+      - name: Unbounded proofs
+        if: ${{ inputs.prove }}
+        run: python3 formal/run_formal.py --engine abc --depth 16 --prove --prove-timeout 3600 --top ctrl --no-mutants
