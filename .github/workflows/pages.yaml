@@ -1,0 +1,37 @@
+name: pages
+# The playground and results page. By hand on purpose: a Pages site is public, and it holds a
+# copy of the tools and firmware. The GDS workflow's viewer job also deploys all of Pages, so
+# run this after the GDS run it names, and this is what stays.
+on:
+  workflow_dispatch:
+    inputs:
+      gds_run:
+        description: "A finished GDS run's id, for the layout and the 3D viewer's link"
+        required: true
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+      actions: read
+      contents: read
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Get the layout from the GDS run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "${{ inputs.gds_run }}" -n tt_submission -n gds_render -D gds
+      - name: Build
+        run: python tools/site_build.py --out _site --gds gds
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4

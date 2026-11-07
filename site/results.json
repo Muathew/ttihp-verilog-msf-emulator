@@ -1,0 +1,22 @@
+{
+ "repository": "https://github.com/Muathew/ttihp-verilog-msf-emulator",
+ "layout": {
+  "run": "42393871451",
+  "flow": "tt-gds-action@ttihp27a, the shuttle's own flow",
+  "process": "IHP SG13CMOS5L, 6x4 tiles",
+  "cells": 17245,
+  "utilisation_percent": 46.5,
+  "clock_ns": 30,
+  "slack_ns": {"slow": 3.62, "typical": 11.93, "fast": 14.0, "hold": 0.08},
+  "drc": 0, "antenna": 0, "lvs": 0
+ },
+ "hardware": [
+  {"what": "AUP-ZU3 FPGA, core stepped by the Zynq", "result": "67 of 67 C protocol tests"},
+  {"what": "AUP-ZU3 at 12 MHz against a real LP-MSPM0G3519", "result": "UART, SPI and I2C both ways, 148 of 148 passes"}
+ ],
+ "not_shown": [
+  "No chip exists yet: everything here is simulation, FPGA or layout analysis.",
+  "The model on this page has no SERDES and no capture engine. Programs using them are certified, but stop when run.",
+  "A certificate covers the WAIT_CMP deadlines of the thread timing the checker models. It says nothing about whether the protocol is right: that is what the tests and sigrok's decoders are for."
+ ]
+}

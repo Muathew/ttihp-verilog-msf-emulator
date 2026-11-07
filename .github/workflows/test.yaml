@@ -57,7 +57,7 @@ jobs:
 
       # Protocols nobody designed, drawn at random: decoded exactly or refused.
       - name: Learning a protocol
-        run: pip install pytest && python3 -m pytest test/test_learn_tool.py -q
+        run: pip install pytest && python3 -m pytest test/test_learn_tool.py test/test_site.py -q
 
       - name: Test Summary
         uses: test-summary/action@v2.4

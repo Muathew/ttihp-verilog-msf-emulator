@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>msfcore playground</title>
+<link rel="icon" href="data:,">
+<meta name="description" content="Assemble and certify firmware for the msfcore protocol emulator in your browser, and see its results.">
+<style>
+:root {
+  --bg: #fbfaf7; --panel: #ffffff; --ink: #1d2023; --muted: #5d646b; --line: #d9d7cf;
+  --accent: #0b6b62; --accent-ink: #ffffff; --good: #116b3a; --bad: #a32020; --wave: #0b6b62;
+  --code-bg: #f3f1ea;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #15181a; --panel: #1d2124; --ink: #e8e8e4; --muted: #a0a7ad; --line: #363b3f;
+    --accent: #3fb8aa; --accent-ink: #0c1413; --good: #5ad08e; --bad: #f08a8a; --wave: #3fb8aa;
+    --code-bg: #262b2e;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #15181a; --panel: #1d2124; --ink: #e8e8e4; --muted: #a0a7ad; --line: #363b3f;
+  --accent: #3fb8aa; --accent-ink: #0c1413; --good: #5ad08e; --bad: #f08a8a; --wave: #3fb8aa;
+  --code-bg: #262b2e;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 980px; margin: 0 auto; padding: 24px 16px 64px; }
+h1 { font-size: 1.8rem; margin: 0 0 4px; }
+h2 { font-size: 1.25rem; margin: 40px 0 8px; border-top: 1px solid var(--line); padding-top: 24px; }
+h3 { font-size: 1rem; margin: 20px 0 6px; }
+p { margin: 8px 0; max-width: 70ch; }
+.muted { color: var(--muted); }
+a { color: var(--accent); }
+code, textarea, pre { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 13.5px; }
+code { background: var(--code-bg); padding: 1px 4px; border-radius: 3px; }
+textarea { width: 100%; height: 300px; padding: 10px; background: var(--panel); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 6px; resize: vertical; white-space: pre; overflow: auto; }
+textarea.short { height: 110px; }
+pre { background: var(--code-bg); padding: 10px; border-radius: 6px; overflow: auto; margin: 8px 0; max-height: 340px; }
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin: 10px 0; }
+label { display: flex; flex-direction: column; font-size: .85rem; color: var(--muted); gap: 3px; }
+select, input { font: inherit; color: var(--ink); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 5px; padding: 6px 8px; max-width: 100%; }
+button { font: inherit; padding: 7px 14px; border-radius: 5px; border: 1px solid var(--accent);
+  background: transparent; color: var(--accent); cursor: pointer; }
+button.primary { background: var(--accent); color: var(--accent-ink); }
+button:disabled { opacity: .5; cursor: default; }
+.verdict { font-weight: 650; font-size: 1.05rem; margin: 12px 0 4px; }
+.verdict.good { color: var(--good); } .verdict.bad { color: var(--bad); }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: .92rem; }
+th, td { text-align: left; padding: 5px 10px 5px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; padding-right: 14px; }
+.lane { font: 11px ui-monospace, Consolas, monospace; fill: var(--muted); }
+svg .trace { fill: none; stroke: var(--wave); stroke-width: 1.2; vector-effect: non-scaling-stroke; }
+svg .undriven { fill: none; stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+.table-link { background: none; border: 0; padding: 0; color: var(--accent); text-decoration: underline; font-family: ui-monospace, Consolas, monospace; font-size: .88rem; }
+</style>
+</head>
+<body>
+<main>
+<h1>msfcore</h1>
+<p>A small programmable chip that plays, watches and breaks digital protocols: 16 bits, four
+threads, one cycle an instruction, on IHP's 130 nm process through Tiny Tapeout. New protocols
+are firmware. This page runs the project's own assembler, deadline checker, ISA model and
+protocol learner in your browser. Nothing is sent anywhere.</p>
+<p class="muted" id="state">Loading Python, about 10 MB the first time.</p>
+
+<h2>Certify a program</h2>
+<p>Choose a program or paste your own, in the <a id="isa-link" href="#">instruction set</a>'s
+assembly. The checker follows every path and either proves that no <code>WAIT_CMP</code> is ever
+late, or refuses. Try the first example at <code>BIT=9</code>: too few cycles a bit for its own loop.</p>
+<div class="row">
+  <label>Example <select id="fw"></select></label>
+  <label>Defines <input id="defines" placeholder="BIT=9" size="16"></label>
+  <button class="primary" id="check" disabled>Assemble and certify</button>
+  <label>Cycles <input id="cycles" type="number" value="20000" min="100" max="400000" step="1000" style="width:7em"></label>
+  <button id="run" disabled>Run on the model</button>
+  <button id="stop" hidden>Stop</button>
+</div>
+<textarea id="src" spellcheck="false" aria-label="Firmware source"></textarea>
+<div id="check-out" aria-live="polite"></div>
+<div id="run-out" aria-live="polite"></div>
+
+<h2>Learn a protocol from a recording</h2>
+<p>Give it a recording of one wire nobody documented. It works out how the bits are coded and what
+the frames hold, from the timing alone, refuses what fits no code, and writes firmware that sends a
+message the transmitter never sent. The firmware has to pass the checker above.</p>
+<p class="muted">The examples are synthetic, made from each code's specification by
+<code>tools/site_build.py</code>. A real run through the chip's own logic analyser is in the project's tests.</p>
+<div class="row">
+  <label>Example <select id="rec">
+    <option value="nec.vcd">NEC remote, four presses</option>
+    <option value="manchester.vcd">Manchester, 12 bits</option>
+    <option value="serial.vcd">UART at 9600 baud</option>
+    <option value="noise.vcd">Noise: must be refused</option>
+  </select></label>
+  <label>Or a VCD file <input id="file" type="file" accept=".vcd"></label>
+  <label>Channel <input id="pin" type="number" value="0" min="0" max="7" style="width:5em"></label>
+  <label>Send instead (hex words) <input id="send" placeholder="e.g. 8877ef10" size="22"></label>
+  <button class="primary" id="learn" disabled>Learn</button>
+</div>
+<textarea id="vcd" class="short" spellcheck="false" aria-label="Recording as VCD"></textarea>
+<div id="learn-out" aria-live="polite"></div>
+
+<h2>Results</h2>
+<div id="results"><p class="muted">Loading.</p></div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const params = new URLSearchParams(location.search);
+let worker, ready = false, nextId = 1;
+const waiting = new Map();
+
+function startWorker() {
+  worker = new Worker("worker.js");
+  worker.onmessage = ({ data }) => {
+    if (data.ready) { ready = true; setBusy(false); $("state").textContent = "Ready: the tools are running in this tab."; autoRun(); }
+    else if (data.failed) { $("state").textContent = "Python did not load: " + data.failed; }
+    else if (waiting.has(data.id)) { waiting.get(data.id)(data.result); waiting.delete(data.id); setBusy(false); }
+  };
+}
+function call(name, ...args) {
+  setBusy(true);
+  return new Promise((resolve) => { const id = nextId++; waiting.set(id, resolve); worker.postMessage({ id, name, args }); });
+}
+function setBusy(busy) {
+  for (const b of ["check", "run", "learn"]) $(b).disabled = busy || !ready;
+  $("stop").hidden = !busy || !ready;
+}
+$("stop").onclick = () => {
+  worker.terminate(); waiting.clear(); ready = false; setBusy(false);
+  $("state").textContent = "Stopped. Loading Python again."; $("check-out").textContent = ""; startWorker();
+};
+
+async function loadFile(name) { $("src").value = await (await fetch("repo/firmware/" + name)).text(); }
+async function loadVcd(name) { $("vcd").value = await (await fetch("examples/" + name)).text(); }
+$("fw").onchange = () => { loadFile($("fw").value); $("check-out").textContent = ""; $("run-out").textContent = ""; };
+$("rec").onchange = () => { loadVcd($("rec").value); $("learn-out").textContent = ""; };
+$("file").onchange = async (e) => { if (e.target.files[0]) $("vcd").value = await e.target.files[0].text(); };
+
+$("check").onclick = async () => {
+  $("run-out").textContent = "";
+  $("check-out").innerHTML = '<p class="muted">Following every path.</p>';
+  showCheck(await call("check", $("src").value, $("defines").value));
+};
+function showCheck(r) {
+  const out = $("check-out");
+  if (r.verdict === "error") { out.innerHTML = `<p class="verdict bad">Does not assemble</p><pre>${esc(r.message)}</pre>`; return; }
+  const text = { certified: "Certified: no WAIT_CMP is ever late, on any path", "no deadlines": "Assembles: this program has no WAIT_CMP to certify",
+    "not followed": "Assembles: no WAIT_CMP found, but the checker could not follow every path", refused: "Refused: the checker cannot prove every deadline" }[r.verdict];
+  const tone = { refused: "bad", "not followed": "" }[r.verdict] ?? "good";
+  let h = `<p class="verdict ${tone}" id="verdict">${text}</p>`;
+  h += `<p class="muted">${r.words} of ${r.capacity} words, ${r.threads} thread${r.threads > 1 ? "s" : ""}, ${r.deadlines.length} deadline${r.deadlines.length === 1 ? "" : "s"}.</p>`;
+  if (r.report.trim()) h += `<pre>${esc(r.report)}</pre>`;
+  out.innerHTML = h;
+}
+
+$("run").onclick = async () => {
+  $("run-out").innerHTML = '<p class="muted">Running.</p>';
+  showRun(await call("run", $("src").value, Number($("cycles").value), $("defines").value));
+};
+function showRun(r) {
+  const out = $("run-out");
+  if (r.verdict === "error") { out.innerHTML = `<p class="verdict bad">Does not assemble</p><pre>${esc(r.message)}</pre>`; return; }
+  const lanes = laneData(r);
+  let h = `<p class="muted" id="ran">${r.cycles} cycles on the ISA model, with <code>ui</code> at 1 and <code>uio</code> pulled high.${r.stopped ? " " + esc(r.stopped) + "." : ""}</p>`;
+  h += lanes.length ? waveform(lanes, r.cycles) : '<p class="muted">No output pin moved.</p>';
+  out.innerHTML = h;
+}
+function laneData(r) {
+  const lanes = [];
+  const collect = (label, level) => {
+    for (let bit = 0; bit < 8; bit++) {
+      const pts = [];
+      let last;
+      for (const e of r.events) {
+        const v = level(e, bit);
+        if (v !== last) { pts.push([e[0], v]); last = v; }
+      }
+      if (pts.length > 1) lanes.push({ name: `${label}[${bit}]`, pts });
+    }
+  };
+  collect("uo", (e, b) => (e[1] >> b) & 1);
+  collect("uio", (e, b) => ((e[3] >> b) & 1) ? (e[2] >> b) & 1 : 0.5);
+  return lanes;
+}
+function waveform(lanes, end) {
+  const H = 26, W = 1000, left = 62;
+  const x = (c) => left + (c / Math.max(end, 1)) * (W - left);
+  let s = `<div class="scroll"><svg viewBox="0 0 ${W} ${lanes.length * H + 18}" width="100%" role="img" aria-label="Pins against cycles" style="min-width:560px">`;
+  lanes.forEach((l, i) => {
+    const y = (v) => i * H + 4 + (1 - v) * (H - 10);
+    let d = "", prev = l.pts[0][1];
+    d = `M${x(l.pts[0][0]).toFixed(1)} ${y(prev).toFixed(1)}`;
+    for (const [c, v] of l.pts.slice(1)) { d += `H${x(c).toFixed(1)}V${y(v).toFixed(1)}`; prev = v; }
+    d += `H${W}`;
+    s += `<text class="lane" x="0" y="${i * H + 15}">${l.name}</text><path class="trace" d="${d}"/>`;
+  });
+  s += `<text class="lane" x="${left}" y="${lanes.length * H + 14}">0</text><text class="lane" x="${W}" text-anchor="end" y="${lanes.length * H + 14}">${end} cycles</text></svg></div>`;
+  return s;
+}
+
+$("learn").onclick = async () => {
+  $("learn-out").innerHTML = '<p class="muted">Reading.</p>';
+  const r = await call("learn", $("vcd").value, Number($("pin").value), $("send").value);
+  const out = $("learn-out");
+  if (r.verdict !== "learned") { out.innerHTML = `<p class="verdict ${r.verdict === "refused" ? "good" : "bad"}" id="learned">${r.verdict === "refused" ? "Refused, not guessed" : "Could not read it"}</p><pre>${esc(r.message)}</pre>`; return; }
+  const code = { distance: "pulse distance", length: "pulse length", width: "pulse width", manchester: "Manchester", serial: "UART serial" }[r.model] ?? r.model;
+  let h = `<p class="verdict good" id="learned">Read as ${esc(code)}</p><pre>${esc(r.description)}</pre>`;
+  if (r.firmware_refused) { h += `<p class="verdict bad">No firmware</p><pre>${esc(r.firmware_refused)}</pre>`; }
+  else {
+    h += `<p>Firmware that sends it at 12 MHz: ${r.words} words, every deadline certified, worst slack ${r.worst_slack} cycles.
+      <button id="use">Open it in the checker</button></p><pre>${esc(r.firmware)}</pre>`;
+  }
+  out.innerHTML = h;
+  if (r.firmware) $("use").onclick = () => { $("src").value = r.firmware; $("defines").value = ""; $("src").scrollIntoView(); };
+};
+
+async function loadResults() {
+  const r = await (await fetch("results.json")).json();
+  const fw = $("fw");
+  const pick = params.get("fw") || "uart_tx.s";
+  for (const f of r.firmware) { const o = document.createElement("option"); o.value = o.textContent = f.name; o.selected = f.name === pick; fw.append(o); }
+  await loadFile(pick);
+  if (params.get("defines")) $("defines").value = params.get("defines");
+  $("isa-link").href = r.repository + "/blob/main/docs/isa.md";
+  await loadVcd(params.get("rec") || "nec.vcd");
+  if (params.get("rec")) $("rec").value = params.get("rec");
+  const l = r.layout;
+  let h = `<h3>The layout</h3><p>${esc(l.process)}, ${l.cells.toLocaleString("en")} cells at ${l.utilisation_percent} % utilisation, on ${esc(l.flow)}.
+    Timing met at ${l.clock_ns} ns (33 MHz) in every corner. ${l.drc} DRC, ${l.antenna} antenna and ${l.lvs} LVS errors.
+    CI run <code>${esc(l.run)}</code>.</p>
+    <div class="scroll"><table><tr><th>Slack</th><th class="num">Slow, 1.08 V 125 °C</th><th class="num">Typical</th><th class="num">Fast</th><th class="num">Hold, worst</th></tr>
+    <tr><td>ns</td><td class="num">+${l.slack_ns.slow}</td><td class="num">+${l.slack_ns.typical}</td><td class="num">+${l.slack_ns.fast}</td><td class="num">+${l.slack_ns.hold}</td></tr></table></div>`;
+  if (l.pdk) h += `<p><a href="https://gds-viewer.tinytapeout.com/?pdk=${encodeURIComponent(l.pdk)}&model=${encodeURIComponent(new URL("tinytapeout.oas", location.href))}">Open the layout in Tiny Tapeout's 3D viewer</a>.</p>`;
+  h += `<h3>On hardware</h3><div class="scroll"><table>${r.hardware.map((x) => `<tr><td>${esc(x.what)}</td><td>${esc(x.result)}</td></tr>`).join("")}</table></div>`;
+  h += `<h3>Tests</h3><p>${r.tests.cocotb_tests} cocotb tests in ${r.tests.modules} modules, on the RTL.</p>`;
+  if (r.draw) {
+    h += `<h3>Protocols drawn at random</h3><p>${esc(r.draw.intro)}</p><div class="scroll"><table><tr><th>Protocol</th><th>Result</th><th class="num">Words</th><th class="num">Minutes</th></tr>${r.draw.rows.map((x) => `<tr><td>${esc(x.id)}</td><td>${esc(x.result)}</td><td class="num">${x.words ?? ""}</td><td class="num">${x.minutes ?? ""}</td></tr>`).join("")}</table></div>`;
+  }
+  const n = r.firmware.filter((f) => f.deadlines).length;
+  h += `<h3>Firmware</h3><p>${r.firmware.length} programs, ${n} with deadlines, worked out by the checker when this page was built. Select one to open it above.</p>
+    <div class="scroll"><table><tr><th>Program</th><th class="num">Words</th><th class="num">Threads</th><th class="num">Deadlines</th><th class="num">Worst slack</th></tr>`;
+  for (const f of r.firmware) h += `<tr><td><button class="table-link" data-fw="${esc(f.name)}" title="${esc(f.what)}">${esc(f.name)}</button></td><td class="num">${f.words}</td><td class="num">${f.threads}</td><td class="num">${f.deadlines || ""}</td><td class="num">${f.slack ?? ""}</td></tr>`;
+  h += `</table></div><h3>What this does not show</h3><ul>${r.not_shown.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`;
+  $("results").innerHTML = h;
+  $("results").addEventListener("click", (e) => {
+    const name = e.target.dataset && e.target.dataset.fw;
+    if (name) { $("fw").value = name; $("fw").onchange(); $("src").scrollIntoView(); }
+  });
+}
+function autoRun() {           // a link can carry a verdict: ?fw=uart_tx.s&defines=BIT%3D9&do=check
+  const act = params.get("do");
+  if (act && $(act)) $(act).click();
+}
+loadResults().then(startWorker);
+</script>
+</body>
+</html>

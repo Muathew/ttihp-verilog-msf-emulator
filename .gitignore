@@ -35,4 +35,5 @@ formal/work/
 
 __pycache__/
 test/deadlines_seen.json
+_site/
 test/traces/
