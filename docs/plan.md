@@ -30,7 +30,7 @@ Updated as work lands. The §6 decisions were taken provisionally as
 | 2.4 `fpga/rtl` sync | done | `tools/check_fpga_sync.py` in the `test` workflow; the repo copies were already identical (CRLF only in this checkout) |
 | 2.5 mutation re-run | done | v2.2: 37 of 40 killed, the other 3 equivalent (`verification.md` §8). Three gaps closed by new tests (RX pop on the landing cycle, filter on every pin, capture divisors 9-4099). `mutation.py` now runs the unmutated design first (a failing 1-Wire test had faked six kills) and every module by default |
 | 2.6 GL simulation | done | `test_gl_firmware.py` (in the GDS action's gate-level job): firmware loaded through the boot ROM's parallel loader and checked at the pins only, as on silicon: `uart_tx.s` drift-free, `thread_demo.s` (T0 exact while T1 echoes), `spi_flash.s` at its 28-cycle SCK limit. On CI's CMOS5L netlist the last two pass with the same cycle timing as the RTL. They found a boot ROM bug: at handover the loader stopped the TX engine before releasing `uio[0]`, so the pin drove 0 for one cycle, a false start bit on the host's UART after every boot; fixed by swapping the two instructions. All five gate-level tests (`test_gl_smoke` 2, `test_gl_firmware` 3) pass on the netlists of CI 40085473871, local run F (28 Oct) and CI 41669584983 (3 Nov); §3.4 proves the netlist equal to the RTL, which is the stronger evidence |
-| 3.1 timing checker | done | `tools/msf_timing.py`: every firmware deadline certified (worst slack 9 cycles, `usb_ls_tx.s`), cross-checked against the model, rejects a too-fast UART; in the `test` workflow. Widening thresholds made 16 apart near 0 (24 Oct): with powers of two it could not certify `can.s` at any bit time |
+| 3.1 timing checker | done | `tools/msf_timing.py`: every firmware deadline certified (worst slack 9 cycles, `usb_ls_tx.s`), compared with the model for `uart_tx.s` only (§7.1), rejects a too-fast UART; in the `test` workflow. Widening thresholds made 16 apart near 0 (24 Oct): with powers of two it could not certify `can.s` at any bit time |
 | 3.2 LATE flag | done | Decided (decision 3): per thread, STAT bit 14, port 7 read/clear, cleared by TSTART; late = 0-255 cycles behind; 2 cycles, Z=1. isa.md v2.2, RTL, model, assembler, random programs, directed tests, F10/F11, mutant B4. Formal: F10 and F11 pass the depth-16 BMC in CI (40085473891); F11 and F10's release bounds are proved for all time, F10's first assertion only to depth 16 (§3.3) |
 | 3.3 unbounded proofs | in progress | `run_formal.py --prove [--prove-timeout S] [--top ctrl\|top\|cap]`, ABC `pdr`, with a per-assertion report from SymbiYosys' status database. Controller: 31 of 35 assertions proved for all time (30 in under 7 min, F8's count bound in 3.4 h); after 5 h F3's three timeout bounds and F10's first assertion are still open (they relate the 17-bit ghost stall counter to the 16-bit timeout; need a strengthening invariant). Helper invariants per thread (stall kind, lateness, target, timeout counter + ghost count = TMO, overrun within F12's gap) did not close them: PDR proved 61 of 87 in 1 h, neither the four nor most helpers; k-induction (bitwuzla, depth 4) fails its step even on F3's event release. Left out; the four stay bounded (depth 16). Top level (`--top top`, F7, F9 and the controller in the whole design): running locally, 4 h limit (28 Oct). `verification.md` §3 |
 | 3.4 netlist equals RTL | done | **Proved.** `formal/netlist_equiv.py`: one miter of RTL and routed netlist (cells from the liberty, both SRAMs cut out as black boxes), started in the reset state (Yosys `sim -w`), ABC `dprove`: equivalent in 8 min 43 s on CI 40085473871's netlist. From an all-zero start it had failed: the netlist's only flop resets to 0, so reset-to-1 bits are stored inverted and disagree before a reset. Bugs put into the netlist: an AND2 made an OR2 found (29 min), two SRAM address bits swapped found (1.5 min), a NAND2 in the SERDES receiver made a NOR2 left undecided (43 min; only a received byte, thousands of cycles in, shows it, as a gate-level UART boot does) — undecided exits 2, so CI fails safe. CI job `checks / equiv` after `gds` (`gds_checks.yaml`, which can also check an earlier run's layout): equivalent in 1 min 49 s on CI 41669584983's netlist (3 Nov), in a rerun; the first CI run had looked for the netlist one directory too high. `verification.md` §7c |
@@ -39,6 +39,7 @@ Updated as work lands. The §6 decisions were taken provisionally as
 | 4 JTAG, SWD, PS/2, CAN, 1-Wire | done | `jtag.s`: UART-driven IEEE 1149.1 master (reset, IR/DR scans 1-255 bits), tested against modelled TAPs, single and chained. `swd.s`: ADIv5 SWD host (line reset, JTAG-to-SWD, DP/AP transactions with parity and ACK handling), tested against a modelled SW-DP + MEM-AP (DPIDR, IDR, memory read/write, WAIT, no target). Both in `test_debugports.py`. `ps2_device.s`: keyboard emulation (answers host commands, reports them, inhibit and resend), `test_buses.py` against a modelled PS/2 host. `onewire.s`: 1-Wire master (reset/presence, byte read/write, SEARCH ROM), against modelled devices (READ/MATCH/SKIP/SEARCH ROM, scratchpad with CRC-8); 8 deadlines certified. `can.s`: CAN 2.0A node (send with arbitration and retries, receive, ACK, CRC-15, stuffing), against modelled nodes; certified at 480 cycles a bit (50 kbit/s at 24 MHz). C versions of the JTAG, SWD and 1-Wire tests for the board are in `msf_tests.c` (§2.3) |
 | 4 next tier | done, but one not feasible | Device emulation: `i2c_target.s` plays a 128-byte I2C EEPROM and `spi_target.s` a 64-register SPI device; `spi_flash.s` (24 Oct) a 25xx SPI flash: JEDEC ID, RDSR, WREN/WRDI, READ/FAST_READ with a 3-byte address, page program, the erases with WIP polled during them; 512 bytes; SCK period >= 28 cycles, measured. 10BASE-T receive is not feasible at the clocks we sign off: the Manchester receiver needs about 4x oversampling of the 10 MHz half-bits, ~80 MHz (`history.md` §6) |
 | 5 write-up | in progress | README rewritten as the landing page (core, firmware by role, the verification ladder, honest limits); `research.md` 23 Oct survey added; `ai.md` updated. The signed-off clock (33 MHz in every corner, 50 MHz typical) and the netlist-equals-RTL proof are in README and `info.md` (24 Oct). To do: photos and video of the board (Sam, Muath) |
+| 7 worth taking (7 Nov) | planned, nothing started | §7: the shuttle flow first, then the deadline checker, sigrok, capture tools, our new instruments, learning from a recording and protocols drawn at random. None of it changes the netlist |
 
 **Left to finish (6 Nov):**
 
@@ -48,6 +49,11 @@ Updated as work lands. The §6 decisions were taken provisionally as
 
 Extras that nothing depends on: `swd_mcu` against the LP-MSPM0G3519; CAN against
 it, which needs a new peer and a shared bus; the top-level formal proof.
+
+**Also found on 7 Nov (§7.0):** the GDS must move to the shuttle's flow before item 2,
+and the repository must go public and the sign-up be checked before item 3. The rest of §7
+is optional and can stop at any item. `swd_mcu` and the photos and video can share one bench
+session (§7.11).
 
 ## 0. Where we are on 23 Oct
 
@@ -439,3 +445,334 @@ Decided by Sam on 28 Oct (each was asked and explained one at a time).
    netlist = RTL.
 8. **AI write-up:** `ai.md` §1 checked: v1 was Sam's, done at home with an
    AI coding agent; the quoted question in §3 removed (§3.5).
+
+## 7. Worth taking from the 7 Nov survey, and ideas of our own
+
+From the 7 Nov update in `research.md`. Escapement and MarcosAsh are ahead of
+us on timing guarantees, firmware breadth and clock. Their hardware isn't worth
+copying: a refuse-not-late event queue, an on-chip certifier, a 50 MHz pipeline
+or a line unit would each mean redesigning the core and repeating its
+verification.
+
+So everything here is firmware, tools, tests or docs. **The netlist does not
+change, so nothing needs a new sign-off** beyond the flow change in §7.0. §7.9
+adds lines under `ifdef FORMAL` only.
+
+**The story this builds.** One chip and no other instruments, on a board nobody
+documented: find the debug pins (§7.6), record the traffic (§7.3), learn the
+protocol and speak it (§7.7), watch the bus and keep the waveform around the
+first fault (§7.4), then find how far a device can be pushed before it breaks
+(§7.5). Only the learning needs a PC. Rivals have pieces of this; the closest
+is Wirelingo's capture, understand and impersonate, with a host in the loop.
+The whole chain is what would be ours, more than any one feature.
+
+Effort is a rough estimate in working days. Stop after any item: each stands
+alone unless "needs" says otherwise. If time runs short, cut 7.10, then 7.12,
+then 7.9.
+
+| # | Item | Taken from | Needs | Effort | Status |
+|---|---|---|---|---|---|
+| 7.0 | Shuttle flow, public repository, sign-up | survey | | 1, plus GDS runs | not started, decisions open |
+| 7.1 | Deadline checker: a real cross-check, planted timing bugs | Escapement, MarcosAsh | | 2 | not started |
+| 7.2 | sigrok decoders as an outside check | Escapement, MarcosAsh, Wirelingo | | 1 | not started |
+| 7.3 | Capture tools: export, streaming, replay | Escapement, Wirelingo | | 2 | not started |
+| 7.4 | Flight recorder | ours | | 1 | not started |
+| 7.5 | Margin finder | ours, after MarcosAsh | | 2-3 | not started |
+| 7.6 | Pin finder | ours, after JTAGulator | | 2-3 | not started |
+| 7.7 | Learn a protocol from a recording | Escapement, openPIO | 7.3 | 3-5 | not started |
+| 7.8 | Protocols drawn at random | MarcosAsh | 7.1, 7.2 | 2 | not started |
+| 7.9 | Proof of the thread timing claim | MarcosAsh, Loom | | 0.5 | not started |
+| 7.10 | In-line interposer | ours | | 2-3 | not started |
+| 7.11 | One bench session, with the photos and video | | what is built by then | 0.5 at the bench | not started |
+| 7.12 | Playground and results page | Escapement, MarcosAsh | 7.0 | 1-2 | not started |
+| 7.13 | Attack our own claims | MarcosAsh, Wirelingo | last | 0.5 | not started |
+
+"Ours" means not found on 7 Nov in the READMEs of about 150 entries or in the
+file lists of the 14 strongest; each section names the closest thing found. That
+search reads documents and file names, not code, so re-check before calling
+anything unique in the write-up.
+
+Not taken: the hardware above, an on-chip execution digest (RTL; the C board
+tests have one), VGA Pong, and 8x4 unless §7.0 needs it.
+
+### 7.0 Before anything else
+
+1. **Shuttle flow.** Tiny Tapeout's template `main` now uses
+   `tt-gds-action@ttihp27a`: LibreLane 3.1.0.dev4, IHP-Open-PDK `89d42ee6`,
+   `tt-support-tools` `main`. We harden on `@ihp-cmos5l`: LibreLane 3.1.0.dev3,
+   PDK `2bbec75`. The competition page still links the older template branch,
+   so it isn't proven that a GDS from the old flow would be refused.
+   * LibreLane dev4 changes the default `SYNTH_STRATEGY` from `AREA 0` to
+     `DELAY 4`, and `config.json` doesn't pin it. MarcosAsh measured 19 % more
+     cell area from that, and their 6x4 stopped routing.
+   * Change: `@ttihp27a` in `gds.yaml`, `docs.yaml` and `fpga.yaml`;
+     `"SYNTH_STRATEGY": "AREA 0"` in `config.json`; the PDK commit at
+     `gds_checks.yaml:88`. On a branch, then one GDS run.
+   * Comparing the two LibreLane releases as text, everything
+     `librelane_plugin_msf_pdn.py` hooks into still exists and all 43 keys in
+     `config.json` are known. None of this has been run. The PDK comparison hit
+     GitHub's 300-file limit, so library changes aren't ruled out.
+   * Run it now rather than last: it may take more than one attempt, and slow
+     corner slack is only +1.24 ns. If that goes negative, try `DELAY` strategies
+     first, then 8x4 if confirmed (Loom gained about 2.4 ns from that move).
+   * **Done when** GDS, precheck, gate-level tests, `check_signoff.py` and
+     `netlist_equiv.py` pass at 30 ns on the new flow.
+2. **Public repository.** The brief says "Your submission should be open source".
+   Muath owns the repository. The licence is there, and a pattern scan of tracked
+   files found no secrets (history not scanned). Keep the four untracked files out
+   (`fpga/rtl/a.out`, the two logs, `vivado_reports.zip`). Public repositories also
+   get free Actions, which ends decision 7's limit.
+3. **Sign-up.** Jane Street sends the final submission link and template updates to
+   people who filled in the form on its page. Check that Sam or Muath did. Sarkar22
+   and openPIO logged on 6 Nov that 8x4 is confirmed, while the page still said 6x4
+   on 7 Nov, so there may be an email. We stay on 6x4 either way: we use 47 % of it.
+4. **Small edits.** `info.yaml` has the generic title "Protocol Emulator" and lists
+   only Sam as author. README's "receiving needs about 80 MHz" is the limit of our
+   receiver: Wirelingo and MarcosAsh receive at 40-50 MHz with dedicated hardware.
+
+### 7.1 Deadline checker: a real cross-check, planted timing bugs
+
+**Problem.** README item 5, `verification.md` §9 and §3.1 above say the checker is
+cross-checked against the ISA model. It mostly isn't. On 7 Nov, `msf_timing.py --all
+--check-model 20000` skipped seven of the eight firmwares, because the model has no
+SERDES, so only `uart_tx.s` is compared: **1 of 29 deadlines**. The model also runs
+with its pins held constant. CI prints "skipped" and passes. Rivals' checkers have
+all had soundness bugs: Escapement's planted-bug run found one, and MarcosAsh and
+Loom report theirs. Ours may have some too.
+
+**Approach.**
+1. Say what is true now: correct README item 5 and §9 until this item is done, and
+   make `--check-model` report how many deadlines it covered.
+2. Cross-check on the RTL, where the peers are. In `test/fw_tb.py`, `fw_boot` starts
+   a watcher that fails the test if `u_ctrl.late` goes non-zero, with an opt-out for
+   tests that are late on purpose (the fault knobs). Have the watcher also compare
+   each `WAIT_CMP`'s observed margin with the range the checker computed.
+3. `tools/fw_mutants.py` plants timing bugs in each of the eight firmwares: k `NOP`s
+   before each deadline (1, 2, 3, half the slack, slack - 1, slack, slack + 1,
+   slack + 3), a deadline advance deleted, a period shortened, a conditional branch
+   inverted. The mutants come from a hash of the source, so a run can be repeated.
+   Each gets the checker's verdict, then a run on the RTL against its existing peer.
+4. Full run locally, a sample in CI.
+
+**Done when** all 29 deadlines are cross-checked on the RTL with real peers, and
+`verification.md` has the table. Certified and ran late must be 0; anything else is
+a checker bug to fix and a case for `ai.md`.
+
+### 7.2 sigrok decoders as an outside check
+
+**Why.** Our peer models were written with the same AI as the firmware. sigrok's
+decoders were not. MarcosAsh, Escapement, Wirelingo and others already use them.
+
+**Approach.** `Recorder` in `test/fw_tb.py` samples the pins every cycle: add
+`uio_in` and write a file `sigrok-cli` reads. Run `uart`, `spi`, `i2c`, `can`,
+`onewire_link`/`onewire_network`, `ps2`, `jtag`, `swd`, `usb_signalling`/`usb_packet`
+and `rgb_led_ws281x` on what the firmware tests produce, and compare with what each
+test sent. Each protocol also gets teeth: a waveform changed on purpose must be
+flagged. CI installs `sigrok-cli`; it isn't on this laptop. There is no 10BASE-T
+decoder, so that stays with the model.
+
+**Done when** each protocol has a passing decode and a tooth, and §9 has its row. A
+mismatch counts as a real bug until shown otherwise.
+
+### 7.3 Capture tools: export, streaming, replay
+
+**Why.** The capture engine is good, but its output only reaches our own tests. It
+needs to reach other people's tools, and §7.7 needs it as input.
+
+**Approach.**
+* **Export.** `tools/msf_capture.py` decodes the `logic_analyzer.s` dump, in either
+  mode, into VCD and sigrok `.sr` files for PulseView.
+* **Streaming.** A variant where T1 reads `CAP_STAT` and sends words over UART as
+  they appear, so a recording isn't limited to the 512-word buffer. About 50,000
+  change words a second at 1 Mbaud. It must detect overrun by comparing positions
+  and say so.
+* **Replay.** `firmware/replay.s` re-drives a trace from a table in bank 1 with
+  `LD`, `WAIT_CMP` and `PIN_W`; `msf_capture.py replay` builds the image from a
+  capture, VCD or `.sr`, and refuses a trace denser than the loop's measured minimum.
+  `msf_timing.py` today reports a target it can't derive from `CNT` as unchecked, so
+  it needs a declared minimum (`; @min R6 24`), which the tool enforces on the data.
+  A LATE flag at the end is reported.
+
+**Done when** a capture opens in `sigrok-cli`, and a test records `i2c_master.s`,
+replays it, and matches edge for edge within a measured bound.
+
+### 7.4 Flight recorder (ours)
+
+**Why.** Our monitors say a device broke the timing, but not what the waveform looked
+like. To see that, you need a second instrument and luck. Nothing similar found.
+
+**Approach.** Monitor firmware keeps the capture engine recording into a ring, armed
+with a trigger that cannot fire (check `_cap` for a safe condition). When a monitor
+thread sees a fault, it waits a set number of cycles and stops the ring by writing
+`CAP_CTL` with bit 15 clear. The reporter sends the event, then the ring, oldest word
+first. Recording never changes a thread's timing (`test_cap_never_changes_core_timing`).
+`mon_i2c.s` first (about 380 words, so a ring at 512-1023 fits), then SPI and UART.
+
+**Done when** faulty traffic produces a report whose dump shows the fault at the
+expected place, legal traffic produces none, and the monitors' accuracy figures in
+`instruments.md` still hold.
+
+### 7.5 Margin finder (ours, after MarcosAsh)
+
+**Why.** We already show the UART knob finding 99..109 cycles against a 104-cycle
+receiver, but Python drives that sweep. MarcosAsh's `demo/margins.py` sweeps real parts
+past their datasheet limits with a Pico, a logic analyser and a PC; we found no
+published results. FIPE predicts a shmoo in simulation. Doing it on the chip alone
+means no bench: load one program, connect the device, read a table over UART.
+
+**Approach.** One thread drives at parameter *p*, another checks the device's answer,
+and a third reports; the FIFO joins them. The knobs are assembly-time `defines` today
+(`BIT`, `QL`, `QH`, `SH`, `SL`), so they move to registers. UART first, then I2C SCL
+low and high, then SPI SCK. At 12 MHz a cycle is 83 ns, so a step is about 1 % at
+115200 baud; state that.
+
+**Done when**, with no Python in the loop, the firmware reports exactly 99..109 against
+the existing receiver model; I2C and SPI give known answers against models with set
+limits; and §7.11 adds a table for a real device (the MSPM0's UART receiver, which
+needs an echo mode in `uart_test.c`).
+
+### 7.6 Pin finder (ours, after JTAGulator)
+
+**Why.** The first step on an undocumented board is finding which pins matter.
+JTAGulator exists for this. In the field, only Dom0Nom's host library lists a JTAG pin
+finder (its CI was failing on 28 Oct); nothing on-chip was found, and nothing for SWD.
+
+**Approach.** Reports go out on `uo_out`, bit-banged with `WAIT_CMP`, leaving all eight
+`uio` pins free.
+* **SWD:** each ordered pair (SWCLK, SWDIO), 56 of them: line reset, JTAG-to-SWD, read
+  DPIDR; report on ACK OK with good parity.
+* **JTAG:** each ordered pair (TCK, TMS), 56: reset the TAP, shift out IDCODE, and read
+  all other pins at once with `PIN_R`, so TDO needs no search of its own. Find TDI
+  afterwards with BYPASS.
+* **UART:** passive. Capture all eight pins in change mode; the shortest stable run on
+  a pin gives a bit time, and the RX engine confirms it by framing.
+* **ISA limit:** `PIN_W`, `PIN_R`, `SER_CFG`, `RX_CFG` and `RX_DIV` take registers, but
+  `OE_*` take immediates. Firmware patches those instructions, which §1 of `isa.md`
+  allows in single-thread mode.
+* **Safety:** it drives pins it knows nothing about. Keep pulses short, and document
+  series resistors and matching voltage for real targets.
+
+**Done when** cocotb tests with the existing TAP and SW-DP models pass on every pin
+assignment, with no false finds on floating, stuck or noisy pins; and §7.11 finds a real
+MSPM0's SWD pins from scrambled wires and prints its DPIDR.
+
+### 7.7 Learn a protocol from a recording
+
+**Why.** Sam's call, 7 Nov: third is fine. Escapement and openPIO have it. It turns the
+logic analyser into a reverse-engineering tool: record a transmitter, then send a message
+it never sent. Both are Apache-2.0, but we write our own, which fits our firmware, and
+credit them for the method.
+
+**Approach.** `tools/msf_learn.py` and `tools/msf_gen.py`, pure Python.
+1. Read a capture, VCD or `.sr`. Turn edges into runs, remove any carrier, split frames at
+   gaps.
+2. Try three models: Manchester, asynchronous serial, pulse codes (distance, width,
+   length). Choose by minimum description length, not a hand ranking; that and checking
+   edges against bit boundaries are what fixed Escapement's first version, which got 169
+   of 200 random protocols exact and read square waves as serial. Refuse what fits nothing.
+3. Find check bytes, and CRCs from the frames as openPIO does. Our CRC unit takes any
+   polynomial up to 32 bits, so a learned CRC can be regenerated for a new message.
+4. Generate firmware from a timing table in our `WAIT_CMP` idiom. `msf_timing.py` must
+   certify it or it is refused.
+5. **Ours:** the table keeps each symbol's measured spread, so it can drive the margin
+   finder: how far does a receiver tolerate this transmitter's timing?
+
+**Limits.** Single-wire, self-timed codes first. Clocked buses, receivers and generated
+monitors are stretch goals. A recording is limited by §7.3.
+
+**Done when**
+* a cocotb test goes from a modelled remote through capture, learning and generation to a
+  command the remote never sent, read by the specification's receiver and by sigrok;
+* random protocols decode exactly or are refused, and noise and data-free signals are
+  refused;
+* recordings from sigrok-dumps work where their licences allow it; and it is written up in
+  `instruments.md`.
+
+### 7.8 Protocols drawn at random
+
+**Why.** The brief's core requirement is "new protocols after fabrication", and we only
+assert it. MarcosAsh, Wirelingo, Loom and openPIO show it. This also adds firmware.
+
+**Approach.** Follow MarcosAsh's `demo/corpus_draw.py`.
+1. Commit first: the rule, the pool (sigrok's decoders with logic inputs, minus what we
+   ship, minus what can't fit 33 MHz), and a future drand round.
+2. The round picks six, ranked by `sha256(randomness || id)`.
+3. Record the hash of `src/`, to show the chip didn't change.
+4. For each one, a fresh agent gets `isa.md`, our firmware examples and the spec, and
+   writes the firmware blind. A separate agent writes the test model from the spec.
+   `msf_timing.py` certifies it and sigrok decodes it.
+5. Publish time, words and verdict, failures included. MarcosAsh's runs took 24 to 68
+   minutes each. We have 896 words and 33 MHz, so some may fail, and that's worth showing.
+
+**Done when** all six are in a table in `instruments.md`, whatever the result.
+
+### 7.9 Proof of the thread timing claim
+
+**Why.** `isa.md` §7 and the README say a thread's timing depends only on which threads
+are running, never on what they do. F12 only shows each thread owns a cycle in any four,
+and the rest is `test_threads`. MarcosAsh and Loom prove their versions with two copies.
+
+**Approach.** New property F13 on two copies of `u_ctrl`: with the running sets equal in
+every cycle and everything else free, the owning thread is the same in every cycle. Add a
+mutant where the owner depends on a stall. It says nothing about shared memory or pins, and
+the docs must say so. Mirror the lines into `fpga/rtl`.
+
+**Done when** the depth-16 BMC and PDR pass, the mutant fails, and §3 of `verification.md`
+says what it covers.
+
+### 7.10 In-line interposer (ours)
+
+**Why.** To see how a system reacts when one message goes wrong, you need something in the
+wire. fjpolo describes a hardware man-in-the-middle engine (no CI, stopped 2 Oct); Wirelingo's
+puts the host behind a cloned I2C device. Ours would be a transparent wire that changes exactly
+one thing, with no host.
+
+**Approach.** T0 forwards pins in a tight loop, `ui` to `uo` and `uio` both ways; T1 decodes the
+same bytes with the RX engine and tells T0 when a chosen frame arrives. Actions: flip bit *k* of
+byte *n*, drop a frame, delay by *N* cycles. UART and SPI up to about 250 kHz. I2C is left out,
+because open-drain lines need direction sensing. Measure latency and jitter, and state them.
+
+**Done when** tests between model controller and model device show pass-through unseen by either
+peer and each action hitting only the chosen frame.
+
+### 7.11 One bench session, with the photos and video
+
+Half a day, once, for Sam and Muath: a Vitis rebuild, no bitstream, and no change to Muath's
+wrapper. Run whatever is built by then, in this order:
+
+1. Pin finder: scramble the SWD wires and let the chip find them. This is also `swd_mcu`'s first
+   real run. Remove the XDS110's SWDIO and SWCLK jumpers.
+2. Margin finder against the MSPM0's UART.
+3. Monitor and flight recorder watching the MCU's real I2C traffic.
+4. Record the MCU's UART, learn it, speak it.
+
+Film it: this is the photos and video from "Left to finish". J16 and J17 stay on 1-2, FPGA up
+first, SW0 up. The wrapper keeps the core's UART from the PS while PMOD JA is connected, so reports
+come through `uo_out` or RAM.
+
+**Done when** the logs are read, and the tables are in `instruments.md` and `fpga.md`.
+
+### 7.12 Playground and results page
+
+**Why.** Both leaders have one. A judge can try it without installing anything.
+
+**Approach.** Pyodide runs `assembler.py`, `isa_model.py` and `msf_timing.py`, which use only the
+standard library, plus the §7.7 tools. Paste firmware; it assembles and certifies. The model runs
+what it can, as it has no SERDES. `viewer` deploys all of Pages, so this needs its own `pages.yaml`
+with the site, the results from `gds_metrics.py` and CI, and a link to Tiny Tapeout's hosted GDS
+viewer.
+
+**Done when** a stranger can open the link and get a verdict on a program.
+
+### 7.13 Attack our own claims
+
+**Why.** §7.1 was found by reading one tool's output, so there is more to find, and it's better
+that we find it than a judge. MarcosAsh and Wirelingo publish rounds like this.
+
+**Approach.** Last, so it covers the new claims. An agent goes through README and §9 of
+`verification.md`, row by row, trying to break each one. A finding counts only with a reproducer
+that fails on the code. Fix or reword, and put the counts in `ai.md`, including findings that
+turned out wrong.
+
+**Done when** every row is confirmed or corrected. Then the final GDS run on the final `main`, and
+the submission.

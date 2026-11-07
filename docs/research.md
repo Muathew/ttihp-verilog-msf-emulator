@@ -293,3 +293,69 @@ memories, a RISC-V host. Still open from this survey: 25xx SPI flash
 emulation, power per workload, an execution digest, a results page.
 10BASE-T receive is out of reach at the clocks we can sign off: the
 Manchester receiver needs about 80 MHz.
+
+## Update of 7 Nov 2026
+
+GitHub search now finds about 150 entries: 70 are still the template or close
+to it, 83 have at least 5 KB of RTL, 50 pushed in the last week, and about 15
+show real depth. Private repositories can't be seen (at least one entry says
+it stays private until submission), so this is a lower bound. Claims are as
+the entrants state them (read 7 Nov). We checked the tile count in each
+`info.yaml`, the CI status of the GDS runs that MarcosAsh and Escapement cite,
+and the flow facts below; the rest is not checked by us.
+
+| Entry | Tiles; clock at the slow corner | Firmware | Hardware run | What stands out |
+|---|---|---|---|---|
+| [MarcosAsh](https://github.com/MarcosAsh/protocol-emulator) | 8x4; 48 MHz (+4.03 ns) | 68 | ECP5 at 48 MHz: 21 demos, USB keyboard included | the chip walks each program against a certificate and refuses to start one it can't check; the checking kernel is proved against the RTL; a missed deadline takes the engine off its pins (proved); USB full-speed and 10BASE-T receive; protocols drawn by a public random beacon, and eight sealed by hash in advance; sigrok as an outside decoder; margin-sweep tooling for real parts on a bench; 127 of 128 mutants |
+| [Escapement](https://github.com/parthDOOM/escapement) | 6x4; 50 MHz | 49 | none: bitstreams built, not run | "never late" proved for every program, for all time; "record it, speak it" learns a transmitter's timing from a recording and generates certified firmware; VGA Pong; a real Linux kernel enumerates the simulated chip over USB/IP; 653 of 710 mutants killed in the main campaign, none surviving |
+| [Wirelingo](https://github.com/josusanmartin/wirelingo) | 6x4; 50 MHz (+0.01 ns) | 68 | KV260: USB low and full speed with Linux; ARP, ping and UDP echo with Linux's stack | 10BASE-T receive within 802.3's jitter at 50 MHz; 21 programs added with the chip frozen; a blind test; a verifier agent's reports kept verbatim (27 pass, 24 fail); a Hardcaml port proved equal to the RTL; Lean proofs |
+| [openPIO](https://github.com/theotacconi/openPIO) | 8x4; 42 MHz | 24 protocols | Tang Nano bring-up next | from a recording it finds the line code, stuffing and CRC polynomial and writes a receiver; MIL-STD-1553B, USB Power Delivery, MFM |
+| [Loom](https://github.com/thomasgilbert481/tt_um_loom) | 8x4; 43 MHz | 26 | none | thread isolation proved for each of four threads; 911 mutants, 99.9 % killed; RTL and model written from one contract by sessions that couldn't read each other's code; a public bug ledger |
+| [mrnathanhumphrey](https://github.com/mrnathanhumphrey-droid/protocol-emulator-asic) | 6x4; 50 MHz (+2.68 ns) | UART, SPI, I2C, 1-Wire | Artix-7 with a real FRAM and DS18B20; CI re-checks the recorded witnesses | response-time analysis cross-checked with pyRTA and timed-automata tools; Lean proofs |
+| [ProEm](https://github.com/Vertrex-star/ProEm-Open-Source-Protocol-Emulator) | 6x4; 62 MHz (+3.84 ns) | frame programs for 25+ standards | none stated | a frame engine rather than a CPU; 10BASE-T receive |
+| [Tarang](https://github.com/prasadp4009/tt_um_pemu) | 6x4; 43.8 MHz | about 10 | Zybo: UART, SPI, I2C, 1-Wire, USB | an on-chip trace block the core has no path into |
+| msfcore (ours) | 6x4; 33 MHz (+1.24 ns) | 22 | AUP-ZU3: 67 C tests stepped; UART, SPI and I2C running free at 12 MHz against a real MCU, 148 of 148 passes | one core makes the bit-rate decisions and runs the whole job; bus monitors that report timing faults with their lengths; exact timing-fault injection; debug view; ROM boot over UART with no host at run time |
+
+PRISM and Abagel-coder have not pushed since mid-October.
+
+What changed in the field:
+
+* **8x4 may now be allowed.** Twelve entries set 8x4 in `info.yaml`. On 7 Nov
+  the competition page still says 6x4, but Sarkar22's and openPIO's logs of
+  6 Nov say Jane Street confirmed 8x4 for the March shuttle. We have not seen
+  that message, so "those designs don't comply" (18 Oct above) may be out of
+  date.
+* **The shuttle has its own flow.** Tiny Tapeout's template `main` now uses
+  `tt-gds-action@ttihp27a`: LibreLane 3.1.0.dev4, IHP-Open-PDK `89d42ee6`,
+  `tt-support-tools` `main`. We harden on `@ihp-cmos5l`: LibreLane 3.1.0.dev3,
+  PDK `2bbec75`. The competition page still links the template's `cmos5l`
+  branch, which uses the older tag. LibreLane dev4 changes the default
+  `SYNTH_STRATEGY` from `AREA 0` to `DELAY 4`, and our `config.json` doesn't
+  pin it; MarcosAsh measured 19 % more cell area from that change and their
+  6x4 stopped routing.
+* **"New protocols after fabrication" is now shown, not asserted.** MarcosAsh,
+  Wirelingo, Loom and openPIO add protocols with the hardware frozen, some
+  drawn at random or sealed in advance. We have no such exercise.
+* **Outside oracles are common:** sigrok's decoders (MarcosAsh, Escapement,
+  Wirelingo, mrnathanhumphrey, ProEm) and Linux's USB and network stacks
+  (Wirelingo, Escapement). Our peers are models we wrote, plus one real MCU.
+* **Learning a protocol from a recording** has appeared twice (Escapement,
+  openPIO).
+* **10BASE-T receive at 40 to 50 MHz** is shown by Wirelingo and MarcosAsh,
+  with dedicated receive hardware. Our 80 MHz figure is a limit of our
+  receiver, not of the protocol.
+
+Where we stand: strong, but not leading. MarcosAsh, Escapement and Wirelingo
+are ahead on timing guarantees, firmware breadth, clock and the high-speed
+protocols. We are ahead of Escapement and Loom on hardware, since they have run
+nothing on a board; of Tarang on slow-corner sign-off, since we meet timing at
+our rated clock in every corner. The instrument story, which is what the brief
+says the chip is for, is our best claim to novelty, but it is not ours alone.
+MarcosAsh has tooling that sweeps real parts (SK6812, EEPROM, DS18B20) past
+their datasheet limits on a bench with a logic analyser, though we found no
+published results from it, and firmware that raises an interrupt when an edge
+leaves its expected rows. Escapement has capture, replay and `EXPECT` windows,
+and Wirelingo an I2C sniffer. What we did not find in their documents is what
+ours does: monitors for UART, I2C and SPI that run on the chip and report each
+timing fault with its length. FIPE has the idea but no formal proofs or board
+run, and has not pushed since 22 Oct.
