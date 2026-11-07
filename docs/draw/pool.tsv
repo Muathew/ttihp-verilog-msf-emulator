@@ -1,0 +1,62 @@
+# sigrok's decoders that read logic levels (libsigrokdecode 0.5.3, as in sigrok-cli 0.7.2).
+# id	in or out	why out, or what it is
+am230x	in	Aosong AM230x/DHTxx humidity sensors, one wire
+avr_pdi	in	Atmel Program and Debug Interface
+cec	in	HDMI-CEC
+dali	in	Digital Addressable Lighting Interface
+dcf77	in	DCF77 time signal
+dmx512	in	DMX512 stage lighting
+dsi	in	Digital Serial Interface, lighting
+em4100	in	EM4100 RFID
+em4305	in	EM4205/EM4305 RFID
+i2s	in	I2S audio
+iec	in	Commodore serial bus
+ir_nec	in	NEC infrared
+ir_rc5	in	RC-5 infrared
+ir_rc6	in	RC-6 infrared
+maple_bus	in	SEGA Maple bus
+mdio	in	Ethernet management bus
+microwire	in	Microwire
+miller	in	Miller line code
+morse	in	Morse code
+qi	in	Qi wireless charger messages
+sda2506	in	Siemens SDA 2506-5 EEPROM
+sdcard_sd	in	SD card, SD mode
+spdif	in	S/PDIF digital audio
+st7735	in	Sitronix ST7735 display controller
+swim	in	STM8 SWIM debug bus
+t55xx	in	T55xx RFID
+tdm_audio	in	TDM audio
+tlc5620	in	TI TLC5620 DAC
+usb_power_delivery	in	USB Power Delivery
+wiegand	in	Wiegand access control
+can	out	we ship it
+i2c	out	we ship it
+jtag	out	we ship it
+onewire_link	out	we ship it
+ps2	out	we ship it
+rgb_led_ws281x	out	we ship it
+spi	out	we ship it
+swd	out	we ship it
+uart	out	we ship it
+usb_signalling	out	we ship it
+gpib	out	16 lines; the chip has 8 bidirectional pins
+ieee488	out	16 lines, as gpib
+z80	out	a CPU bus, too many lines
+mcs48	out	a CPU bus, too many lines
+parallel	out	a bus of any width, no protocol to send
+flexray	out	10 Mbit/s: over the signed-off clock's reach
+lpc	out	33 MHz bus clock: at the signed-off clock
+aud	out	CPU trace at a CPU's clock
+ac97	out	12.288 MHz bit clock: over what firmware can drive per bit
+counter	out	an analysis, not a protocol
+guess_bitrate	out	an analysis, not a protocol
+jitter	out	an analysis, not a protocol
+timing	out	an analysis, not a protocol
+signature	out	an analysis, not a protocol
+pwm	out	an analysis of a duty cycle, no framing to send
+ook	out	a demodulation aid, no framing to send
+rc_encode	out	a remote control's chip pair: sigrok needs a stacked ook decoder
+graycode	out	a rotary encoder's state, no framing to send
+stepper_motor	out	step counting, no framing to send
+seven_segment	out	display levels, no timing to meet
