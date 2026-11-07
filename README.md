@@ -9,8 +9,11 @@ the Jane Street protocol emulator ASIC competition.
 
 One chip plays the device, drives the bus, watches it and breaks it on
 purpose: it can stand in for an SPI flash or an I2C EEPROM, probe a JTAG or
-SWD target, report every timing fault on an I2C bus with its length, or
-shift a device's edges by an exact number of cycles to find where it fails.
+SWD target, report every timing fault on an I2C bus with its length and keep
+the waveform around it, or find by itself how far a device's timing can be
+pushed. On a board nobody documented, it can find the debug pins, record the
+traffic, learn the protocol and send a message the transmitter never sent, with
+no other instrument: [the session](docs/instruments.md#9-a-reverse-engineering-session-with-one-chip).
 
 ## The core
 
@@ -38,7 +41,8 @@ shift a device's edges by an exact number of cycles to find where it fails.
 | Drive a bus | UART, SPI (modes 0-3), I2C (repeated start, clock stretching), USB low-speed TX and RX with CRC16, 10BASE-T TX with FCS and link pulses, WS2812, CAN 2.0A (arbitration, CRC-15, stuffing, ACK), 1-Wire (SEARCH ROM) |
 | Play a device | SPI target (64 registers, no dummy byte), 25xx SPI flash (ID, read, program, erase with WIP), I2C target (128-byte EEPROM), PS/2 keyboard |
 | Debug probes | JTAG (IEEE 1149.1 scans, chains), SWD (ADIv5 DP and MEM-AP) |
-| Watch and break | UART, I2C and SPI bus monitors that report timing faults with their lengths; timing-fault injection; UART-to-SPI bridge; logic analyser |
+| Watch and break | UART, I2C and SPI bus monitors that report timing faults with their lengths, and flight-recorder versions that keep the waveform around the first fault; timing-fault injection; a margin finder that sweeps a device's timing on the chip alone; an in-line interposer that changes one frame; UART-to-SPI bridge; logic analyser with streaming and replay |
+| Reverse-engineer | a pin finder that works out which of eight wires are UART, SWD and JTAG; learning a protocol from a recording, then sending a message the transmitter never sent |
 
 [`docs/instruments.md`](docs/instruments.md) gives each one's limits,
 measured, and compares the approach with the RP2040's PIO: a PIO program
@@ -82,7 +86,7 @@ claim to its evidence):
 
 * The clock is signed off at 33 MHz (30 ns) in every corner. At the slow
   corner (1.08 V, 125 °C) the worst path, SRAM read to register file, is
-  about 28 ns; 50 MHz is met only at the typical corner
+  about 26.4 ns; 50 MHz is met only at the typical corner
   ([verification](docs/verification.md) §7). Every firmware we ship needs
   20 MHz or less.
 * The C board tests step the core one clock at a time: they check logic and

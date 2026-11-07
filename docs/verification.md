@@ -85,6 +85,7 @@ inputs**, so the proofs hold for every program and environment.
 | F10 | a `WAIT_CMP` whose target had passed at issue (an independent ghost of isa.md §5's test) releases in the thread's first own stall slot with Z=1, and no running thread stays stalled on one for more than 3 cycles |
 | F11 | a thread's LATE flag rises only at such a release in that thread, and falls only by `LATE_CLR` naming it or a `TSTART` of it |
 | F12 | the rotation skips no running thread: each owns at least one cycle in any four |
+| F13 | a thread's timing depends only on which threads run: in a cycle with no `TSTART` or `TSTOP` the running set stays, and in multi-thread mode the next owner follows from this owner and that set alone, with no bubble. It says nothing about shared memory, pins or peripherals |
 
 Every `cover()` point (WAIT edge/CMP/timeout release, LD release in T1, dual
 issue, TSTOP, all four threads running and issuing, a push to a full FIFO,
@@ -103,6 +104,7 @@ and each must make the proof fail:
 | a push into a full FIFO moves its write position | F8 (alone, at depth 7) |
 | the capture engine writes port B while the core uses it | F9, in the capture module (at the top level a program cannot start a capture within depth 16: the boot ROM runs first) |
 | the rotation skips the thread after the owner | F1 first (depth 4); F12 alone catches it too (depth 6) |
+| a stalled thread holds on to the next slot | F13 (`run_formal.py`'s mutant list) |
 
 A mutant stops at its first counterexample, so the cheap targets go first
 (controller, capture module, top level).
@@ -228,6 +230,25 @@ the range the analysis computed (the programs that use the SERDES engines,
 which the model does not simulate, are skipped); and `uart_tx.s` assembled
 with 9 cycles a bit must be rejected (its byte-to-byte path is too long).
 
+## 6c. sigrok's decoders — `tools/sigrok_check.py`
+
+The peer models in the tests were written with the same AI as the firmware, so a shared
+misreading of a protocol would pass every test. sigrok's decoders were written by other
+people, for real captures. The firmware tests save their pins (`save_trace`), and this runs
+`sigrok-cli` on them, in CI: UART, SPI in all four modes, I2C, USB low speed with its CRC16,
+CAN with arbitration, ACK and data, 1-Wire down to the ROM and scratchpad, PS/2, JTAG's
+IDCODE, SWD down to the DPIDR, WS2812 colours, and what §12 of `instruments.md` learned, on
+sigrok's `ir_nec`. Each must print exactly what its test sent.
+
+Each also has a tooth: the same waveform with one edge held back must read differently. An
+edge in an idle gap changes nothing a decoder cares about, so it tries edges from the middle
+of the activity outwards, and fails if none of the first eight bites.
+
+It found no bug in the firmware. It did find one in sigrok: its PS/2 decoder's `handle_bits`
+takes a twelfth falling edge to end a frame of eleven, so it eats the next frame's start bit
+and reads every later frame one bit off. Our frames are right, as the bits at the falling
+edges show; that trace gets one extra CLK pulse in the idle gap after each frame.
+
 ## 7. Hardening and sign-off — `tools/check_signoff.py`
 
 Every push runs the Tiny Tapeout GDS action: LibreLane on IHP SG13CMOS5L
@@ -255,6 +276,7 @@ typical silicon), but only the slow corner is promised.
 | CI 40085473871 | 6ea46bd | 16 605 | 45.3 % | +2.17 / +10.72 ns | 0.11 ns | 0 / 0 | 114 / 32 | 0, 0, 0 | yes |
 | local S | 44a7d31 + design repair | 18 023 | 47.0 % | +2.49 / +10.64 ns | 0.07 ns | 0 / 0 | 6 / 2 | 0, 0, 0 | yes |
 | local F | 6ea46bd's RTL + design repair (`src/config.json`) | 18 220 | 47.3 % | +1.24 / +11.02 ns | 0.07 ns | 0 / 0 | 2 / 2 | 0, 0, 0 | yes |
+| **CI 42393871451, the shuttle's flow** | df70880: `tt-gds-action@ttihp27a`, LibreLane 3.1.0.dev4, PDK `89d42ee6`, `SYNTH_STRATEGY` pinned | 17 245 | 46.5 % | **+3.62 / +11.93 ns** | 0.08 ns | 0 / 0 | 3 / 1 | 0, 0, 0 | yes |
 
 **Design repair** (repair again after global routing, wires at most 300 µm,
 30 % margin on slew and capacitance) is in `src/config.json` from 28 Oct.
@@ -452,7 +474,7 @@ change behaviour.
 | The chip records 8 pins as a logic analyser without changing any thread's timing | `test_capture`: every word checked against the spec's rules; the same loop takes the same cycles recording or not; formal F9 |
 | A host can halt, single-step and read the core's state through the pins | `test_debug.test_debug_single_step`: hand-driven clock, PC trace and register read between edges |
 | Timing faults can be injected by exact amounts | `test_faults`: each knob measured at the pins; a one-cycle step in the UART bit time moves a receiver from pass to fail exactly where its geometry predicts |
-| The design fits its 6x4 tiles on CMOS5L and runs at 33 MHz in every corner, 50 MHz at the typical one | §7: 45-47 % utilisation; at 30 ns, setup and hold met in all three corners (slow +2.17 to +2.49 ns, typical +10.7 ns), no routing DRC, antenna or LVS errors; precheck passed on the CMOS5L layouts of runs 40079395684 (CI) and 40085473871 (run locally) |
+| The design fits its 6x4 tiles on CMOS5L, on the shuttle's own flow, and runs at 33 MHz in every corner, 50 MHz at the typical one | §7: CI 42393871451 on `tt-gds-action@ttihp27a`: 46.5 % utilisation; at 30 ns, setup and hold met in all three corners (slow +3.62 ns, typical +11.93 ns, fast +14.00 ns, hold +0.08 ns), no routing DRC, antenna or LVS errors; precheck, gate-level tests and netlist = RTL pass |
 | The layout is the RTL, so every check above applies to it | `netlist_equiv.py` (§7c): the routed netlist is proved equivalent to the RTL from reset, for all inputs and all time, with the SRAMs as black boxes. Of three bugs put into the netlist, two are found and the third, deep in the receiver, is left undecided: the tool never calls a broken netlist equivalent. The netlist also boots and runs firmware in gate-level simulation (§7) |
 | The tests catch a broken design, not only pass a working one | 39 of 40 sampled single-bit mutants killed on v2.0, 38 of 40 on v2.1, 37 of 40 on v2.2; every survivor cannot change behaviour (§8) |
 
@@ -465,7 +487,8 @@ What is **not** validated yet:
   timing says nothing about the chip's.
 * Apart from that LP-MSPM0G3519, the other end of every bus is a model written
   by us from the protocol specs, not a real device: no USB host, Ethernet link
-  partner, EEPROM or logic analyser has been connected.
+  partner, EEPROM or logic analyser has been connected. sigrok's decoders are an
+  outside check on what the chip sends (§6c), not on how a real device responds.
 * Electrical behaviour is not modelled: pad drive, rise times with real
   pull-ups, USB and 10BASE-T signal levels.
 * Timing is checked by static analysis only (§7): the gate-level

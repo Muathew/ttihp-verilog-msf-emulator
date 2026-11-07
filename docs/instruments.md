@@ -6,7 +6,10 @@ plays a device), **monitors** (it listens to a bus and flags timing
 faults), a **bridge** (a host drives SPI through the UART, one thread per
 side), **timing-fault knobs** (the controllers break a device's timing
 by exact amounts) and a **logic analyser** (the capture engine records 8
-pins with a trigger). None of it is protocol hardware: it is firmware on
+pins with a trigger), and from §9 on the tools of a reverse-engineering session:
+a **pin finder**, **replay**, **learning a protocol from a recording**, a **flight
+recorder**, a **margin finder** and an **in-line interposer**. None of it is
+protocol hardware: it is firmware on
 the core's level waits, cycle counter, shift register, SERDES and capture
 engine, loaded at run time. Every claim below is checked at the pins in simulation by the
 test named next to it; the timing figures are core clock cycles (83 ns at
@@ -390,3 +393,177 @@ What we would take from PIO next time:
   instruction to push or pop) now carries the monitors' events.
 * **More engines:** PIO has four state machines per block; with two
   threads, a monitor spends one just on reporting.
+
+## 9. A reverse-engineering session, with one chip
+
+Sections 9 to 13 go together. On a board nobody documented, one chip and no other
+instrument can: find the debug and UART pins (§10), record the traffic (§11), learn
+the protocol and speak it (§12), watch the bus and keep the waveform around the first
+fault (§13), find how far a device can be pushed before it breaks (§14), and sit in
+the wire to change one message (§15). Only the learning needs a PC, to run the tool.
+Each is firmware or a host tool: none needs anything the chip does not already have.
+
+## 10. Pin finder — `firmware/pinfind.s` (`test_pinfind.py`, `tools/pinfind_all.py`)
+
+Which of eight unknown wires are a UART, an SWD port or a JTAG port? Connect `uio[7:0]`
+and a ground, load this, and read the report on `uo_out[0]`, 115200 baud at 12 MHz, as
+all of `uio` is in use. It leaves the results in data RAM too.
+
+* **It listens first and drives nothing.** A direct loop over `PIN_R` catches every
+  pin that moves in the window, and a pin that moves by itself is being driven, so it
+  is never driven by this program.
+* **UART:** the capture engine records the window; each moving pin's shortest stable
+  run is taken for a bit time, and the RX engine has to confirm it on what follows:
+  past the first 4 frames (it may start mid-stream), at least 2 good, none bad, and
+  more than one value, as a clock line reads as a stream of `0x55`.
+* **SWD:** every ordered pair of the quiet wires as (SWCLK, SWDIO): line reset,
+  JTAG-to-SWD, DPIDR read twice. It needs ACK OK, good parity and the same value twice.
+* **JTAG:** every ordered pair as (TCK, TMS): reset the TAP and shift out the IDCODE
+  twice, reading every other pin at once, so TDO needs no search of its own. Bit 0 set,
+  not all ones, the same both times. Then each pin left is tried as TDI: ones into IR
+  to select BYPASS, and a pattern sent through DR has to come back on TDO up to 8 clocks
+  late.
+
+`OE_SET` and friends take immediates, so a program that picks its pins at run time
+writes the instruction it is about to run (`isa.md` §1 allows that, at least 2
+instructions ahead).
+
+Tested against the same SW-DP and TAP models as the probes, with their pins renamed to
+where the firmware cannot know them: a sample on the RTL, and **every one of the 56
+ordered pairs for SWD and for JTAG** on the ISA model (`tools/pinfind_all.py`, about 4
+minutes; the model cannot run the listen step, which needs the capture engine). No false
+finds with all wires floating high, all stuck low, or two toggling at random; a square
+wave is not reported as a UART; a wire that was moving is never driven
+(`test_pinfind_uart_and_leaves_it_alone`).
+
+**Limits.** Driving unknown pins can fight what is on them. Each try is short and a wire
+that moves is left alone, but a real target needs series resistors and a matching
+voltage. A pin driven to a constant level looks like a free one. The UART line must be
+busy, with more than one value, during and after the listen. It is 831 words, which fills
+the firmware space up to its 64-word capture ring.
+
+## 11. Capture tools — `tools/msf_capture.py`, `firmware/la_stream.s`, `firmware/replay.s` (`test_capture_tools.py`)
+
+* **Export.** `msf_capture.py export` turns the logic analyser's dump, in either mode,
+  into a VCD or a sigrok session, for PulseView and `sigrok-cli`. Round trips are tested
+  against what the pins carried, and `sigrok_check.py` reads a session the chip recorded
+  with sigrok's own UART decoder.
+* **Streaming.** `la_stream.s` sends each change word as it appears, so a recording isn't
+  limited to the buffer: 50,000 words a second at 1 Mbaud, with bursts up to the ring's
+  size. A word goes out every 255 ticks even with no change, so at *div* 1 an idle line
+  uses nearly all of that: raise *div* for a long recording. If it falls behind it sends
+  the word `0x0000` and sets `uo_out`, and everything before that is true
+  (`test_stream_says_when_it_falls_behind`).
+* **Replay.** `replay.s` re-drives a recording on the absolute cycle counter. Its table is
+  the capture engine's change-mode format, so what the chip recorded can be played back as
+  it stands (`test_replay_what_the_chip_recorded`). `msf_capture.py replay` builds a table
+  from a capture, a VCD or a sigrok session. The loop keeps changes at least 16 cycles
+  apart, which `msf_timing.py` certifies from a declared range that the tool enforces on
+  the data; closer changes are refused, or with `--max-shift` moved later by a reported
+  amount. A table that breaks that promise anyway ends with `uo_out` = `0xEE`, not a silent
+  wrong waveform. An I2C transaction replays edge for edge within that bound, with no drift.
+
+**Limits.** Replay is push-pull: `OE` has no register form, so an open-drain line is not
+replayed as one, and a table holds 511 changes.
+
+## 12. Learning a protocol from a recording — `tools/msf_learn.py`, `tools/msf_gen.py` (`test_learn.py`, `test_learn_tool.py`)
+
+Point the logic analyser at a transmitter nobody documented. `msf_learn.py` works out how
+its bits are coded and what its frames hold, from the timing alone, and `msf_gen.py` turns
+that into firmware, so the chip can send a message the transmitter never sent. Escapement
+and openPIO have this too; the method (try several line codes, keep the one that writes the
+recording down in the fewest bits, refuse what fits none) is theirs, the code is ours.
+
+* **Line codes:** pulse distance, pulse length, pulse width, Manchester and UART serial. A
+  carrier under the marks is taken off first and remembered.
+* **Check fields:** a byte that in every frame is the complement of another, or the XOR, sum
+  or negated sum of those before it. A CRC of any polynomial, computed from the frames with
+  a gcd over GF(2), in either bit order. A rule is claimed only if its inputs took at least
+  three values: a constant proves nothing. A new message gets them recomputed.
+* **The generated firmware** waits for each phase's deadline and changes the pin at once, so
+  no path moves an edge, and `msf_timing.py` must certify it or it is refused.
+* **On the RTL:** a NEC remote built from the specification presses four buttons; the chip
+  records them with `logic_analyzer.s`; the tool finds pulse distance, the 32 bits and the
+  command's complement, and not the address's, which never changed; and the chip sends a
+  command the remote never sent. A receiver written from the specification reads it within
+  NEC's windows, and so does sigrok's `ir_nec` decoder (the timing is scaled down 20 times
+  to keep the simulation short, and sigrok is told the rate is 20 times lower). The same for
+  Manchester and UART, and a carrier comes back on the cycle.
+* **Tests of the tool alone,** 176 cases: random pulse codes, Manchester and serial must be
+  read word for word; with 10 % jitter, read or refused, never wrong; noise, square waves,
+  servo pulses of any width and tone bursts must be refused.
+
+**Limits.** Single-wire, self-timed codes. Clocked buses, conversations and generated
+receivers are not done. Manchester's bit polarity is a convention the waveform can't settle.
+A recording is limited by §11. The first version failed many of its random tests in the
+ways Escapement's did: runs of equal symbols read as a carrier, chains of near lengths read
+as symbols. Each is fixed by a rule, not a special case, and the tests stay.
+
+## 13. Flight recorder — `firmware/flight_*.s`, `flight.inc` (`test_flight.py`)
+
+A monitor says a device broke the timing, but not what the waveform looked like. The
+flight versions of the three monitors also keep the capture engine recording into a ring,
+and the first time an event counts as a fault they keep 32 more words, stop, and send the
+ring after the fault's events: 256 words of change records, oldest first. Reporting then
+goes on, and the ring stays stopped on that first fault.
+
+The stop uses the engine's trigger: armed with a condition that can never hold (mask 0,
+value 1), then `CAP_TRIG` with mask 0, value 0 makes the next sample the trigger word, and
+the engine stops by itself `POST` words later, keeping its place in the ring. Writing
+`CAP_CTL` would stop it as well, but resets its place.
+
+Faults: I2C `H`, `L`, `X`; SPI `M`, and `E` with bits left over; UART `F`, `B`, `G`. The
+watching threads' code is the plain monitors' (`mon_*.inc`), and a thread's timing depends
+only on which threads run, so `test_flight_watching_thread_is_mon_i2c` gets exactly
+`mon_i2c.s`'s events with the ring in between, and §2's accuracy figures carry over. The ring
+holds the fault at its true length, to the cycle. A legal bus never dumps.
+
+**Limits.** It records every `uio` pin, so the reporter's own UART takes a share of the ring.
+While the ring is being sent, about 5 ms, events wait in the FIFO, and past its 64 words they
+are counted and reported (`O`), as ever.
+
+## 14. Margin finder — `firmware/margin_*.s`, `margin.inc` (`test_margin.py`)
+
+§4 finds a receiver's limits with Python driving the sweep. This does it on the chip alone:
+load one program, connect the device, and read a table over UART. For each value of one timing
+parameter it runs a transaction a set number of times, and reports `P`, the value, the passes;
+then `R`, the unbroken run that always passed. It is left in data RAM as well.
+
+| Firmware | Parameter | Passes if | Known answer, against a model with that limit |
+|---|---|---|---|
+| `margin_uart.s` | bit time we send at | the device echoes the byte | 99..109 cycles against a 104-cycle receiver; 76..84 against an 80-cycle one |
+| `margin_i2c.s` | SCL low or SCL high | the device ACKs its address | 40 and 33, set in the model, found exactly |
+| `margin_spi.s` | SCK half period | the next byte reads back as the device means | 28, set in the model, found exactly |
+
+It found an error in the test that checks it: the arithmetic said 77 cycles for the 80-cycle
+receiver, and the chip said 76, which is right, since the stop sample may land in the idle line
+after the stop bit.
+
+Every edge is on the cycle counter, so a phase is exactly the value swept. MarcosAsh's
+`demo/margins.py` sweeps real parts past their datasheet limits with a Pico, a logic analyser
+and a PC; this needs none of them. A device that answers nothing reports `lo = 0`.
+
+**Limits.** A step is one core cycle, 83 ns at 12 MHz, about 1 % of a bit at 115200 baud.
+`SWEEP_LO` must leave time for the bit loop: the checker refuses less. I2C clock stretching
+isn't followed, so a stretching device reads as a fail.
+
+## 15. In-line interposer — `firmware/interpose_*.s` (`test_interpose.py`)
+
+To see how a system reacts when one message goes wrong, something has to sit in the wire. These
+pass the bus through, so that neither side can tell, and change exactly one thing, with no host.
+
+* **UART,** both directions: flip bit *K* of frame *N* going from A to B, or drop frame *N*, with
+  the line held high for it and no glitch. Thread 0 is the wire: a 16-cycle loop, so an edge comes
+  out 15 to 30 cycles late, on every phase of the loop, measured
+  (`test_uart_lateness_over_every_phase`): at 104 cycles a bit a receiver has room for that.
+  Thread 1 reads the same line with the RX engine, counts frames, and tells thread 0 what to change
+  through one word of data RAM.
+* **SPI:** SCK, MOSI and CS pass from `ui` to `uo` read and written together, so they keep their
+  relationship to the cycle, and MISO comes back. Thread 1 counts SCK's falling edges and flips one
+  MOSI bit. How fast it goes, as half periods measured on the RTL, with SCK at 12 MHz: 35 cycles,
+  171 kHz, for a controller that reads MISO back, which has to wait for the round trip through the
+  loop twice; 12 cycles, 500 kHz, for MOSI alone; 22 cycles, 272 kHz, with the flip set. One cycle
+  below the first and the last fails, and the test holds that.
+
+**Limits.** I2C is left out: open-drain lines need direction sensing. The lateness is real, and
+costs a receiver margin. What to change is set when the firmware is assembled.

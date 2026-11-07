@@ -3,10 +3,13 @@
 ;   pins  : controller -> SCK ui[2], MOSI ui[3], CS ui[5]; those come out on uo[2],
 ;           uo[3], uo[5] to the device. Device's MISO -> uio[7]; uio[4] -> controller.
 ;   FLIP  : 1 = flip bit K (0 = the first sent) of byte N of the first transfer (define)
-; Thread 0 is the wire: 10 slots, 20 cycles with two threads running. The three lines
-; going to the device are read and written together, so they keep their relationship
-; to the cycle, and a half period has to be longer than the loop: at 12 MHz, SCK up to
-; about 280 kHz, at 33 MHz about 800 kHz.
+; Thread 0 is the wire: 10 slots, 20 cycles with two threads running, 11 once thread 1
+; has stopped. The three lines going to the device are read and written together, so they
+; keep their relationship to the cycle. How fast it goes, half periods measured at the RTL
+; (test_interpose.py), SCK at 12 MHz:
+;   a controller that reads MISO back: 35 cycles, 171 kHz, for the round trip through the
+;   loop twice (34 fails on some phases); MOSI alone: 12 cycles, 500 kHz; with FLIP set,
+;   until the flip is done: 22 cycles, 272 kHz.
 ; Thread 1 counts SCK's falling edges and tells thread 0 when to change MOSI.
 .include "msf.inc"
 .equ FLIP,   0

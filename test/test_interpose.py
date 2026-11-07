@@ -181,21 +181,43 @@ async def spi_through(dut, data, half, defines=None):
     return ctl, dev
 
 
+DATA = [0xA5, 0x3C, 0x81, 0x7E]
+MORE = [0x55, 0xAA, 0x33, 0xCC, 0x0F, 0xF0, 0x96, 0x69]
+READ_MIN, MOSI_MIN, FLIP_MIN = 35, 12, 22     # half periods, as in the firmware's header
+
+
+def answers(data):
+    return [b ^ 0xFF for b in data[:-1]]
+
+
 @cocotb.test()
 async def test_spi_pass_through(dut):
-    """A transfer through the chip at half period 48: the device gets every byte, and
-    the controller reads its answers."""
-    data = [0xA5, 0x3C, 0x81, 0x7E]
-    ctl, dev = await spi_through(dut, data, 48)
-    assert dev.got == data, [hex(x) for x in dev.got]
-    assert ctl.rx[1:] == [b ^ 0xFF for b in data[:-1]], [hex(x) for x in ctl.rx]
+    """A transfer through the chip: the device gets every byte, and the controller reads
+    its answers, down to the half period the firmware's header states."""
+    for data, half in ((DATA, 48), (DATA, READ_MIN), (MORE, READ_MIN)):
+        ctl, dev = await spi_through(dut, data, half)
+        assert dev.got == data, (half, [hex(x) for x in dev.got])
+        assert ctl.rx[1:] == answers(data), (half, [hex(x) for x in ctl.rx])
+
+
+@cocotb.test()
+async def test_spi_the_stated_limits_are_the_limits(dut):
+    """One cycle below the read limit the answer comes back after the controller has
+    read it, while MOSI still arrives, and it goes on arriving down to the wire's loop."""
+    ctl, dev = await spi_through(dut, DATA, READ_MIN - 1)
+    assert dev.got == DATA and ctl.rx[1:] != answers(DATA), [hex(x) for x in ctl.rx]
+    ctl, dev = await spi_through(dut, DATA, MOSI_MIN)
+    assert dev.got == DATA, [hex(x) for x in dev.got]
 
 
 @cocotb.test()
 async def test_spi_flip_one_bit(dut):
-    """One bit of one byte changes on the way to the device, and the rest arrive."""
-    data = [0xA5, 0x3C, 0x81, 0x7E]
-    ctl, dev = await spi_through(dut, data, 48, {"FLIP": 1, "N": 1, "K": 3})
-    want = list(data)
+    """One bit of one byte changes on the way to the device, and the rest arrive; with
+    thread 1 counting, down to the half period the header states, and not below it."""
+    want = list(DATA)
     want[1] ^= 1 << (7 - 3)
-    assert dev.got == want, [hex(x) for x in dev.got]
+    for half in (48, FLIP_MIN):
+        ctl, dev = await spi_through(dut, DATA, half, {"FLIP": 1, "N": 1, "K": 3})
+        assert dev.got == want, (half, [hex(x) for x in dev.got])
+    ctl, dev = await spi_through(dut, DATA, FLIP_MIN - 1, {"FLIP": 1, "N": 1, "K": 3})
+    assert dev.got != want, [hex(x) for x in dev.got]
