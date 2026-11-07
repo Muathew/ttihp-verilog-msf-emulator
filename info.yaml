@@ -1,7 +1,7 @@
 # Tiny Tapeout project information
 project:
-  title:        "Protocol Emulator"      # Project title
-  author:       "Sam"      # Your name
+  title:        "msfcore protocol emulator"      # Project title
+  author:       "Sam, Muath"      # Your name
   discord:      ""      # Your discord username, for communication and automatically assigning you a Tapeout role (optional)
   description:  "Reprogrammable protocol-emulator CPU: 4 deterministic hardware threads, line-code SERDES, CRC unit, logic-analyser capture; UART/SPI/I2C/USB-LS/10BASE-T, device emulation and bus monitors in firmware"      # One line description of what your project does
   language:     "Verilog" # other examples include SystemVerilog, Amaranth, VHDL, etc

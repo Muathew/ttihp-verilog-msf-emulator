@@ -63,8 +63,9 @@ claim to its evidence):
 4. **Mutation testing**: 37 of 40 seeded RTL faults are caught, and the
    other three cannot change behaviour.
 5. **A static deadline checker** ([`tools/msf_timing.py`](tools/msf_timing.py))
-   certifies that no `WAIT_CMP` in the firmware is ever late, on any path,
-   and is itself cross-checked against the ISA model.
+   certifies that no `WAIT_CMP` in the firmware is ever late, on any path.
+   Its results are compared with the ISA model for one firmware only so far
+   (`uart_tx.s`, 1 of 29 deadlines: the model has no SERDES).
 6. **The FPGA board** (AUP-ZU3): 67 of 67 C protocol tests pass on the same
    core, stepped by the Zynq. Running free at 12 MHz, the core has also passed
    UART, SPI and I2C both ways on all 148 passes of a run with a real
@@ -88,7 +89,7 @@ claim to its evidence):
   protocols on real hardware, not timing at speed. Only the
   [MCU test](external-mcu_testing.md) runs it free, at 12 MHz on the FPGA.
 * Firmware is written in assembly.
-* 10BASE-T is transmit only: receiving needs about 80 MHz.
+* 10BASE-T is transmit only: our RX engine would need about 80 MHz to receive it.
 * Most formal properties are proved for all time, but four of the
   controller's (F3's timeout bounds, part of F10) only to depth 16
   ([verification](docs/verification.md) §3).
