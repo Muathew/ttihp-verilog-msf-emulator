@@ -25,7 +25,7 @@ from cocotb_tools.runner import get_runner
 HERE = Path(__file__).parent.resolve()
 REPO = HERE.parent
 SRC = REPO / "src"
-BUILD_DIR = HERE / "sim_build" / "rtl"
+BUILD_DIR = HERE / "sim_build" / os.environ.get("MSF_BUILD", "rtl")   # another name: a second run at once
 
 # Every RTL test module. GL-only modules (test_gl_smoke, test_gl_firmware)
 # are run by the Makefile with GATES=yes.
@@ -49,6 +49,11 @@ ALL_MODULES = [
     "test_faults",
     "test_debug",
     "test_capture",
+    "test_capture_tools",
+    "test_flight",
+    "test_margin",
+    "test_pinfind",
+    "test_learn",
     "test_debugports",
     "test_buses",
 ]
