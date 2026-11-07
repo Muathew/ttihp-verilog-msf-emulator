@@ -28,7 +28,9 @@ import msf_timing  # noqa: E402
 FW = os.path.join(HERE, "..", "firmware")
 DONE = 0x55
 # what the RTL showed for each deadline: `msf_timing.py --rtl-log` reads it
-DEADLINE_LOG = os.path.join(HERE, "deadlines_seen.json")
+# (a run with its own MSF_BUILD keeps its own log, so that runs at once don't collide)
+DEADLINE_LOG = (os.path.join(HERE, "sim_build", os.environ["MSF_BUILD"] + "_deadlines.json")
+                if os.environ.get("MSF_BUILD") else os.path.join(HERE, "deadlines_seen.json"))
 TRACES = os.path.join(HERE, "traces")   # for tools/sigrok_check.py
 # set by tools/fw_mutants.py: run this firmware's planted-bug version instead
 MUTANT = os.environ.get("MSF_FW_MUTANT")
