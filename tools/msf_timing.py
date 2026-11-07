@@ -24,6 +24,11 @@ one way, so counted loops (`LDR R4, #10 ... DECR R4 / JNZ`) unroll exactly;
 other branches take both. A program point that collects many states joins
 them (and widens growing intervals to infinity), so the search ends.
 
+A deadline moved on by a value from data (firmware/replay.s) can't be derived
+from the program, so the source declares its range on the instruction that uses
+it, `ADDS R5, R5, R2  ; @range R2 16 255`. That is a promise the checker takes on
+trust; the tool that writes the data has to keep it.
+
 At each `WAIT_CMP rs` with rs time-relative, d at issue must be >= 1: then
 the wait releases when CNT == target and the next instruction issues at
 target+1 (single-thread mode). The report lists, per deadline, the range of
@@ -37,7 +42,13 @@ address are analysed too, from a cleared state.
 
 `--check-model N` runs the program on the ISA model (test/isa_model.py) for
 N cycles and checks that every WAIT_CMP issue it observes lies in the range
-the analysis computed: a soundness test of this tool against the model.
+the analysis computed. The model has no SERDES, so this covers few programs,
+with their pins held constant; it says how many deadlines it compared.
+
+`--rtl-log FILE` is the check that counts: the firmware tests write what the
+RTL did at each deadline, with the tests' peers on the pins (DeadlineWatch in
+test/fw_tb.py, which fails a test on the spot). This reports how many of the
+deadlines were reached, and fails on any that was not.
 
 Usage:
     python tools/msf_timing.py firmware/uart_tx.s [--threads N] [-D NAME=V]
@@ -47,7 +58,9 @@ Exit status 1 if any deadline may be missed or is not derived from CNT.
 """
 import argparse
 import glob
+import json
 import os
+import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -152,11 +165,17 @@ class State:
 
 
 # ---------------------------------------------------------------- source map
+RE_RANGE = re.compile(r";\s*@range\s+R(\d)\s+(\S+)\s+(\S+)", re.I)
+
+
 def source_map(text, base, defines, include_dirs):
-    """address -> source line (pass 1 of the assembler, kept here)."""
+    """address -> source line (pass 1 of the assembler, kept here), the symbols,
+    and address -> (register, lo, hi) for each @range annotation."""
     text = asm._expand_includes(text, include_dirs + [asm.FIRMWARE_DIR])
+    raw = text.splitlines()
     syms = dict(defines or {})
     out = {}
+    ranges = {}
     pc = base
     for ln, labels, mn, args in asm._parse_lines(text):
         for lab in labels:
@@ -175,8 +194,13 @@ def source_map(text, base, defines, include_dirs):
             continue
         else:
             out[pc] = f"{mn} {args}".strip()
+            m = RE_RANGE.search(raw[ln - 1])
+            if m:
+                ranges[pc] = (int(m.group(1)), m.group(2), m.group(3))
             pc += asm._size(mn)
-    return out, syms
+    ranges = {pc: (r, asm._eval(lo, syms), asm._eval(hi, syms))
+              for pc, (r, lo, hi) in ranges.items()}
+    return out, syms, ranges
 
 
 # ---------------------------------------------------------------- analysis
@@ -223,16 +247,23 @@ def successors(w, pc):
 
 
 def liveness(mem):
-    """Registers live on entry to each address (backward dataflow)."""
+    """Registers live on entry to each address (backward dataflow). A RET goes to
+    the instruction after some CALL; a JR may go anywhere. Getting this wrong could
+    only make a value unknown, never wrong: a dropped register reads as unknown."""
     live = {pc: set() for pc in mem}
+    returns = [(pc + 1) & M10 for pc, w in mem.items() if w >> 11 == CALL]
     changed = True
     while changed:
         changed = False
         for pc in sorted(mem, reverse=True):
             u, d = uses_defs(mem[pc])
             succ = successors(mem[pc], pc)
-            out = set(ALL_REGS) if succ is None else \
-                set().union(*[live.get(t, ALL_REGS) for t in succ])
+            if mem[pc] >> 11 == RET and returns:
+                out = {7} | set().union(*[live.get(t, ALL_REGS) for t in returns])
+            elif succ is None:
+                out = set(ALL_REGS)
+            else:
+                out = set().union(*[live.get(t, ALL_REGS) for t in succ])
             new = u | (out - d)
             if new != live[pc]:
                 live[pc] = new
@@ -241,7 +272,8 @@ def liveness(mem):
 
 
 class Analysis:
-    def __init__(self, words, base, nthreads, srcmap):
+    def __init__(self, words, base, nthreads, srcmap, ranges=None):
+        self.ranges = ranges or {}
         self.mem = {base + i: w for i, w in enumerate(words)}
         self.live = liveness(self.mem)
         self.returns = {(pc + 1) & M10 for pc, w in self.mem.items() if w >> 11 == CALL}
@@ -291,6 +323,9 @@ class Analysis:
         fa, fb, fc = (w >> 8) & 7, (w >> 5) & 7, (w >> 2) & 7
         imm8 = w & 0xFF
         R = list(s.regs)
+        if pc in self.ranges:
+            r, lo, hi = self.ranges[pc]
+            R[r] = ("i", lo, hi)            # the source's promise about this value
         z, nf, tmo = s.z, s.n, s.tmo
         nxt = (pc + 1) & M10
         cost = self.plain()
@@ -319,6 +354,8 @@ class Analysis:
                     elif y[0] == "t" and cx is not None and op == ADDS:
                         k = offset(cx)
                         R[fa] = ("t", add_iv(y[1], k), add_iv(y[2], k))
+                    elif x[0] == "t" and y[0] == "i" and op == ADDS:
+                        R[fa] = ("t", add_iv(x[1], y[1]), add_iv(x[2], y[2]))
                     elif x[0] == "t" and y[0] == "t" and op == SUBS and \
                             x[1] == x[2] and y[1] == y[2] and x[1] is not None and y[1] is not None:
                         R[fa] = ("c", (x[1] - y[1]) & M16)
@@ -530,15 +567,16 @@ class Analysis:
 
 # ---------------------------------------------------------------- driver
 def analyse(path, nthreads=None, defines=None, base=128):
-    text = open(path, encoding="utf-8").read()
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
     words = asm.assemble_file(path, base_addr=base, defines=defines)
-    srcmap, syms = source_map(text, base, defines, [os.path.dirname(os.path.abspath(path))])
+    srcmap, syms, ranges = source_map(text, base, defines, [os.path.dirname(os.path.abspath(path))])
     # first pass with one thread finds the threads the program starts
-    a = Analysis(words, base, 1, srcmap)
+    a = Analysis(words, base, 1, srcmap, ranges)
     a.run(base, 0xFFFF)
     entries = dict(a.spawns)
     n = nthreads or min(4, 1 + len(entries))
-    a = Analysis(words, base, n, srcmap)
+    a = Analysis(words, base, n, srcmap, ranges)
     a.run(base, 0xFFFF)
     done = set()
     while True:
@@ -553,6 +591,13 @@ def analyse(path, nthreads=None, defines=None, base=128):
 
 def fmt(v):
     return "-inf" if v is None else str(v)
+
+
+def certified(a):
+    """True if the analysis found no deadline it could not prove."""
+    if any(dl["late"] or dl["unchecked"] for dl in a.deadlines.values()):
+        return False
+    return not any("not derived from CNT" not in msg for _, msg in a.problems)
 
 
 def report(path, a):
@@ -599,7 +644,7 @@ def check_model(path, a, words, cycles, base=128, data=None):
         m.run(cycles)
     except NotImplementedError as e:
         return f"skipped ({e})"
-    seen = 0
+    seen = set()
     for e in m.trace:
         if e[0] != "I":
             continue
@@ -613,8 +658,53 @@ def check_model(path, a, words, cycles, base=128, data=None):
         if (lo is not None and d < lo) or (hi is not None and d > hi):
             raise AssertionError(f"{path}: model WAIT_CMP at {pc:#05x}, cycle {c}: d = {d} "
                                  f"outside the analysed range {fmt(lo)}..{fmt(hi)}")
-        seen += 1
+        seen.add(pc)
     return seen
+
+
+def check_rtl_log(path, files):
+    """Which deadlines of `files` the firmware tests reached on the RTL."""
+    with open(path, encoding="utf-8") as f:
+        log = json.load(f)
+    total = reached = 0
+    bad = False
+    for fn in files:
+        name = os.path.basename(fn)
+        a0, _, _ = analyse(fn)
+        sites = sorted(a0.deadlines)
+        got = set()
+        with open(fn, encoding="utf-8") as f:
+            slow = "@slow-analysis" in f.read()
+        for key, seen in log.get(name, {}).items():
+            defines = {k: int(v) for k, v in (kv.split("=") for kv in key.split(","))} if key else None
+            a = analyse(fn, None, defines)[0] if defines and not slow else a0
+            for pc, (lo, _hi) in seen.items():
+                pc = int(pc)
+                dl = a.deadlines.get(pc)
+                if dl is None:
+                    print(f"  {name}: the log has a WAIT_CMP at {pc:#05x}, the analysis does not")
+                    bad = True
+                    continue
+                if dl["lo"] is not None and lo < dl["lo"]:
+                    print(f"  {name} [{key}]: {pc:#05x} d = {lo} on the RTL, bound {dl['lo']}")
+                    bad = True
+                if pc in sites:
+                    got.add(pc)
+        missing = [pc for pc in sites if pc not in got]
+        total += len(sites)
+        reached += len(got)
+        print(f"  {name}: {len(got)} of {len(sites)} deadlines reached on the RTL"
+              + (f"; not reached: {', '.join(f'{p:#05x}' for p in missing)}" if missing else ""))
+        bad |= bool(missing)
+    print(f"RTL cross-check: {reached} of {total} deadlines reached with the tests' peers, "
+          f"none below the checker's bound" if not bad else
+          f"RTL cross-check: {reached} of {total} deadlines reached, see above")
+    return bad
+
+
+def _uses_wait_cmp(path):
+    with open(path, encoding="utf-8") as f:
+        return "WAIT_CMP" in f.read()
 
 
 def main():
@@ -624,6 +714,7 @@ def main():
     ap.add_argument("--threads", type=int)
     ap.add_argument("-D", action="append", default=[], metavar="NAME=VALUE")
     ap.add_argument("--check-model", type=int, metavar="CYCLES")
+    ap.add_argument("--rtl-log", metavar="FILE", help="test/deadlines_seen.json from the firmware tests")
     a = ap.parse_args()
     defines = {}
     for d in a.D:
@@ -632,20 +723,28 @@ def main():
     files = a.files
     if a.all:
         files = sorted(f for f in glob.glob(os.path.join(ROOT, "firmware", "*.s"))
-                       if "WAIT_CMP" in open(f, encoding="utf-8").read())
+                       if _uses_wait_cmp(f))
     if not files:
         ap.error("no input files")
     bad = False
+    total = compared = 0
     for f in files:
         an, words, _ = analyse(f, a.threads, defines or None)
         bad |= report(f, an)
         if a.check_model:
+            total += len(an.deadlines)
             n = check_model(f, an, words, a.check_model,
                             data=[ord(ch) for ch in "Hi!"] + [0])
             if isinstance(n, str):
                 print(f"  model: {n}")
             else:
-                print(f"  model: {n} WAIT_CMP issues in {a.check_model} cycles, all inside the ranges")
+                compared += len(n)
+                print(f"  model: {len(n)} of {len(an.deadlines)} deadlines issued in "
+                      f"{a.check_model} cycles, all inside the ranges")
+    if a.check_model:
+        print(f"model cross-check: compared {compared} of {total} deadlines")
+    if a.rtl_log:
+        bad |= check_rtl_log(a.rtl_log, files)
     return 1 if bad else 0
 
 

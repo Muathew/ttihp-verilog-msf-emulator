@@ -37,4 +37,13 @@ module tb ();
       .rst_n  (rst_n)
   );
 
+`ifndef GL_TEST
+  // Toggles when a WAIT_CMP issues, so that DeadlineWatch (fw_tb.py) only wakes
+  // for those cycles.
+  reg wcmp_evt = 1'b0;
+  always @(negedge clk)
+    if (user_project.u_ctrl.exec && user_project.u_ctrl.op == 5'h1B)
+      wcmp_evt <= !wcmp_evt;
+`endif
+
 endmodule

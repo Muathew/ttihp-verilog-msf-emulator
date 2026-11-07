@@ -34,3 +34,5 @@ gds_render*.svg
 formal/work/
 
 __pycache__/
+test/deadlines_seen.json
+test/traces/
