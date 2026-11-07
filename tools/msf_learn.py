@@ -176,9 +176,10 @@ def pulse_model(frames, active):
         pairs = [(fr[i][1], fr[i + 1][1] if i + 1 < len(fr) else None)
                  for i in range(0, len(fr), 2)]
         pairs_by_frame.append(pairs)
-    # the frame's common length is the data; other shapes (repeat codes) are noted
+    # the shape that carries the most symbols is the data; others are noted. Not simply the
+    # commonest: a remote held down sends many short repeat codes for each real frame.
     lens = [len(p) for p in pairs_by_frame]
-    common = max(set(lens), key=lens.count)
+    common = max(set(lens), key=lambda n: n * lens.count(n))
     good = [p for p in pairs_by_frame if len(p) == common]
     others = [p for p in pairs_by_frame if len(p) != common]
     if common < 5:

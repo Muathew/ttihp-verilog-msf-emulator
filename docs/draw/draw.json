@@ -1,0 +1,29 @@
+{
+ "round": 33759424,
+ "randomness": "c345712da85d86a1546f5434290ce214d9d29e59b27b7133dade9de9c1f3de7c",
+ "drawn": [
+  "sda2506",
+  "spdif",
+  "em4100",
+  "microwire",
+  "cec",
+  "iec"
+ ],
+ "answers": {
+  "https://api.drand.sh": {
+   "round": 33759424,
+   "randomness": "c345712da85d86a1546f5434290ce214d9d29e59b27b7133dade9de9c1f3de7c",
+   "signature": "aff667a163a2e19725b49a17dabaa723a43923fcce2f85ad7f0e96e37d1bdec217cdb7ab4d2d834781e8e681d01c9fdc"
+  },
+  "https://api2.drand.sh": {
+   "round": 33759424,
+   "randomness": "c345712da85d86a1546f5434290ce214d9d29e59b27b7133dade9de9c1f3de7c",
+   "signature": "aff667a163a2e19725b49a17dabaa723a43923fcce2f85ad7f0e96e37d1bdec217cdb7ab4d2d834781e8e681d01c9fdc"
+  },
+  "https://drand.cloudflare.com": {
+   "round": 33759424,
+   "signature": "aff667a163a2e19725b49a17dabaa723a43923fcce2f85ad7f0e96e37d1bdec217cdb7ab4d2d834781e8e681d01c9fdc",
+   "randomness": "c345712da85d86a1546f5434290ce214d9d29e59b27b7133dade9de9c1f3de7c"
+  }
+ }
+}
