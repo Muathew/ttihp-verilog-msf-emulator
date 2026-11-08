@@ -132,6 +132,13 @@ def join(a, b):
         lo = None if a[1] is None or b[1] is None else min(a[1], b[1])
         hi = None if a[2] is None or b[2] is None else max(a[2], b[2])
         return ("t", lo, hi)
+    # two plain values (constants or ranges): their hull. A deadline moved on by
+    # either (DShot's 1 or 0 high time, chosen by a branch) keeps a range instead
+    # of becoming unknown when the paths meet
+    if a[0] in ("c", "i") and b[0] in ("c", "i"):
+        alo, ahi = (a[1], a[1]) if a[0] == "c" else (a[1], a[2])
+        blo, bhi = (b[1], b[1]) if b[0] == "c" else (b[1], b[2])
+        return ("i", min(alo, blo), max(ahi, bhi))
     return U
 
 
@@ -155,7 +162,10 @@ def widen(old, new):
         if hi is not None and (new[2] is None or new[2] > hi):
             hi = None if new[2] is None else next((t for t in TH_HI if t >= new[2]), None)
         return ("t", lo, hi)
-    return join(old, new)
+    j = join(old, new)
+    # a plain range still growing (a pointer walking a table) gives up at once,
+    # so the search ends
+    return U if j[0] == "i" and j != old else j
 
 
 class State:
