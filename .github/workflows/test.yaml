@@ -14,11 +14,13 @@ jobs:
         run: python3 tools/check_fpga_sync.py
 
       # Static deadline check: no WAIT_CMP in the firmware is ever late; a UART at 9
-      # cycles a bit must fail. The check against the RTL comes after the tests.
+      # cycles a bit must fail, and so must an @range promise the program breaks
+      # (planted-bug run, 8 Nov). The check against the RTL comes after the tests.
       - name: Firmware deadlines
         run: |
           python3 tools/msf_timing.py --all --check-model 20000
           ! python3 tools/msf_timing.py firmware/uart_tx.s -D BIT=9 -D STOP=9
+          ! python3 tools/msf_timing.py firmware/margin_i2c.s -D THIGH=15
 
       - name: Install iverilog
         shell: bash

@@ -250,8 +250,9 @@ def pulse_model(frames, active):
         nbits = len(bits)
     if nbits is None or nbits < 4:
         return None
-    if len(set(words)) < 1 or not any(0 < bin(w).count("1") < nbits for w in words):
-        return None                    # no frame mixes the symbols: no data shown
+    ones = sum(bin(w).count("1") for w in words)
+    if min(ones, nbits * len(words) - ones) < 2:
+        return None                    # one symbol, or the other seen once: no data shown
     res["trailer"] = statistics.median(q[0] for q in last) if has_stop else None
     res["bits"], res["words"], res["others_shapes"] = nbits, words, sorted({len(p) for p in others})
     n_params = 4 + (2 if leader else 0) + (1 if has_stop else 0) + 1
@@ -269,8 +270,8 @@ def manchester_model(frames, idle):
     half = cl[0][2]
     if half < MIN_SAMPLES:
         return None
-    if len(cl) == 2 and not near(cl[1][2], 2 * half, 0.3):
-        return None
+    if len(cl) == 2 and not near(cl[1][2], 2 * half, 0.12):
+        return None                    # (DCC's 58 and 100 us are no half and whole)
     out = []
     for fr in frames:
         levels = []
@@ -334,8 +335,8 @@ def serial_read(runs, idle, bit, fmt):
         if lv == idle:
             i += 1
             continue
-        if ts + cells * bit > end + bit:
-            break
+        if ts + (cells - 0.5) * bit > end:
+            break                      # cut off by the end of the recording: not an error
         vals = [level_at(ts + (k + 0.5) * bit) for k in range(cells)]
         ok = vals[0] != idle and all(v == idle for v in vals[-stops:])
         bits = [1 if v == idle else 0 for v in vals[1:1 + data_bits]]
@@ -374,8 +375,16 @@ def serial_model(runs, idle):
         return None
     best = None
     active = [d for lv, d in runs if lv != idle]
-    if not active or any(abs(d / bit - round(d / bit)) > 0.3 for d in active):
+    if not active:
         return None
+    # in a coarse recording the shortest run is rounded, and long runs show it: 31250 baud
+    # at 100 kHz is 3.2 samples a bit. Take the nearby bit time they all sit best on.
+    off_by = lambda b: max(abs(d / b - round(d / b)) for d in active)
+    if off_by(bit) > 0.3:
+        tries = [bit + k / 16 for k in range(-16, 17) if bit + k / 16 >= MIN_SAMPLES]
+        bit = min(tries, key=off_by)
+        if off_by(bit) > 0.3:
+            return None
     for fmt in FORMATS:
         chars, errors = serial_read(runs, idle, bit, fmt)
         if not chars or errors * 10 > len(chars):
@@ -385,9 +394,9 @@ def serial_model(runs, idle):
         if best is None or cost < best["cost"]:
             best = {"model": "serial", "bit": bit, "format": fmt, "chars": chars,
                     "errors": errors, "idle": idle, "cost": cost}
-    if best is None or len(set(best["chars"])) < 2:
-        return None                    # one value over and over is a clock, not data
-    return best
+    if best is None or len(set(best["chars"])) < 3:
+        return None                    # one or two values over and over are not shown to be
+    return best                        # data: a clock, a line of pulses (Wiegand), all 0xFF
 
 
 # ---------------------------------------------------------------- check fields

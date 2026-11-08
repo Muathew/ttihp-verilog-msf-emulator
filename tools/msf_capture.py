@@ -174,7 +174,7 @@ def write_sr(path, events, end, rate=CLOCK_HZ, div=1, names=None):
         z.writestr("logic-1-1", bytes(data))
 
 
-_RATE = re.compile(r"samplerate=\s*([\d.]+)\s*([kKmMgG]?)\s*Hz")
+_RATE = re.compile(r"samplerate\s*=\s*([\d.]+)\s*([kKmMgG]?)\s*Hz")     # old sessions have spaces
 
 
 def read_sr(path):
@@ -187,8 +187,8 @@ def read_sr(path):
             raise ValueError("sigrok session without a samplerate")
         rate = int(float(m.group(1)) * {"": 1, "k": 1e3, "K": 1e3, "m": 1e6, "M": 1e6,
                                         "g": 1e9, "G": 1e9}[m.group(2)])
-        unit = int((re.search(r"unitsize=(\d+)", meta) or [0, "1"])[1])
-        names = re.findall(r"probe\d+=(\S+)", meta)[:8]
+        unit = int((re.search(r"unitsize\s*=\s*(\d+)", meta) or [0, "1"])[1])
+        names = re.findall(r"probe\d+\s*=\s*(\S+)", meta)[:8]
         chunks = sorted((n for n in z.namelist() if n.startswith("logic-1")),
                         key=lambda n: int(n.rsplit("-", 1)[1]) if n.count("-") > 1 else 0)
         data = b"".join(z.read(n) for n in chunks)

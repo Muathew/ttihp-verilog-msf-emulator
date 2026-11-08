@@ -85,10 +85,14 @@ class DeadlineWatch:
         self.dut, self.name, self.late_ok, self.record = dut, name, late_ok, record
         self.n, self.ranges = _deadline_ranges(path, defines)
         self.key = _define_key(defines)
-        self.log = _seen.setdefault(name, {}).setdefault(self.key, {})
-        # (a mutant's run writes to its own file, and only what it saw there)
-        if record is not None:
+        # A mutant's run writes to its own file, and only what it saw there. A run that is
+        # late on purpose breaks the firmware's stated assumptions (replay.s fed a table
+        # denser than its @range), so it stays out of the cross-check: it used to share
+        # this log in memory, and the next ordinary test wrote it out.
+        if record is not None or late_ok:
             self.log = {}
+        else:
+            self.log = _seen.setdefault(name, {}).setdefault(self.key, {})
         self.flag_seen = False
         self.below = []
         self.task = spawn(self._run())

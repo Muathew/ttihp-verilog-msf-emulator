@@ -26,8 +26,12 @@ them (and widens growing intervals to infinity), so the search ends.
 
 A deadline moved on by a value from data (firmware/replay.s) can't be derived
 from the program, so the source declares its range on the instruction that uses
-it, `ADDS R5, R5, R2  ; @range R2 16 255`. That is a promise the checker takes on
-trust; the tool that writes the data has to keep it.
+it, `ADDS R5, R5, R2  ; @range R2 16 255`. Where the checker cannot derive the
+value, that is a promise it takes on trust, and the tool that writes the data has to
+keep it. Where it can (a constant, or a range it computed), it checks the promise
+and refuses the program if it does not hold: a planted bug that cut margin_i2c.s's
+THIGH to 15 under `@range R7 SWEEP_LO TMAX` was certified, and ran 45 cycles below
+the bound, until 8 Nov.
 
 At each `WAIT_CMP rs` with rs time-relative, d at issue must be >= 1: then
 the wait releases when CNT == target and the next instruction issues at
@@ -325,7 +329,18 @@ class Analysis:
         R = list(s.regs)
         if pc in self.ranges:
             r, lo, hi = self.ranges[pc]
-            R[r] = ("i", lo, hi)            # the source's promise about this value
+            v = R[r]
+            if v == U:
+                R[r] = ("i", lo, hi)        # the source's promise about a value from data
+            elif v[0] == "c" and lo <= v[1] <= hi:
+                pass                        # known, and inside the promise: keep it
+            elif v[0] == "i" and lo <= v[1] and v[2] <= hi:
+                pass
+            else:                           # a promise the program itself breaks
+                shown = {"c": lambda: str(v[1]), "i": lambda: f"{v[1]}..{v[2]}",
+                         "t": lambda: "a deadline"}[v[0]]()
+                self.problem(pc, f"@range R{r} {lo} {hi} does not hold: the program "
+                                 f"gives R{r} = {shown} here")
         z, nf, tmo = s.z, s.n, s.tmo
         nxt = (pc + 1) & M10
         cost = self.plain()
