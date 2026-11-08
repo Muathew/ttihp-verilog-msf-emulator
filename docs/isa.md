@@ -346,8 +346,11 @@ running thread. `TSTART` and `TSTOP` name the thread in the ra field (1–3;
 * **Multi-thread mode** (T0 and at least one of T1–T3 running): each cycle
   belongs to one running thread, the next running one after the previous
   cycle's, in the order T0, T1, T2, T3, T0, …. With *n* threads running,
-  each owns every *n*-th cycle. A thread's timing therefore depends only
-  on which threads are running, never on what they do.
+  each owns every *n*-th cycle. A thread's slots therefore depend only
+  on which threads are running, never on what they do, and so does the
+  timing of everything it does on its own. The TX, RX and CRC engines are
+  shared (below): a blocking op on an engine another thread is using waits
+  for that thread (`test_shared_engine_wait_depends_on_other_thread`).
 * **When `TSTART` / `TSTOP` changes the running set** in cycle *c*, cycle
   *c*+1 belongs to the thread that would have owned it before the change,
   if it still runs and was not just restarted; otherwise to the next

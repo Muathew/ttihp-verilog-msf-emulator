@@ -646,3 +646,32 @@ async def test_tx_rx_loopback(dut):
     await wait_uo(dut, DONE, 10000)
     got = [sram(dut, 64 + i) for i in range(len(words))]
     assert got == words, [hex(x) for x in got]
+
+
+@cocotb.test()
+async def test_tx_underrun_is_silent(dut):
+    """A limit found 8 Nov (plan.md 7.13): only WAIT_CMP has a LATE flag. A TX engine
+    that runs out of words keeps its last level (isa.md §6.1), and a push that comes
+    too late sets nothing: firmware timed by the engine (draw_em4100.s, draw_spdif.s)
+    must keep it fed, and the checker does not look at that."""
+    await boot_asm(dut, f"""
+        OE_SET   0x01
+        LDR      R1, #10
+        TX_DIV   R1
+        LDI      R1, {0x2000 | (8 - 1) << 8}
+        TX_CFG   R1
+        LDR      R1, #0x55
+        TX_PUSH  R1            ; 80 cycles of symbols
+        CNT_R    R5
+        LDI      R1, 300
+        ADDS     R5, R5, R1
+        WAIT_CMP R5            ; the next word comes 220 cycles after the line ran dry
+        TX_PUSH  R1
+        STAT     R2
+        LDR      R3, #0
+        ST       R3, R2
+    halt: JMP    halt
+    """)
+    await ClockCycles(dut.clk, 600)
+    stat = sram(dut, 0)
+    assert not stat & 0x4000, f"STAT {stat:#06x}: no LATE for a late push"

@@ -194,6 +194,38 @@ async def test_t0_timing_independent_of_t1(dut):
 
 
 @cocotb.test()
+async def test_shared_engine_wait_depends_on_other_thread(dut):
+    """The limit of the claim above (found 8 Nov, plan.md 7.13): slots depend only on
+    which threads run, but the TX, RX and CRC engines are shared, so a thread that
+    waits on one waits for whatever another thread does with it. T0 times its own
+    CRC_W + CRC_RDL (16 bits): 22 cycles with T1 on NOPs, 42 (52 the first time) with
+    T1 starting CRCs, as the ISA model gives."""
+    async def timed(t1_body):
+        await boot_asm(dut, CLEAR + f"""
+            LDR      R1, #15
+            CRC_CFG  R1
+            LDI      R1, t1
+            TSTART   R1
+            LDR      R6, #8
+        loop: CNT_R  R4
+            CRC_W    R2
+            CRC_RDL  R3
+            CNT_R    R5
+            SUBS     R5, R5, R4
+            ST       R6, R5
+            DECR     R6
+            JNZ      loop
+        halt: JMP    halt
+        t1: {t1_body}
+            JMP      t1
+        """)
+        await ClockCycles(dut.clk, 1200)
+        return [sram(dut, a) for a in range(8, 0, -1)]
+    assert await timed("NOP") == [22] * 8
+    assert await timed("CRC_W R2") == [52] + [42] * 7
+
+
+@cocotb.test()
 async def test_tstop_from_t1_restores_full_rate(dut):
     await boot_asm(dut, CLEAR + """
         LDI    R2, t1

@@ -13,18 +13,23 @@ SWD target, report every timing fault on an I2C bus with its length and keep
 the waveform around it, or find by itself how far a device's timing can be
 pushed. On a board nobody documented, it can find the debug pins, record the
 traffic, learn the protocol and send a message the transmitter never sent, with
-no other instrument: [the session](docs/instruments.md#9-a-reverse-engineering-session-with-one-chip).
+no other instrument (the learning itself runs on a PC, as a Python tool):
+[the session](docs/instruments.md#9-a-reverse-engineering-session-with-one-chip).
 
 ## The core
 
 * **Exact timing.** One cycle per instruction, with documented costs for
   every op; `WAIT_CMP` waits on the absolute cycle counter, so a bit
   schedule never drifts; edge and level waits with timeouts.
-* **A missed deadline is never silent.** A `WAIT_CMP` whose target has
-  passed releases at once with Z=1 and sets the thread's LATE flag.
+* **A missed `WAIT_CMP` deadline is never silent.** A `WAIT_CMP` whose
+  target has passed releases at once with Z=1 and sets the thread's LATE
+  flag. (A TX engine that runs out of words just holds its line: firmware
+  timed by the engine has to keep it fed.)
 * **Four hardware threads** in a fixed rotation, each with its own
-  registers: a thread's timing depends only on which threads run, never on
-  what they do. A hardware FIFO passes words between them.
+  registers: a thread's slots depend only on which threads run, never on
+  what they do (proved, F13). The SERDES and CRC engines are shared, so a
+  thread that waits on one waits for any other thread using it. A hardware
+  FIFO passes words between them.
 * **Line-code SERDES** (NRZ, NRZI, Manchester, bit stuffing, differential
   pairs) with receive, de-stuffing, resync and Manchester decoding; framing
   stays in firmware, so one engine serves UART, USB and 10BASE-T.
@@ -43,6 +48,7 @@ no other instrument: [the session](docs/instruments.md#9-a-reverse-engineering-s
 | Debug probes | JTAG (IEEE 1149.1 scans, chains), SWD (ADIv5 DP and MEM-AP) |
 | Watch and break | UART, I2C and SPI bus monitors that report timing faults with their lengths, and flight-recorder versions that keep the waveform around the first fault; timing-fault injection; a margin finder that sweeps a device's timing on the chip alone; an in-line interposer that changes one frame; UART-to-SPI bridge; logic analyser with streaming and replay |
 | Reverse-engineer | a pin finder that works out which of eight wires are UART, SWD and JTAG; learning a protocol from a recording, then sending a message the transmitter never sent |
+| Drawn at random, after the chip was finished | S/PDIF at 48 kHz, an EM4100 RFID tag, Microwire (93C46), a Siemens SDA 2506 EEPROM, HDMI-CEC, the Commodore serial bus: picked by a public random round, written for the unchanged chip, judged by sigrok's decoders ([results](docs/instruments.md#16-protocols-drawn-at-random--firmwaredraw_s-test_draw_py-docsdraw)) |
 
 [`docs/instruments.md`](docs/instruments.md) gives each one's limits,
 measured, and compares the approach with the RP2040's PIO: a PIO program
@@ -58,9 +64,11 @@ claim to its evidence):
 
 1. **An ISA model** written from [`isa.md`](docs/isa.md), not from the RTL,
    compared with the RTL on every issue of random programs.
-2. **191 cocotb tests** in 21 modules, with peer models written from the
+2. **237 cocotb tests** in 33 modules, with peer models written from the
    protocol standards (USB, Ethernet, I2C, SPI, IEEE 1149.1, ADIv5, CAN,
-   1-Wire, PS/2), not from the firmware.
+   1-Wire, PS/2, and the six protocols drawn at random), not from the
+   firmware; sigrok's decoders, written by other people, read what the
+   firmware sends.
 3. **Formal properties** (SymbiYosys and ABC, in CI) with free memory and
    pins; known bugs put back must each give a counterexample, and every
    cover point must be reached.
@@ -88,7 +96,8 @@ claim to its evidence):
   corner (1.08 V, 125 °C) the worst path, SRAM read to register file, is
   about 26.4 ns; 50 MHz is met only at the typical corner
   ([verification](docs/verification.md) §7). Every firmware we ship needs
-  20 MHz or less.
+  20 MHz or less, except the S/PDIF transmitter drawn at random, which runs
+  at 30.72 MHz to make 48 kHz exactly.
 * The C board tests step the core one clock at a time: they check logic and
   protocols on real hardware, not timing at speed. Only the
   [MCU test](external-mcu_testing.md) runs it free, at 12 MHz on the FPGA.
