@@ -211,13 +211,21 @@ def worker(job_path):
             res["runner"] = str(e)[:120]
         finally:
             sys.stdout, sys.stderr = so, se
-    seen = {"seen": {}, "below": [], "flag": False}
+    seen = {"seen": {}, "below": [], "flag": False, "certs": {}}
     if os.path.exists(out):
         with open(out, encoding="utf-8") as f:
             seen = json.load(f)
-    late = seen["flag"] or any(m[0] < 1 for m in seen["seen"].values())
+    runs = seen["seen"]                    # set of defines -> {pc: [lo, hi]}
+    late = seen["flag"] or any(m[0] < 1 for r in runs.values() for m in r.values())
     below = bool(seen["below"])
-    reached = (str(site_pc) in seen["seen"]) if site_pc is not None else bool(seen["seen"])
+    reached = any(str(site_pc) in r for r in runs.values()) if site_pc is not None else         any(runs.values())
+    # The verdict is for the program that ran: the tests may set their own defines (the
+    # PS/2 tests run Q = 60), so the checker's answer for each of those sets decides. Until
+    # 8 Nov this used the firmware's own defines only, and called three PS/2 mutants that
+    # the checker refuses at Q = 60 CERTIFIED, LATE.
+    run_certs = [c for c in seen.get("certs", {}).values() if c is not None]
+    if run_certs:
+        cert = all(run_certs)
     if cert:
         if late or below:
             verdict = "CERTIFIED, LATE"

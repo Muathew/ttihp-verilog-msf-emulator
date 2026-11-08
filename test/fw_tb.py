@@ -47,6 +47,9 @@ def spawn(coro):
 
 _ranges = {}
 _seen = {}
+# a mutant's run (tools/fw_mutants.py): what every boot in this process saw, by set of
+# defines, and whether the checker certifies the program with those defines
+_record = {"seen": {}, "below": [], "flag": False, "certs": {}}
 if os.path.exists(DEADLINE_LOG) and not MUTANT:     # runs of parts of the suite add up
     with open(DEADLINE_LOG, encoding="utf-8") as _f:
         _seen = json.load(_f)
@@ -57,18 +60,18 @@ def _define_key(defines):
 
 
 def _deadline_ranges(path, defines):
-    """(threads, {pc: (lo, hi)}) from the static checker, cached. A firmware marked
-    `; @slow-analysis` takes minutes per set of defines, so its tests check only that
-    nothing is late (d >= 1, LATE flag); CI still certifies it (msf_timing.py --all)."""
+    """(threads, {pc: (lo, hi)}, certified) from the static checker, cached. A firmware
+    marked `; @slow-analysis` takes minutes per set of defines, so its tests check only
+    that nothing is late (d >= 1, LATE flag); CI still certifies it (msf_timing.py --all)."""
     key = (path, _define_key(defines))
     if key not in _ranges:
         with open(path, encoding="utf-8") as f:
             if "@slow-analysis" in f.read():
-                _ranges[key] = (0, {})
+                _ranges[key] = (0, {}, None)
                 return _ranges[key]
         a, _, _ = msf_timing.analyse(path, None, defines)
         _ranges[key] = (a.n, {pc: (dl["lo"], dl["hi"]) for pc, dl in a.deadlines.items()
-                              if dl["seen"]})
+                              if dl["seen"]}, msf_timing.certified(a))
     return _ranges[key]
 
 
@@ -79,22 +82,28 @@ class DeadlineWatch:
     LATE flag may rise. The upper bound holds in single-thread programs only: a
     program with threads is analysed as if they ran from the start.
     late_ok: the test is late on purpose. record: tools/fw_mutants.py's run,
-    which writes what it saw instead of failing."""
+    which writes what it saw instead of failing: every boot of the run, by set of
+    defines, with the checker's verdict for each (a test may set its own defines,
+    as the PS/2 tests set a shorter Q, and the verdict must be for what ran)."""
 
     def __init__(self, dut, name, path, defines, late_ok=False, record=None):
         self.dut, self.name, self.late_ok, self.record = dut, name, late_ok, record
-        self.n, self.ranges = _deadline_ranges(path, defines)
+        self.n, self.ranges, cert = _deadline_ranges(path, defines)
         self.key = _define_key(defines)
         # A mutant's run writes to its own file, and only what it saw there. A run that is
         # late on purpose breaks the firmware's stated assumptions (replay.s fed a table
         # denser than its @range), so it stays out of the cross-check: it used to share
         # this log in memory, and the next ordinary test wrote it out.
-        if record is not None or late_ok:
+        self.below = []
+        if record is not None:
+            self.log = _record["seen"].setdefault(self.key, {})
+            self.below = _record["below"]
+            _record["certs"][self.key] = cert
+        elif late_ok:
             self.log = {}
         else:
             self.log = _seen.setdefault(name, {}).setdefault(self.key, {})
         self.flag_seen = False
-        self.below = []
         self.task = spawn(self._run())
 
     def _fail(self, msg):
@@ -119,7 +128,7 @@ class DeadlineWatch:
     def _flush(self):
         if self.record is not None:
             with open(self.record, "w", encoding="utf-8") as f:
-                json.dump({"seen": self.log, "below": self.below, "flag": self.flag_seen}, f)
+                json.dump(_record, f)
         elif not self.late_ok:
             with open(DEADLINE_LOG, "w", encoding="utf-8") as f:
                 json.dump(_seen, f, indent=0, sort_keys=True)
@@ -137,6 +146,7 @@ class DeadlineWatch:
             await c.late.value_change
             if int(c.late.value) and not self.flag_seen:
                 self.flag_seen = True
+                _record["flag"] = _record["flag"] or self.record is not None
                 self._flush()
                 self._fail("a LATE flag rose")
 
@@ -171,7 +181,10 @@ def save_trace(name, samples, decoders, annotations, expect, tooth, rate=12_000_
     cycle. decoders and annotations are sigrok-cli's -P and -A; expect, the lines
     it must print, in order; tooth, {"pin", "hold"}: an edge on that pin held back
     by that many samples, which the decode must notice. sr_file: read this sigrok
-    session in traces/ instead of samples."""
+    session in traces/ instead of samples. A planted bug's run (MSF_FW_MUTANT) writes none:
+    CI runs the decoders after the planted bugs, on the real waveforms."""
+    if MUTANT:
+        return
     os.makedirs(TRACES, exist_ok=True)
     if sr_file is None:
         with open(os.path.join(TRACES, name + ".bin"), "wb") as f:
