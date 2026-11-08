@@ -1,4 +1,4 @@
-# Protocols drawn at random: what each agent was told
+# Protocols drawn at random: the rule, and what each agent was told
 
 The rule, the pool and the round were committed before the round fell (`tools/protocol_draw.py`,
 `pool.tsv`, commit a34b7eb at 19:35:40 UTC on 7 Nov 2026; the round fell at about 20:00:45). The
@@ -11,6 +11,23 @@ Each protocol gets two agents that cannot see each other's work. One writes the 
 writes a model of the other side and a checker, from the specification. Then three things judge the
 firmware: `msf_timing.py`, sigrok's decoder, and the other agent's model. A failure counts as a result
 and goes in the table in `docs/instruments.md`, as it stands.
+
+## What happened instead (8 Nov)
+
+The twelve agents started at 20:28 UTC on 7 Nov. Thirteen minutes later Sam stopped them all and
+asked for one chat only; none had reported. Four firmware agents had left partial files
+(`draw_em4100`, `draw_iec`, `draw_microwire`, `draw_sda2506`); they were moved out of the tree
+unread and are not used. On 8 Nov Sam asked for no sub-agents at all, so the session that wrote the
+rule wrote all six, one after another, firmware and test each, from the specifications, under the
+contracts below, which did not change. `src/` did not change either (last commit d1179f3).
+
+That loses the separation the plan asked for. The peer in each test was written by the same session
+as the firmware, so a shared misreading of a specification would pass it: it is no longer a judge.
+Two judges remain that this session did not write: sigrok's decoder, by other people, and the
+specification read as it stands (where the two disagree, the result says so). `msf_timing.py` only
+says whether a deadline can be late. The decoders' source was not read. The times are the session's
+own clock, start to the decoder's verdict; some overlap, because a long simulation ran while the
+next protocol was written. The results are in `docs/instruments.md` §16.
 
 ## Both agents
 
@@ -33,7 +50,7 @@ and goes in the table in `docs/instruments.md`, as it stands.
 You write `firmware/draw_<id>.s` and `test/test_draw_<id>.py`. The chip is finished and cannot change.
 
 Read `docs/isa.md`, `firmware/msf.inc`, and examples you choose from `firmware/` (`uart_tx.s`,
-`i2c_master.s`, `onewire.s`, `can.s`, `manchester*` and `ps2_device.s` are good starts). `test/fw_tb.py`
+`i2c_master.s`, `onewire.s`, `can.s`, `eth_10baset_tx.s` and `ps2_device.s` are good starts). `test/fw_tb.py`
 and `test/test_firmware.py` show how a firmware test runs: `fw_boot`, `Bench`, `Recorder`, `save_trace`.
 You have 896 words of program and 128 of data; the core runs one instruction a cycle, and is signed off to
 33.33 MHz. The clock is 12 MHz unless the contract says you may choose.

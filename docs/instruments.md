@@ -492,9 +492,24 @@ recording down in the fewest bits, refuse what fits none) is theirs, the code is
 * **Tests of the tool alone,** 176 cases: random pulse codes, Manchester and serial must be
   read word for word; with 10 % jitter, read or refused, never wrong; noise, square waves,
   servo pulses of any width and tone bursts must be refused.
+* **Real recordings:** 390 files from sigrok-dumps under 70 kB (IR and RC remotes, DALI, DMX512,
+  DCC, AM230x and DHT11 sensors, LED strips, gray code, Wiegand, and more), every channel. It
+  refused 138 channels and made a claim on 82 channels of 56 files. Of those, 42 have the
+  protocol's own framing and words that agree across repeats (NEC remotes, with the carrier
+  taken off where the raw channel was recorded; RC-5 at 14 bits and a half bit of 877-883 us;
+  Sony SIRC's pulse lengths; DALI's 17 Manchester bits at 420 us), 25 have a plausible shape whose
+  values were not checked (the sensors' 40-bit replies after the host's start pulse, Bose's 15-bit
+  Manchester), and **15 are wrong**: DMX512 read as 6N1 or 7E1 serial at 225-253 kbaud (it is 250
+  kbaud 8N2), RC-6 (Manchester with a double-length trailer bit) read as serial, an LED strip's
+  PWM and clock lines read as serial. The run found four rules that were too loose (a pulse code
+  where one symbol appears once, DCC taken as Manchester, Wiegand's two values taken as serial,
+  a coarse recording's bit time), which were tightened; the 15 wrong claims stand, and say
+  that the serial model accepts too much. The right and wrong calls are read off the protocols'
+  known framing, not checked with sigrok's decoders, and the files are not committed.
 
 **Limits.** Single-wire, self-timed codes. Clocked buses, conversations and generated
-receivers are not done. Manchester's bit polarity is a convention the waveform can't settle.
+receivers are not done. On real recordings, about one claim in five is wrong (above). The plan's
+step 5, the measured spread of each symbol driving the margin finder, is not done. Manchester's bit polarity is a convention the waveform can't settle.
 A recording is limited by §11. The first version failed many of its random tests in the
 ways Escapement's did: runs of equal symbols read as a carrier, chains of near lengths read
 as symbols. Each is fixed by a rule, not a special case, and the tests stay.
@@ -567,3 +582,60 @@ pass the bus through, so that neither side can tell, and change exactly one thin
 
 **Limits.** I2C is left out: open-drain lines need direction sensing. The lateness is real, and
 costs a receiver margin. What to change is set when the firmware is assembled.
+
+## 16. Protocols drawn at random — `firmware/draw_*.s` (`test_draw_*.py`, `docs/draw/`)
+
+The brief asks for new protocols after fabrication. To show it rather than assert it, six were
+drawn from a public pool with a drand round fixed beforehand (`tools/protocol_draw.py`, the rule
+committed in a34b7eb before the round fell), and written for the finished chip: `src/` did not
+change. The plan was two blind agents per protocol, one for the firmware and one for the model of
+the other side. Sam stopped the agents before any reported, so one session wrote all six, firmware
+and test each, from the specifications (`docs/draw/README.md` says what that costs: the test's peer
+is no longer an independent judge). What judges each one: the decoder from sigrok, written by other
+people and not read, and the specification as it stands; `msf_timing.py` for the deadlines.
+
+| Drawn | The chip is | Time | Words | Clock | RTL runs | Deadlines, worst slack | sigrok's decoder |
+|---|---|---:|---:|---|---:|---|---|
+| `sda2506` | controller of a Siemens SDA 2506-5 EEPROM | ~9 min | 153 | 12 MHz | 2 | 16, 44 cycles | **disagrees on the bytes read**: agrees on every command, address and the data written, reads 5A as B5 and A7 as 4F |
+| `spdif` | S/PDIF transmitter, 48 kHz, 16-bit stereo | 7 min | 141 | 30.72 MHz | 3 | none: the TX engine | agrees: 2443 lines, every preamble, sample and channel status bit |
+| `em4100` | EM4100 tag, ID 1A 2B3C4D5E | 22 min | 104 | 12 MHz | 3 | none: the TX engine | agrees: five tags `1A2B3C4D5E` |
+| `microwire` | controller of a 93C46 EEPROM | 8 min | 150 | 12 MHz | 2 | 6, 3 cycles | agrees: EWEN, WRITE 5 = BEEF, READ 5 = BEEF, READ 6 = 1234, EWDS |
+| `cec` | HDMI-CEC device at logical address 4 | 31 min | 315 | 12 MHz | 2 | 10, 93 cycles | agrees: Image View On ACK, Active Source, four attempts to address 8 NACK, Give Physical Address from the TV acknowledged, Report Physical Address |
+| `iec` | Commodore serial bus controller, drive 8 | 10 min | 273 | 12 MHz | 2 | 8, 93 cycles | agrees: LISTEN 8, 0x6F, `I0` with EOI, UNLISTEN, TALK 8, 0x6F, `00, OK,00,00` CR with EOI, UNTALK |
+
+Every one also passes its own test on the RTL, against a peer that checks the specification's
+timing (the test files list what each checks). The times run from the first line written to the
+decoder's verdict; the specifications of SDA 2506, EM4100 and CEC were looked up before, about ten
+minutes together. CEC's 31 minutes include two 10-minute simulations (0.55 s of bus, 6.4 million
+cycles), during which S/PDIF and SDA 2506 were written. MarcosAsh's blind runs took 24 to 68
+minutes each.
+
+**What went wrong, and what the sources disagreed on.**
+* EM4100: my bug, an `AND` followed by `JZ`. `AND` sets no flags, so the branch read a stale Z and
+  three nibbles came out 0. The RTL test caught it on the first run.
+* Microwire: the checker could not bound SK's deadlines while the deadline register ran through
+  subroutine calls (it joins the callers' states), so each routine now starts from `CNT_R`. The bus is
+  static, so a gap between routines only stretches a phase.
+* SDA 2506: the decoder takes a read's bits one pulse early. The data sheet's Read figure (UED01268)
+  has D0 come out tDD = 2.5 us after the first clock pulse's trailing edge, D1 after the second, as
+  the text says; the firmware and its peer follow that, and the decoder shows the line before D0,
+  then D0-D6. The test pins the decoder's reading of the right bytes, `(b << 1 | 1) & 0xFF`, so the
+  check still fails on any other change. The figure has its own slip: it labels the bit after the
+  eighth pulse D8.
+* IEC: Wikipedia's Commodore bus article says a 1 bit is the line pulled ("1=true=ground"). The C64
+  KERNAL source (`serial4.0`, in mist64/cbmsrc) sends a 1 with `DATAHI`, released. The firmware follows
+  the KERNAL, and the decoder reads every byte.
+* S/PDIF: the decoder finds nothing in a capture that starts with the line idle (its rate estimate
+  comes out 45 times too high), and locks when the capture starts in the stream, as any real capture
+  of an S/PDIF line does. Its "Signal Bitrate" line is a start-up estimate (36-45 kHz shown) and is
+  not judged; the test's edges, all 31,216 on the 5-cycle grid at 30.72 MHz, give 48,000 frames a
+  second exactly.
+* CEC: four attempts in all is the CEC 2.0 suggestion as the Linux kernel's `cec-adap.c` gives it;
+  the HDMI specification itself was not read, so the test allows two to six.
+
+**What it shows.** Six protocols the design never had in mind, picked by a public random round, fit
+the finished chip: the largest takes 315 of 896 words, all certify, and none needed a change to the
+silicon. Two use the TX engine for timing to the cycle: EM4100's Manchester at RF/64, and S/PDIF's
+biphase-mark as NRZI, with the clock chosen so that 5 cycles make a half-cell at 48 kHz. **What it
+does not:** it is not blind, so it shows the chip and the ISA are enough, not that the documentation
+alone is; the peers share the firmware's author; and each protocol is checked in simulation only.

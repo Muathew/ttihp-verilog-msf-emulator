@@ -57,6 +57,12 @@ ALL_MODULES = [
     "test_interpose",
     "test_debugports",
     "test_buses",
+    "test_draw_sda2506",
+    "test_draw_spdif",
+    "test_draw_em4100",
+    "test_draw_microwire",
+    "test_draw_cec",
+    "test_draw_iec",
 ]
 
 
