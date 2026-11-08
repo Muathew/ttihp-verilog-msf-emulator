@@ -140,6 +140,7 @@ claim to its evidence):
 pip install -r test/requirements.txt        # cocotb; plus Icarus Verilog
 cd test && make                              # RTL suite (Windows: python run_tests.py --all)
 python tools/msf_timing.py --all             # certify every firmware deadline
+python tools/devsim.py sdspi.s test_sdspi Card 600000   # a program against its test's device, on the ISA model
 python formal/run_formal.py --engine abc     # needs SymbiYosys (OSS CAD Suite)
 python tools/mutation.py                     # mutation score (hours: every module)
 python test/assembler.py                     # regenerate the boot ROM after editing bootloader.s

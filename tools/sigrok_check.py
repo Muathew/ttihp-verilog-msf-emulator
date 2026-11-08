@@ -51,7 +51,8 @@ def decode(path, spec):
     fmt = [] if path.endswith(".sr") else ["-I", f"binary:numchannels=8:samplerate={spec['rate']}"]
     cmd = CLI + fmt + ["-i", native(path), "-P", spec["decoders"], "-A", spec["annotations"]]
     env = dict(os.environ, MSYS_NO_PATHCONV="1")
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=env)
+    p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       timeout=600, env=env)      # (sigrok-cli writes UTF-8: degree signs)
     if p.returncode:
         raise RuntimeError(f"sigrok-cli failed: {p.stderr.strip()[:300]}")
     lines = []
