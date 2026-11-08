@@ -51,7 +51,7 @@ TOP_FILES = ["project.v", "tt_um_msf_ctrl.v", "tt_um_msf_regfile.v", "tt_um_msf_
 # (name, file, old, new): re-introduce a review bug
 MUTANTS = [
     ("B1 pc not advanced on release", "tt_um_msf_ctrl.v",
-     "if (rel) pcs[9:0] <= pc0 + 10'd1;", "if (rel) pcs[9:0] <= pc0;"),
+     "if (rel) pcs_n[9:0] = pc0 + 10'd1;", "if (rel) pcs_n[9:0] = pc0;"),
     ("B2 WAIT kinds not separated", "tt_um_msf_ctrl.v",
      "(k == K_EDGE || k == K_CMP) ? (evt[t] || whit[t]) :",
      "(k == K_EDGE || k == K_CMP) ? (e || cmp || whit[t]) :"),
@@ -69,7 +69,10 @@ MUTANTS = [
     ("F12: the rotation skips the next thread", "tt_um_msf_ctrl.v",
      "for (k = 3; k >= 1; k = k - 1) begin", "for (k = 3; k >= 2; k = k - 1) begin"),
     ("F13: a stalled thread holds on to the next slot", "tt_um_msf_ctrl.v",
-     "          own <= fth; bub <= 1'b0;", "          own <= st_c ? cur : fth; bub <= 1'b0;"),
+     "        own_n = fth; bub_n = 1'b0;", "        own_n = st_c ? cur : fth; bub_n = 1'b0;"),
+    # v3: the decode stage
+    ("F14: no forwarding into E", "tt_um_msf_ctrl.v",
+     "wire        fwd_a = fw_en && fw_thr == cur && fw_a == dra;", "wire        fwd_a = 1'b0;"),
 ]
 
 

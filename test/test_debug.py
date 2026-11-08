@@ -130,6 +130,7 @@ async def test_debug_single_step(dut):
         await edge()
         pcs.append((await view(dut, 0x21) & 3) << 8 | await view(dut, 0x20))
     trace = [p for i, p in enumerate(pcs) if i == 0 or p != pcs[i - 1]]
+    assert 128 in trace, f"PC trace {trace}"
     run = trace[trace.index(128):]
     loop = [129, 130, 131]
     assert run[:1 + 3 * 4] == [128] + loop * 4, f"PC trace {run}"

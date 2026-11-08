@@ -13,10 +13,13 @@ module tt_um_msf_bootrom (
 );
   reg [15:0] rom [0:127];
 `include "tt_um_msf_bootrom_data.v"   // initial block: fills rom[0..127]
+  // v3: the read register resets to word 0, so the decode stage has the first
+  // instruction in the first cycle after reset while the core already fetches
+  // word 1 (tt_um_msf_ctrl.v, imem_raddr). An asynchronous reset like every other
+  // flop's: the fetch address never depends on rst_n combinationally.
   reg [15:0] q_r;
-  always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) q_r <= 16'h0;
+  always @(posedge clk or negedge rst_n)
+    if (!rst_n) q_r <= ROM_W0;
     else        q_r <= rom[a];
-  end
   assign q = q_r;
 endmodule
