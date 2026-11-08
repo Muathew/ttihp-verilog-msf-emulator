@@ -221,7 +221,7 @@ gapless stream. When it runs out of data the line keeps its last level.
 | Bits | Field |
 |---|---|
 | 2:0 | pin (uio index, synced) |
-| 5:4 | mode: 0 NRZ, 1 NRZI (no transition = 1), 2 Manchester (IEEE 802.3: low→high = 1; `RX_DIV` = half-bit) |
+| 5:4 | mode: 0 NRZ, 1 NRZI (no transition = 1), 2 Manchester (IEEE 802.3: low→high = 1; `RX_DIV` = half-bit), 3 Manchester, phase-tracking (v3; `RX_DIV` = 65536 × bit rate / clock) |
 | 6 | de-stuff: drop the bit after six consecutive 1s |
 | 7 | LSB-first |
 | 11:8 | word width − 1 |
@@ -243,6 +243,23 @@ and the next transition starts a frame, taken as a centre, so a frame must
 start with a bit whose first half is the idle level (e.g. a preamble of
 alternating bits, as Ethernet's). Start mode, de-stuffing and resync do
 not apply.
+
+**Phase-tracking Manchester** (mode 3, v3) is for bit periods that are not a
+whole number of cycles, such as 10BASE-T at 50 MHz (5 cycles a bit, a half-bit
+2.5: `RX_DIV` = 13107). The engine keeps the phase within the bit in 1/65536ths
+and adds `RX_DIV` every cycle. The first transition of a frame is a bit centre
+(phase 0.5), and so are the next six whatever their phase, each moving the phase
+half way to 0.5: the lock, which needs a preamble of alternating bits (it has
+no other transitions). After that a transition is a centre only in the middle
+half of the bit (phase 0.25–0.75), and moves the phase a sixteenth of the way to
+0.5, so the phase follows the average centre; a transition nearer the bit's
+boundary (between equal bits) is ignored. A centre gives the bit (the level after
+it); a bit that ends with no centre ends the frame, dropping a partial word, and
+the next transition starts a frame. Start mode, de-stuffing and resync do not
+apply. At 50 MHz it takes 10BASE-T with up to 10 ns of edge jitter at random and
+±100 ppm (`test_eth10_rx`); 802.3 allows 13.5 ns, but sampling at 20 ns adds 20 ns
+of spread, which leaves the centres and the boundaries 1.5 ns apart even with a
+perfect clock: more needs sampling on both clock edges or a faster clock.
 
 ### 6.3 CRC unit
 32-bit `CRC` and `POLY`. `CRC_W` processes `len` (=`CRC_CFG[3:0]`+1) bits of rb,

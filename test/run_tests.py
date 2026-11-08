@@ -101,6 +101,7 @@ ALL_MODULES = [
     "test_sdspi",
     "test_guard",
     "test_usb_fs",
+    "test_eth10_rx",
 ]
 
 

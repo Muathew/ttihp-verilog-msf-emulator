@@ -15,6 +15,7 @@
 ; ---- RX_CFG ----  pin in bits 2:0, word width (n-1) << 8
 .equ RX_NRZI,    0x0010
 .equ RX_MANCH,   0x0020       ; Manchester, RX_DIV = half-bit (IEEE 802.3)
+.equ RX_MANPLL,  0x0030       ; Manchester, phase-tracking: RX_DIV = 65536 x bit rate / clock (v3)
 .equ RX_DESTUFF, 0x0040
 .equ RX_LSB,     0x0080
 .equ RX_CHAR,    0x1000       ; async character (UART-style start bit)
