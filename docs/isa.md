@@ -1,5 +1,11 @@
-# ISA Spec — `msfcore` (Protocol Emulator Core) v2.2
+# ISA Spec — `msfcore` (Protocol Emulator Core) v3
 
+> v3 (2026-11-08, branch `v3`): a decode stage, for a 20 ns clock, with every cost
+> in §5 and §7 unchanged; the **late guard** (`LATE_CLR` with bit 15, §5 and §6.5):
+> a thread that misses a deadline lets go of the pins it names; and the RX
+> engine's **phase-tracking Manchester** mode (mode 3, §6.2) for bit periods that
+> are not a whole number of cycles (10BASE-T at 50 MHz). v2.2 programs run
+> unchanged and take the same cycles.
 > v2.1 (2026-10-21, branch `rtl-changes`) adds a timeout register per thread,
 > the peripheral ports `PW`/`PR` with a FIFO between threads (§6.5), the
 > debug view (§8), a second 512-word SRAM bank (10-bit PC and addresses) and
