@@ -100,6 +100,7 @@ ALL_MODULES = [
     "test_ds18b20",
     "test_sdspi",
     "test_guard",
+    "test_usb_fs",
 ]
 
 
