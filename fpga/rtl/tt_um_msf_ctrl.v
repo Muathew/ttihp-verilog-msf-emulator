@@ -3,8 +3,16 @@
 // for four hardware threads, blocking-op (stall) engine, shift register,
 // data-RAM port, pin writes and the peripheral bus.
 //
-// Pipeline. IMEM has a registered read: the word fetched with imem_raddr in
-// cycle N is decoded in cycle N+1.
+// Pipeline (v3). IMEM has a registered read. The word that issues in cycle
+// N+1 arrives in cycle N: a decode stage (D) registers it with the operands it
+// names, read from the register file of the thread it was fetched for, and the
+// instruction issues from those registers in N+1 (E), with the one register E
+// wrote in cycle N forwarded. To deliver words a cycle early, the SRAM is given
+// the fetch pointers' next values (pcs_n, own_n, run_n), not their registers:
+// the state machine below is v2.2's, unchanged, so every instruction issues on
+// the same cycle as in v2.2 and costs what isa.md says (docs/plan-v3.md section 1).
+// In v2.2's terms, which the rest of this header uses: the word fetched with
+// imem_raddr in cycle N is decoded in cycle N+1.
 //  * Single-thread mode (only T0 runs): T0 owns every cycle. During execution
 //    pc0 = address+1 (fetch-ahead). Taken redirects insert one bubble (bub).
 //    Blocking op at W: pc0 is held at W+1 on entry so mem[W+1] is re-fetched
@@ -65,6 +73,8 @@ module tt_um_msf_ctrl (
     output wire        pw_we,
     output wire [2:0]  pw_port,
     output wire [15:0] pw_data,
+    // the late guard: pins whose output enables are forced off (tt_um_msf_pio)
+    output wire [7:0]  oe_off,
     input  wire [15:0] cap_stat,
     input  wire [9:0]  cap_tpos,
     // debug view (project.v shows dbg_q on uo_out in debug mode)
@@ -144,6 +154,8 @@ module tt_um_msf_ctrl (
   reg  [3:0]  fge;            // the pending LD is a FIFO pop of an empty FIFO
   reg  [3:0]  wlate;          // the pending WAIT_CMP's target had passed at issue
   reg  [3:0]  late;           // sticky LATE flags (STAT bit 14, port 7)
+  reg  [3:0]  lguard;         // the late guard: threads whose LATE takes gpins off the bus
+  reg  [7:0]  gpins;          //   and the uio pins it takes off (their OE forced to 0)
 
   wire        st_c   = st[cur];
   wire [15:0] tmo_c  = tmo[16*cur +: 16];
@@ -181,7 +193,7 @@ module tt_um_msf_ctrl (
   // ------------------------------------------------------------------
   // Decode
   // ------------------------------------------------------------------
-  wire [15:0] ir    = fl_c ? 16'h7000 : imem_rd;      // bubble decodes as NOP
+  wire [15:0] ir    = fl_c ? 16'h7000 : dir;          // bubble decodes as NOP
   wire        exec  = !st_c && !fl_c;                 // an instruction issues
   wire [9:0]  pc_c  = pcs[10*cur +: 10];
   wire [9:0]  apc1  = multi ? pc_c + 10'd1 : pc0;     // issuing address + 1
@@ -217,14 +229,18 @@ module tt_um_msf_ctrl (
   // ------------------------------------------------------------------
   // Register files (one per thread) and operand selection
   // ------------------------------------------------------------------
-  reg [2:0] ra_i, rb_i;
+  // Decode stage: the registers the word in imem_rd names, from the thread it was
+  // fetched for (T0 in single mode, else the next owner, fth), read this cycle.
+  wire [4:0] d_op  = imem_rd[15:11];
+  wire [1:0] d_thr = multi ? fth : 2'd0;
+  reg  [2:0] ra_i, rb_i;
   always @(*) begin
-    ra_i = f_a;                       // I format / EXT ra
-    rb_i = f_b;                       // EXT rb
-    if (op >= OP_ADDS && op <= OP_MOV) begin
-      ra_i = f_b;                     // R format rs
-      rb_i = f_c;                     // R format rt
-    end else if (op == OP_RET) begin
+    ra_i = imem_rd[10:8];             // I format / EXT ra
+    rb_i = imem_rd[7:5];              // EXT rb
+    if (d_op >= OP_ADDS && d_op <= OP_MOV) begin
+      ra_i = imem_rd[7:5];            // R format rs
+      rb_i = imem_rd[4:2];            // R format rt
+    end else if (d_op == OP_RET) begin
       ra_i = 3'd7;
     end
   end
@@ -257,8 +273,30 @@ module tt_um_msf_ctrl (
       .ra(ra_i), .rb(rb_i), .rc(dbg_sel[3:1]), .we(wb_en && cur == 2'd3), .wa(wb_a), .wd(wb_d),
       .qa(qa_w[63:48]), .qb(qb_w[63:48]), .qc(qc_w[63:48]));
 
-  wire [15:0] qa = qa_w[16*cur +: 16];
-  wire [15:0] qb = qb_w[16*cur +: 16];
+  // D -> E registers, and this cycle's write-back, for forwarding
+  reg [15:0] dir, dqa, dqb;
+  reg [2:0]  dra, drb;
+  reg        fw_en;
+  reg [1:0]  fw_thr;
+  reg [2:0]  fw_a;
+  reg [15:0] fw_d;
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      dir <= 16'h7000; dqa <= 16'd0; dqb <= 16'd0; dra <= 3'd0; drb <= 3'd0;
+      fw_en <= 1'b0; fw_thr <= 2'd0; fw_a <= 3'd0; fw_d <= 16'd0;
+    end else begin
+      dir <= imem_rd;
+      dqa <= qa_w[16*d_thr +: 16];  dra <= ra_i;
+      dqb <= qb_w[16*d_thr +: 16];  drb <= rb_i;
+      fw_en <= wb_en; fw_thr <= cur; fw_a <= wb_a; fw_d <= wb_d;
+    end
+  end
+  // E's operands: as D read them, unless E wrote that register of this thread in
+  // the cycle D read it (single mode: the instruction just before)
+  wire        fwd_a = fw_en && fw_thr == cur && fw_a == dra;
+  wire        fwd_b = fw_en && fw_thr == cur && fw_a == drb;
+  wire [15:0] qa = fwd_a ? fw_d : dqa;
+  wire [15:0] qb = fwd_b ? fw_d : dqb;
 
   // ------------------------------------------------------------------
   // ALU
@@ -390,7 +428,7 @@ module tt_um_msf_ctrl (
             wbx_en = !x_get;
             case (f_b)
               P_FCFG:  wbx_d = {fdrop, fcount};
-              P_LATE:  wbx_d = {12'd0, late};
+              P_LATE:  wbx_d = {gpins, lguard, late};
               3'd2:    wbx_d = cap_stat;
               3'd3:    wbx_d = {6'd0, cap_tpos};
               default: wbx_d = 16'd0;
@@ -433,42 +471,57 @@ module tt_um_msf_ctrl (
   // multi mode: the word fetched now still belongs to the next cycle's owner
   wire       f_ok     = run_n[fth] && !(do_tstart && tt == fth);
 
-  always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      pcs <= 40'd0; bub <= 1'b1; run <= 4'b0001; own <= 2'd0;
-    end else begin
-      run <= run_n;
-      if (!multi) begin
-        // ---- single-thread mode: T0 owns every cycle ----
-        if (st[0]) begin
-          if (rel) pcs[9:0] <= pc0 + 10'd1;      // release: mem[W+1] issues next
-        end else if (redirect) begin
-          pcs[9:0] <= tgt; bub <= 1'b1;
-        end else if (enter || do_tstart) begin
-          bub <= 1'b0;                           // hold pc0 = W+1
-        end else begin
-          pcs[9:0] <= pc0 + 10'd1; bub <= 1'b0;
-        end
-        if (do_tstart) pcs[10*tt +: 10] <= qb[9:0];  // T0 issues next cycle, the new thread after
+  reg [39:0] pcs_n;
+  reg        bub_n;
+  reg [1:0]  own_n;
+  always @(*) begin
+    pcs_n = pcs; bub_n = bub; own_n = own;
+    if (!multi) begin
+      // ---- single-thread mode: T0 owns every cycle ----
+      if (st[0]) begin
+        if (rel) pcs_n[9:0] = pc0 + 10'd1;       // release: mem[W+1] issues next
+      end else if (redirect) begin
+        pcs_n[9:0] = tgt; bub_n = 1'b1;
+      end else if (enter || do_tstart) begin
+        bub_n = 1'b0;                            // hold pc0 = W+1
       end else begin
-        // ---- multi-thread mode: the owner advances its own PC ----
-        if (!st[cur] && !bub) begin
-          if (redirect) pcs[10*cur +: 10] <= tgt;
-          else          pcs[10*cur +: 10] <= pc_c + 10'd1;
-        end
-        if (do_tstart) pcs[10*tt +: 10] <= qb[9:0];  // (also a thread restarting itself)
-        if (f_ok) begin
-          own <= fth; bub <= 1'b0;
-          // back to single mode with T0's word in flight: fetch-ahead again
-          if (run_n[3:1] == 3'd0 && !st[0]) pcs[9:0] <= pc0 + 10'd1;
-        end else begin
-          own <= next_after(cur, run_n); bub <= 1'b1;
-        end
+        pcs_n[9:0] = pc0 + 10'd1; bub_n = 1'b0;
+      end
+      if (do_tstart) pcs_n[10*tt +: 10] = qb[9:0];  // T0 issues next cycle, the new thread after
+    end else begin
+      // ---- multi-thread mode: the owner advances its own PC ----
+      if (!st[cur] && !bub) begin
+        if (redirect) pcs_n[10*cur +: 10] = tgt;
+        else          pcs_n[10*cur +: 10] = pc_c + 10'd1;
+      end
+      if (do_tstart) pcs_n[10*tt +: 10] = qb[9:0];  // (also a thread restarting itself)
+      if (f_ok) begin
+        own_n = fth; bub_n = 1'b0;
+        // back to single mode with T0's word in flight: fetch-ahead again
+        if (run_n[3:1] == 3'd0 && !st[0]) pcs_n[9:0] = pc0 + 10'd1;
+      end else begin
+        own_n = next_after(cur, run_n); bub_n = 1'b1;
       end
     end
   end
 
-  assign imem_raddr = multi ? pcs[10*fth +: 10] : pc0;
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      pcs <= 40'd0; bub <= 1'b1; run <= 4'b0001; own <= 2'd0;
+    end else begin
+      run <= run_n; pcs <= pcs_n; bub <= bub_n; own <= own_n;
+    end
+  end
+
+  // v2.2 fetched with the pointers' registers; v3 fetches the same word a cycle
+  // earlier, with the values those registers are about to take
+  wire       multi_n = |run_n[3:1];
+  wire [1:0] fth_n   = next_after(own_n, run_n);
+  // In reset these are word 1's (T0, PC 1): the boot ROM's read register resets
+  // to word 0, which the decode stage takes in the first cycle after reset, as
+  // v2.2 decodes it. No path from rst_n to the address: a reset released on a
+  // clock edge cannot fetch word 0 twice.
+  assign imem_raddr = multi_n ? pcs_n[10*fth_n +: 10] : pcs_n[9:0];
 
   // ------------------------------------------------------------------
   // Flags and per-thread blocking state
@@ -480,6 +533,7 @@ module tt_um_msf_ctrl (
       st <= 4'b0; sk <= 12'd0; srd <= 12'd0; sop <= 64'd0; wsel <= 16'd0;
       wcond <= 12'd0; wprev <= 4'b0; whit <= 4'b0; sto <= 64'd0; sto_en <= 4'b0;
       ldh <= 64'd0; ldq <= 4'b0; fge <= 4'b0; wlate <= 4'b0; late <= 4'b0;
+      lguard <= 4'b0; gpins <= 8'h00;
     end else begin
       // flags of the owning thread
       if (exec && flag_op) begin
@@ -517,8 +571,14 @@ module tt_um_msf_ctrl (
         end
       end
 
-      // LATE: set by a late WAIT_CMP's release, cleared by PW #7 (one bit per thread)
-      if (exec && x_pw && f_a == P_LATE) late <= late & ~qb[3:0];
+      // LATE: set by a late WAIT_CMP's release, cleared by PW #7 (one bit per thread);
+      // PW #7 with bit 15 set loads the late guard instead: rb[11:8] the threads,
+      // rb[7:0] the pins
+      if (exec && x_pw && f_a == P_LATE && !qb[15]) late <= late & ~qb[3:0];
+      if (exec && x_pw && f_a == P_LATE &&  qb[15]) begin
+        lguard <= qb[11:8];
+        gpins  <= qb[7:0];
+      end
       if (rel && wlate_c) late[cur] <= 1'b1;
 
       if (do_tstart) begin               // a fresh thread (wins over the above)
@@ -640,6 +700,8 @@ module tt_um_msf_ctrl (
   wire       z         = zf[0];
   wire       n         = nf[0];
   wire       dbg_issue = exec;
+  // the late guard: while a guarded thread's LATE flag is set, its pins are off the bus
+  assign oe_off = (|(late & lguard)) ? gpins : 8'h00;
   wire [1:0] dbg_thr   = cur;
   wire [9:0] dbg_pc    = apc1 - 10'd1;
   wire       dbg_rel   = rel;
@@ -702,12 +764,33 @@ module tt_um_msf_ctrl (
   always @(posedge clk) f_init <= 1'b0;
   always @(*) assume(rst_n == !f_init);          // reset in cycle 0 only
 
-  // ---- ghost: where did the word being decoded come from? ----
-  reg [9:0] f_faddr;
-  reg [1:0] f_fthr;
+  // ---- ghost: where did the word issuing now come from? (v3: fetched two
+  //      cycles back, for the thread that was then next in line) ----
+  reg [9:0] f_faddr1, f_faddr;
+  reg [1:0] f_fthr1, f_fthr;
   always @(posedge clk) begin
-    f_faddr <= imem_raddr;
-    f_fthr  <= multi ? fth : 2'd0;
+    f_faddr1 <= rst_n ? imem_raddr : 10'd0;     // in reset the ROM register holds word 0
+    f_fthr1  <= multi_n ? fth_n : 2'd0;
+    f_faddr  <= f_faddr1;
+    f_fthr   <= f_fthr1;
+  end
+
+  // ---- ghost: a shadow of the four register files, kept from the writes alone ----
+  reg [15:0] f_rf [0:31];
+  integer fj;
+  always @(posedge clk) begin
+    if (f_init) begin
+      for (fj = 0; fj < 32; fj = fj + 1) f_rf[fj] <= 16'd0;
+    end else begin
+      if (wb_en) f_rf[{cur, wb_a}] <= wb_d;
+      if (do_tstart) for (fj = 0; fj < 8; fj = fj + 1) f_rf[{tt, fj[2:0]}] <= 16'd0;
+    end
+  end
+  reg [2:0] f_ra, f_rb;                 // the registers the issuing word names
+  always @(*) begin
+    f_ra = f_a; f_rb = f_b;
+    if (op >= OP_ADDS && op <= OP_MOV) begin f_ra = f_b; f_rb = f_c; end
+    else if (op == OP_RET) f_ra = 3'd7;
   end
 
   // ---- ghost: per-thread expected next issue address ----
@@ -778,6 +861,9 @@ module tt_um_msf_ctrl (
       // F1 fetch/issue alignment: the issuing word was fetched last cycle
       //    from the issuing thread's address (catches B1-type pc bugs)
       if (exec) assert(f_faddr == dbg_pc && f_fthr == cur);
+      // F14 (v3) the decode stage and forwarding give the issuing instruction its
+      //     registers as they are now: the operands equal the shadow register file
+      if (exec) assert(qa == f_rf[{cur, f_ra}] && qb == f_rf[{cur, f_rb}]);
       // F2 no skipped / repeated instruction per thread
       if (exec && f_has[cur]) assert(dbg_pc == f_next[10*cur +: 10]);
       // F3 WAIT release causes (catches B2): a WAIT completes by its own
@@ -817,6 +903,18 @@ module tt_um_msf_ctrl (
       if (wb_en)  assert(exec || rel);
       if (per_we) assert(exec || rel);
       if (exec && rel) assert(0);
+    end
+  end
+
+  // F15 the late guard: from the cycle after a guarded thread's late WAIT_CMP
+  //     released, its pins are off the bus, and they stay off until its LATE flag is
+  //     cleared (or the guard changed); with no guarded LATE flag nothing is held off
+  always @(posedge clk) begin
+    if (!f_init && rst_n && !$past(f_init)) begin
+      if ($past(rel && f_late_c && lguard[cur] && !(exec && x_pw && f_a == P_LATE)))
+        assert(oe_off == gpins);
+      if (!(|(late & lguard))) assert(oe_off == 8'h00);
+      if (|(late & lguard)) assert(oe_off == gpins);
     end
   end
 

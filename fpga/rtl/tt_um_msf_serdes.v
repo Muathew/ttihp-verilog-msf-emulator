@@ -10,7 +10,9 @@
 //     on the line -- exact USB SYNC/EOP and Ethernet idle/TP_IDL timing).
 // RX: NRZ / NRZI, optional de-stuffing, optional edge resync, continuous
 //     (start at first transition) or async-character (falling-edge start
-//     bit, re-arm after each word) start, single word buffer + overrun flag.
+//     bit, re-arm after each word) start, single word buffer + overrun flag;
+//     Manchester with blanking (mode 2) or with a fractional phase that
+//     tracks the bit centres (mode 3, v3: 10BASE-T at 50 MHz).
 `default_nettype none
 
 module tt_um_msf_serdes (
@@ -167,6 +169,26 @@ module tt_um_msf_serdes (
   // after it (IEEE 802.3: low->high = 1, as the TX engine sends it)
   wire        m_acc    = rx_man && rx_edge && (!rx_run || rx_mw);
   wire        m_done   = m_acc && (rx_cnt + 5'd1 == rx_w);
+  // Phase-tracking Manchester (mode 3, v3): rx_tmr is the phase within the bit
+  // (65536 a bit) and advances RX_DIV a cycle, so the bit period need not be a
+  // whole number of cycles (10BASE-T at 50 MHz: 5 cycles a bit, 13107). The first
+  // transition of a frame is a centre (phase 0.5), and so are the next six,
+  // whatever their phase (a preamble of alternating bits has no others), each
+  // pulling the phase half way to 0.5: the lock. After that a transition is a
+  // centre only in the bit's middle half (phase 0.25-0.75) and pulls the phase a
+  // sixteenth of the way, so the phase follows the centres' average, not the last
+  // one; a transition nearer the boundary (between equal bits) is ignored. A
+  // centre gives the bit, the level after it. A bit that ends with no centre ends
+  // the frame. rx_ones (de-stuffing's, unused here) counts the lock's centres.
+  wire        rx_pll   = (rx_cfg[5:4] == 2'd3);
+  wire        p_lock   = (rx_ones == 3'd7);
+  wire        p_win    = rx_tmr[15] ^ rx_tmr[14];
+  wire        p_acc    = rx_pll && rx_edge && (!rx_run || !p_lock || p_win);
+  wire        p_done   = p_acc && (rx_cnt + 5'd1 == rx_w);
+  wire [16:0] p_next   = {1'b0, rx_tmr} + {1'b0, rx_div};       // carry: the bit ends
+  wire [16:0] p_half   = {1'b0, rx_tmr} + 17'h08000;            // 2 x (half way to 0.5)
+  wire [16:0] p_err    = 17'h08000 - {1'b0, rx_tmr};            // 0.5 - phase, signed
+  wire [15:0] p_frac   = rx_tmr + {{4{p_err[16]}}, p_err[15:4]}; // a sixteenth of the way
   wire [16:0] rx_mask  = (17'd1 << rx_w) - 17'd1;
   wire [15:0] rx_wordn = rx_lsb ? (rx_srn >> (5'd16 - rx_w)) : (rx_srn & rx_mask[15:0]);
 
@@ -206,6 +228,31 @@ module tt_um_msf_serdes (
               rx_mw <= 1'b1; rx_tmr <= rx_dm1; // the window: one half-bit
             end else begin
               rx_run <= 1'b0; rx_cnt <= 5'd0;  // no centre: the frame ended
+            end
+          end
+        end else if (rx_en && rx_pll) begin
+          if (p_acc) begin
+            rx_run <= 1'b1; rx_mw <= 1'b1;   // this bit has its centre
+            // the first centre: phase 0.5; the lock: half way to 0.5; then a sixteenth
+            rx_tmr <= (!rx_run ? 16'h8000 : !p_lock ? p_half[16:1] : p_frac) + rx_div;
+            if (!rx_run)     rx_ones <= 3'd1;
+            else if (!p_lock) rx_ones <= rx_ones + 3'd1;
+            rx_sr  <= rx_srn;
+            if (p_done) begin
+              rx_buf <= rx_wordn;
+              rx_av  <= 1'b1;
+              rx_ovr <= rx_ovr | (rx_av & ~rx_pop);
+              rx_cnt <= 5'd0;
+            end else begin
+              rx_cnt <= (rx_run ? rx_cnt : 5'd0) + 5'd1;
+            end
+          end else if (rx_run) begin
+            rx_tmr <= p_next[15:0];
+            if (p_next[16]) begin              // a bit boundary
+              if (rx_mw) rx_mw <= 1'b0;
+              else begin                        // a bit with no centre: the frame ended
+                rx_run <= 1'b0; rx_cnt <= 5'd0; rx_ones <= 3'd0;
+              end
             end
           end
         end else if (rx_en) begin

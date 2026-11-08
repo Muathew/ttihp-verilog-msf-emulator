@@ -142,9 +142,11 @@ initial begin
   rom[126] = 16'h7000;
   rom[127] = 16'h7000;
 end
+  // v3: the read register resets to word 0 (16'hb900 above), so the decode stage
+  // has the first instruction in the first cycle after reset (src/tt_um_msf_bootrom.v)
   reg [15:0] q_r;
   always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) q_r <= 16'h0;
+    if (!rst_n) q_r <= 16'hb900;
     else        q_r <= rom[a];
   end
   assign q = q_r;

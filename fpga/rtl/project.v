@@ -93,6 +93,7 @@ module tt_um_msf (
   wire [2:0]  pw_port;
   wire [15:0] pw_data, cap_stat;
   wire [9:0]  cap_tpos;
+  wire [7:0]  oe_off;              // the late guard's pins
 
   tt_um_msf_ctrl u_ctrl (
       .clk(clk), .rst_n(rst_n),
@@ -106,7 +107,7 @@ module tt_um_msf (
       .tx_full(tx_full), .tx_busy(tx_busy), .rx_avail(rx_avail),
       .rx_overrun(rx_overrun), .rx_word(rx_word),
       .crc_busy(crc_busy), .crc_lo(crc_lo), .crc_hi(crc_hi),
-      .pw_we(pw_we), .pw_port(pw_port), .pw_data(pw_data),
+      .pw_we(pw_we), .pw_port(pw_port), .pw_data(pw_data), .oe_off(oe_off),
       .cap_stat(cap_stat), .cap_tpos(cap_tpos),
       .dbg_sel({ui_in[1], ui_in[7:2]}), .dbg_q(dbg_q)
   );
@@ -133,7 +134,7 @@ module tt_um_msf (
       .clk(clk), .rst_n(rst_n),
       .out_we(out_we), .out_d(out_d), .oe_we(oe_we), .oe_d(oe_d),
       .uo_we(uo_we), .uo_d(uo_d),
-      .tx_mask(tx_mask), .tx_val(tx_val),
+      .tx_mask(tx_mask), .tx_val(tx_val), .oe_off(oe_off),
       .out_q(out_q), .oe_q(oe_q), .uo_q(uo_q),
       .uio_out(uio_out), .uio_oe(uio_oe), .uo_out(uo_fw)
   );
