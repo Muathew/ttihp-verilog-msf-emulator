@@ -80,6 +80,7 @@ class IsaModel:
         self._restarted = None   # thread restarted by TSTART this cycle
         self.cycle = 0
         self.out = self.oe = self.uo = 0
+        self.lguard = self.gpins = 0   # the late guard (port 7, bit 15)
         self.sr = 0
         self.sr_po, self.sr_pi, self.sr_lsb = 7, 7, 0
         self.waddr = 128
@@ -125,8 +126,15 @@ class IsaModel:
             if (run >> x) & 1:
                 return x
 
+    def oe_off(self):
+        """The late guard: the pins held off the bus (isa.md section 6.5)."""
+        if any(self.th[k].late and (self.lguard >> k) & 1 for k in range(4)):
+            return self.gpins
+        return 0
+
     def snapshot(self):
         snap = {"out": self.out, "oe": self.oe, "uo": self.uo, "sr": self.sr,
+                "oe_pad": self.oe & ~self.oe_off() & 0xFF,
                 "run": self.alive, "fcount": self.fcount(), "fdrop": self.fdrop,
                 "fcfg": (self.fbase, self.fn)}
         for t in self.th:
@@ -424,10 +432,13 @@ class IsaModel:
             elif port == P_FCFG:
                 self.fbase, self.fn = R[rb] & M10, (R[rb] >> 10) & 7
                 self.fwp = self.frp = self.fdrop = 0
-            elif port == P_LATE:            # clear the LATE flag of each thread named
-                for k in range(4):
-                    if (R[rb] >> k) & 1:
-                        self.th[k].late = 0
+            elif port == P_LATE:            # clear the LATE flag of each thread named,
+                if R[rb] & 0x8000:              # or (bit 15) load the late guard
+                    self.lguard, self.gpins = (R[rb] >> 8) & 0xF, R[rb] & 0xFF
+                else:
+                    for k in range(4):
+                        if (R[rb] >> k) & 1:
+                            self.th[k].late = 0
             elif port in P_CAPTURE:
                 raise NotImplementedError("capture engine not modelled")
         elif sub == X_PR:
@@ -441,7 +452,8 @@ class IsaModel:
             elif port == P_FCFG:
                 R[ra] = (self.fdrop << 9) | self.fcount()
             elif port == P_LATE:
-                R[ra] = sum(self.th[k].late << k for k in range(4))
+                R[ra] = (self.gpins << 8) | (self.lguard << 4) | \
+                    sum(self.th[k].late << k for k in range(4))
             elif port in P_CAPTURE:
                 raise NotImplementedError("capture engine not modelled")
             else:

@@ -17,6 +17,7 @@ module tt_um_msf_pio (
     input  wire [7:0] uo_d,
     input  wire [7:0] tx_mask,
     input  wire [7:0] tx_val,
+    input  wire [7:0] oe_off,     // the late guard (tt_um_msf_ctrl): these pins off the bus
     output wire [7:0] out_q,
     output wire [7:0] oe_q,
     output wire [7:0] uo_q,
@@ -42,6 +43,6 @@ module tt_um_msf_pio (
   assign oe_q    = oe_r;
   assign uo_q    = uo_r;
   assign uio_out = (out_r & ~tx_mask) | (tx_val & tx_mask);
-  assign uio_oe  = oe_r;
+  assign uio_oe  = oe_r & ~oe_off;
   assign uo_out  = uo_r;
 endmodule

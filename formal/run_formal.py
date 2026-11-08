@@ -70,6 +70,9 @@ MUTANTS = [
      "for (k = 3; k >= 1; k = k - 1) begin", "for (k = 3; k >= 2; k = k - 1) begin"),
     ("F13: a stalled thread holds on to the next slot", "tt_um_msf_ctrl.v",
      "        own_n = fth; bub_n = 1'b0;", "        own_n = st_c ? cur : fth; bub_n = 1'b0;"),
+    # v3: the late guard
+    ("F15: the guard ignores which threads it guards", "tt_um_msf_ctrl.v",
+     "assign oe_off = (|(late & lguard)) ? gpins : 8'h00;", "assign oe_off = (|late) ? gpins : 8'h00;"),
     # v3: the decode stage
     ("F14: no forwarding into E", "tt_um_msf_ctrl.v",
      "wire        fwd_a = fw_en && fw_thr == cur && fw_a == dra;", "wire        fwd_a = 1'b0;"),
@@ -120,6 +123,7 @@ aigsmt {aigsmt}
 [script]
 {reads}
 prep -top {top}
+{"chformal -assert -remove tt_um_msf_ctrl_ni" if top == "ni_miter" else ""}
 memory -nomap
 memory_map
 opt_clean
@@ -182,7 +186,46 @@ def prepare(mutant=None):
         s = open(p).read()
         assert old in s, f"mutation anchor not found: {old}"
         open(p, "w").write(s.replace(old, new))
+    shutil.copy(os.path.join(HERE, "ni_miter.v"), d)
+    ni_copy(d)
     return d
+
+
+NI_PORTS = """    output reg  [7:0]  dbg_q,
+    // formal/ni_miter.v: the ghosts and the issue stage, on ports
+    output wire [1:0]  ni_fthr1,
+    output wire [1:0]  ni_cur,
+    output wire        ni_exec,
+    output wire [9:0]  ni_pc,
+    output wire [15:0] ni_ir,
+    output wire [15:0] ni_qa,
+    output wire [15:0] ni_qb,
+    output wire [3:0]  ni_run
+);"""
+NI_ASSIGNS = """
+  assign ni_fthr1 = f_fthr1;
+  assign ni_cur = cur;
+  assign ni_exec = exec;
+  assign ni_pc = dbg_pc;
+  assign ni_ir = ir;
+  assign ni_qa = qa;
+  assign ni_qb = qb;
+  assign ni_run = run;
+endmodule
+"""
+
+
+def ni_copy(d):
+    """tt_um_msf_ctrl_ni.v for target ni: the core under another name, its ghosts
+    and issue stage on ports (its own assertions are removed in the flow)."""
+    s = open(os.path.join(d, "tt_um_msf_ctrl.v")).read()
+    for old, new in (("module tt_um_msf_ctrl (", "module tt_um_msf_ctrl_ni ("),
+                     ("    output reg  [7:0]  dbg_q\n);", NI_PORTS)):
+        assert s.count(old) == 1, old
+        s = s.replace(old, new)
+    end = s.rindex("endmodule")
+    s = s[:end] + NI_ASSIGNS.lstrip("\n") + s[end + len("endmodule"):]
+    open(os.path.join(d, "tt_um_msf_ctrl_ni.v"), "w").write(s)
 
 
 def check(tools, d, top, files, depth, prove=False):
@@ -204,13 +247,21 @@ def check(tools, d, top, files, depth, prove=False):
 
 
 # cheapest first: a mutant stops at its first counterexample
+# target ni (two copies of the core, formal/ni_miter.v) runs only when named: --top ni
+NI_MUTANTS = [
+    ("F16: STAT shows any thread's LATE flag", "tt_um_msf_ctrl.v",
+     "wire [15:0] stat = {1'b0, late[cur], cur[1],", "wire [15:0] stat = {1'b0, |late, cur[1],"),
+]
+DEFAULT_TARGETS = ["ctrl", "cap", "top"]
 TARGETS = {"ctrl": ("tt_um_msf_ctrl", CTRL_FILES), "cap": ("tt_um_msf_cap", ["tt_um_msf_cap.v"]),
-           "top": ("tt_um_msf", TOP_FILES)}
+           "top": ("tt_um_msf", TOP_FILES),
+           "ni": ("ni_miter", ["ni_miter.v", "tt_um_msf_ctrl_ni.v", "tt_um_msf_regfile.v",
+                               "tt_um_msf_alu.v"])}
 
 
 def bmc(tools, depth, mutant=None, prove=False):
     results = []
-    for top, files in (TARGETS[t] for t in tools.get("targets", TARGETS)):
+    for top, files in (TARGETS[t] for t in tools.get("targets", DEFAULT_TARGETS)):
         d = prepare(mutant)
         verdict, out = check(tools, d, top, files, depth, prove)
         fail_at = re.findall(r"Assert failed in \S+: (.*)", out)
@@ -273,11 +324,12 @@ def main():
     a = ap.parse_args()
     tools = {"engine": a.engine, "yosys": a.yosys.split(), "sby": a.sby.split(),
              "aigsmt": a.aigsmt, "timeout": a.prove_timeout,
-             "targets": [a.top] if a.top else list(TARGETS)}
+             "targets": [a.top] if a.top else DEFAULT_TARGETS}
+    mutants = NI_MUTANTS if a.top == "ni" else MUTANTS
     status = 0
 
     if a.only_mutant is not None:
-        m = MUTANTS[a.only_mutant]
+        m = mutants[a.only_mutant]
         res = bmc(tools, a.depth, m)
         print(f"  {m[0]:34s} {mutant_verdict(res)}")
         return 0
@@ -310,7 +362,7 @@ def main():
 
     if not a.no_mutants:
         print("== mutation check (each must FAIL) ==")
-        for m in MUTANTS:
+        for m in mutants:
             v = mutant_verdict(bmc(tools, a.depth, m))
             print(f"  {m[0]:34s} {v}")
             if v != "caught":

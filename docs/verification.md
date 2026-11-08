@@ -86,6 +86,9 @@ inputs**, so the proofs hold for every program and environment.
 | F11 | a thread's LATE flag rises only at such a release in that thread, and falls only by `LATE_CLR` naming it or a `TSTART` of it |
 | F12 | the rotation skips no running thread: each owns at least one cycle in any four |
 | F13 | a thread's timing depends only on which threads run: in a cycle with no `TSTART` or `TSTOP` the running set stays, and in multi-thread mode the next owner follows from this owner and that set alone, with no bubble. It says nothing about shared memory, pins or peripherals |
+| F14 | (v3) the decode stage and its forwarding give the issuing instruction its registers as they are now: both operands equal a shadow of the four register files kept from the writes alone |
+| F15 | (v3) the late guard: from the cycle after a guarded thread's late `WAIT_CMP` released, the guard's pins are off the bus (their OE forced to 0), and they stay off while that LATE flag is set; with no guarded flag set no pin is held off |
+| F16 | (v3, target `ni`, run by `--top ni`) thread non-interference on two copies of the core (`formal/ni_miter.v`): both get the same inputs; T0 and one more thread *k* run the same program in both, the other threads anything that touches no shared state (pins, SR, MEM_W pointer, FIFO, engines, ports, `TSTART`/`TSTOP`), each copy its own. Then the slot owner is the same in both copies every cycle, T0 and *k* issue in the same cycles the same words from the same addresses with the same operands, and the pins are the same. `LATE_RD`, which reads every thread's flag, is left out on purpose |
 
 Every `cover()` point (WAIT edge/CMP/timeout release, LD release in T1, dual
 issue, TSTOP, all four threads running and issuing, a push to a full FIFO,
@@ -105,6 +108,9 @@ and each must make the proof fail:
 | the capture engine writes port B while the core uses it | F9, in the capture module (at the top level a program cannot start a capture within depth 16: the boot ROM runs first) |
 | the rotation skips the thread after the owner | F1 first (depth 4); F12 alone catches it too (depth 6) |
 | a stalled thread holds on to the next slot | F13 (`run_formal.py`'s mutant list) |
+| no forwarding into E (v3) | F14 |
+| the guard ignores which threads it names (v3) | F15 |
+| `STAT` shows any thread's LATE flag, not the reader's (v3; `--top ni`) | F16: no single-copy property sees it |
 
 A mutant stops at its first counterexample, so the cheap targets go first
 (controller, capture module, top level).
@@ -155,6 +161,20 @@ The instruments these test are described, with their figures, in
 [`instruments.md`](instruments.md). Firmware tests run against models
 stepped one clock at a time beside the RTL (`test/fw_tb.py`), the same
 lock-step idea as the FPGA harness below.
+
+`test_guard` (v3) checks the late guard: one thread guarding its own pins, a
+guard naming only another thread leaving them alone, and one thread guarding
+another's pins; random-diff compares OE at the pads with random guard loads in
+its programs.
+
+**`tools/devsim.py`** runs a program on the ISA model against the device a test
+models (the test's own class: `python tools/devsim.py sdspi.s test_sdspi Card
+600000`), in seconds instead of the simulator's minutes. It found five of batch
+5's six failures on 8 Nov (an end marker equal to a pixel's first word, a
+preamble refilled from a pin still driven low, a bit-7 test made on bit 15, a
+bit-15 flag tested by doubling, a burst longer than its time-out). The model's
+pins change a cycle before the RTL's, so it settles logic, and the RTL test
+settles timing.
 
 ## 5. FPGA — `fpga/tests/`
 

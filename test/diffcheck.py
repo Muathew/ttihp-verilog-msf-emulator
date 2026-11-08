@@ -25,11 +25,13 @@ class Probe:
         self.fifo = (c.fwp, c.frp, c.fdrop, c.fbase, c.fn)
         p = dut.user_project.u_pio
         self.out, self.oe, self.uo = p.out_r, p.oe_r, p.uo_r
+        self.oe_pad = p.uio_oe          # OE at the pads: the late guard applied
 
     def state(self):
         zf, nf, tmo = int(self.zf.value), int(self.nf.value), int(self.tmo.value)
         wp, rp, drop, base, fn = (int(h.value) for h in self.fifo)
         snap = {"out": int(self.out.value), "oe": int(self.oe.value), "uo": int(self.uo.value),
+                "oe_pad": int(self.oe_pad.value),
                 "sr": int(self.sr.value), "run": int(self.run.value),
                 "fcount": (wp - rp) & 0x1FF, "fdrop": drop, "fcfg": (base, fn)}
         for k in range(4):

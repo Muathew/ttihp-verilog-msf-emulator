@@ -73,6 +73,8 @@ module tt_um_msf_ctrl (
     output wire        pw_we,
     output wire [2:0]  pw_port,
     output wire [15:0] pw_data,
+    // the late guard: pins whose output enables are forced off (tt_um_msf_pio)
+    output wire [7:0]  oe_off,
     input  wire [15:0] cap_stat,
     input  wire [9:0]  cap_tpos,
     // debug view (project.v shows dbg_q on uo_out in debug mode)
@@ -152,6 +154,8 @@ module tt_um_msf_ctrl (
   reg  [3:0]  fge;            // the pending LD is a FIFO pop of an empty FIFO
   reg  [3:0]  wlate;          // the pending WAIT_CMP's target had passed at issue
   reg  [3:0]  late;           // sticky LATE flags (STAT bit 14, port 7)
+  reg  [3:0]  lguard;         // the late guard: threads whose LATE takes gpins off the bus
+  reg  [7:0]  gpins;          //   and the uio pins it takes off (their OE forced to 0)
 
   wire        st_c   = st[cur];
   wire [15:0] tmo_c  = tmo[16*cur +: 16];
@@ -424,7 +428,7 @@ module tt_um_msf_ctrl (
             wbx_en = !x_get;
             case (f_b)
               P_FCFG:  wbx_d = {fdrop, fcount};
-              P_LATE:  wbx_d = {12'd0, late};
+              P_LATE:  wbx_d = {gpins, lguard, late};
               3'd2:    wbx_d = cap_stat;
               3'd3:    wbx_d = {6'd0, cap_tpos};
               default: wbx_d = 16'd0;
@@ -529,6 +533,7 @@ module tt_um_msf_ctrl (
       st <= 4'b0; sk <= 12'd0; srd <= 12'd0; sop <= 64'd0; wsel <= 16'd0;
       wcond <= 12'd0; wprev <= 4'b0; whit <= 4'b0; sto <= 64'd0; sto_en <= 4'b0;
       ldh <= 64'd0; ldq <= 4'b0; fge <= 4'b0; wlate <= 4'b0; late <= 4'b0;
+      lguard <= 4'b0; gpins <= 8'h00;
     end else begin
       // flags of the owning thread
       if (exec && flag_op) begin
@@ -566,8 +571,14 @@ module tt_um_msf_ctrl (
         end
       end
 
-      // LATE: set by a late WAIT_CMP's release, cleared by PW #7 (one bit per thread)
-      if (exec && x_pw && f_a == P_LATE) late <= late & ~qb[3:0];
+      // LATE: set by a late WAIT_CMP's release, cleared by PW #7 (one bit per thread);
+      // PW #7 with bit 15 set loads the late guard instead: rb[11:8] the threads,
+      // rb[7:0] the pins
+      if (exec && x_pw && f_a == P_LATE && !qb[15]) late <= late & ~qb[3:0];
+      if (exec && x_pw && f_a == P_LATE &&  qb[15]) begin
+        lguard <= qb[11:8];
+        gpins  <= qb[7:0];
+      end
       if (rel && wlate_c) late[cur] <= 1'b1;
 
       if (do_tstart) begin               // a fresh thread (wins over the above)
@@ -689,6 +700,8 @@ module tt_um_msf_ctrl (
   wire       z         = zf[0];
   wire       n         = nf[0];
   wire       dbg_issue = exec;
+  // the late guard: while a guarded thread's LATE flag is set, its pins are off the bus
+  assign oe_off = (|(late & lguard)) ? gpins : 8'h00;
   wire [1:0] dbg_thr   = cur;
   wire [9:0] dbg_pc    = apc1 - 10'd1;
   wire       dbg_rel   = rel;
@@ -890,6 +903,18 @@ module tt_um_msf_ctrl (
       if (wb_en)  assert(exec || rel);
       if (per_we) assert(exec || rel);
       if (exec && rel) assert(0);
+    end
+  end
+
+  // F15 the late guard: from the cycle after a guarded thread's late WAIT_CMP
+  //     released, its pins are off the bus, and they stay off until its LATE flag is
+  //     cleared (or the guard changed); with no guarded LATE flag nothing is held off
+  always @(posedge clk) begin
+    if (!f_init && rst_n && !$past(f_init)) begin
+      if ($past(rel && f_late_c && lguard[cur] && !(exec && x_pw && f_a == P_LATE)))
+        assert(oe_off == gpins);
+      if (!(|(late & lguard))) assert(oe_off == 8'h00);
+      if (|(late & lguard)) assert(oe_off == gpins);
     end
   end
 

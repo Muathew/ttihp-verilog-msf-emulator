@@ -173,6 +173,13 @@ Blocking ops: `WAIT_EDGE`, `WAIT_CMP`, `LD`, `FIFO_GET`, `TX_PUSH`, `TX_WAIT`,
   the thread's first stall slot with `Z=1`, like a timeout, and sets the
   thread's sticky **LATE** flag (`STAT` bit 14, port 7, §6.5). So a target
   can be at most 65,280 cycles ahead of the issue cycle.
+  **Late guard (v3):** while the LATE flag of a thread the guard names (port 7,
+  §6.5) is set, the guard's `uio` pins are off the bus: their output enables
+  read 0 at the pads, whatever `OE` holds and whatever any engine drives, from
+  the cycle after the late `WAIT_CMP` released until the flag is cleared or the
+  guard changed. A program that misses a deadline stops driving the lines it
+  was timing instead of driving them late (formal property F15). `OE` itself is
+  not changed, so clearing the flag puts the pins back as the program left them.
 * `LD` releases in the cycle after issue; the destination is written then.
 * A completed `TX_PUSH`/`RX_POP`/`CRC_W`/`CRC_RDL` performs its transfer in its
   completion cycle.
@@ -270,7 +277,7 @@ ports: a write does nothing, a read gives 0.
 | 4 | `CAP_TRIG rb` | 0 |
 | 5 | `CAP_CTL rb` | 0 |
 | 6 | `FILTER rb` (§6.7) | 0 |
-| 7 | `LATE_CLR rb`: clear the LATE flag of each thread *t* with rb[*t*] = 1 | `LATE_RD ra`: ra ← LATE flags of T3..T0 in bits 3:0 |
+| 7 | `LATE_CLR rb`: rb[15] = 0: clear the LATE flag of each thread *t* with rb[*t*] = 1; rb[15] = 1: load the **late guard**, rb[11:8] the guarded threads, rb[7:0] the pins (v3) | `LATE_RD ra`: ra ← {guard pins, guarded threads, LATE flags of T3..T0} in bits 15:8, 7:4, 3:0 |
 
 The FIFO's words live in the SRAM, in the size-aligned block that contains
 `base` (base's low bits are ignored); the read and write positions are in

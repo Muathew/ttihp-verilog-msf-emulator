@@ -127,6 +127,9 @@ class Gen:
         r = self.r
         a, b = self.reg(), self.reg()
         if r.random() < 0.5:
+            if r.random() < 0.25:       # the late guard (v3): some threads, some pins
+                self.L(f"LDI {b}, {0x8000 | r.randrange(16) << 8 | r.randrange(256)}")
+                self.L(f"LATE_CLR {b}")
             self.L(f"CNT_R {a}")
             self.L(f"LDR {b}, #{r.randrange(2, 60) if r.random() < 0.85 else 255}")
             # a target behind CNT: late (released at once, LATE set) or, if far

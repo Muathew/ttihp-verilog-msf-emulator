@@ -99,6 +99,7 @@ ALL_MODULES = [
     "test_nrf24",
     "test_ds18b20",
     "test_sdspi",
+    "test_guard",
 ]
 
 
