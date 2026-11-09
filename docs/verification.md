@@ -110,7 +110,7 @@ and each must make the proof fail:
 | a stalled thread holds on to the next slot | F13 (`run_formal.py`'s mutant list) |
 | no forwarding into E (v3) | F14 |
 | the guard ignores which threads it names (v3) | F15 |
-| `STAT` shows any thread's LATE flag, not the reader's (v3; `--top ni`) | F16: no single-copy property sees it |
+| `STAT` shows any thread's LATE flag, not the reader's (v3; `--top ni`) | F16 is meant to: no single-copy property sees it. **Not shown yet**: at depth 5 F16 passes with this mutant in (9 Nov). Reaching it takes about 15 cycles from reset: two `TSTART`s, a third thread late, then *k*'s `STAT` and an instruction that reads its result |
 
 A mutant stops at its first counterexample, so the cheap targets go first
 (controller, capture module, top level).

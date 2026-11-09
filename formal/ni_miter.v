@@ -10,8 +10,11 @@
 // nothing T0 and k do. Excluded on purpose: LATE_RD, which reads every
 // thread's LATE flag; T0 and k do not run it here. Memory is not modelled: a
 // load gets the same word in both copies, as if no other thread stored to it.
-// tt_um_msf_ctrl_ni is tt_um_msf_ctrl with its formal ghosts on ports and its
-// own assertions removed (target ctrl checks those).
+// tt_um_msf_ctrl_ni is tt_um_msf_ctrl with its state on ports and its own
+// assertions removed (target ctrl checks those). Besides the property, the
+// state that makes it inductive is asserted equal: the shared state, all of T0's
+// and k's (registers included), the decode stage when it holds their word and
+// the forwarding registers when they hold their write.
 `default_nettype none
 
 module ni_miter (
@@ -60,6 +63,12 @@ module ni_miter (
   wire [9:0]  pc_a, pc_b;
   wire [15:0] ir_a, ir_b, qa_a, qa_b, qb_a, qb_b;
   wire [3:0]  run_a, run_b;
+  wire [224:0] t0_a, t1_a, t2_a, t3_a, t0_b, t1_b, t2_b, t3_b;
+  wire [105:0] sh_a, sh_b;
+  wire        bub_a, bub_b;
+  wire [53:0] dst_a, dst_b;
+  wire [1:0]  fwthr_a, fwthr_b;
+  wire [19:0] fw_a, fw_b;
 
   tt_um_msf_ctrl_ni a (
       .clk(clk), .rst_n(rst_n), .uio_in(uio_in), .ui_in(ui_in),
@@ -73,8 +82,10 @@ module ni_miter (
       .rx_word(rx_word), .crc_busy(crc_busy), .crc_lo(crc_lo), .crc_hi(crc_hi),
       .pw_we(), .pw_port(), .pw_data(), .oe_off(), .cap_stat(cap_stat), .cap_tpos(cap_tpos),
       .dbg_sel(dbg_sel), .dbg_q(),
-      .ni_fthr1(fth_a), .ni_cur(cur_a), .ni_exec(exec_a), .ni_pc(pc_a), .ni_ir(ir_a),
-      .ni_qa(qa_a), .ni_qb(qb_a), .ni_run(run_a));
+      .ni_dthr(fth_a), .ni_cur(cur_a), .ni_exec(exec_a), .ni_pc(pc_a), .ni_ir(ir_a),
+      .ni_qa(qa_a), .ni_qb(qb_a), .ni_run(run_a),
+      .ni_t0(t0_a), .ni_t1(t1_a), .ni_t2(t2_a), .ni_t3(t3_a), .ni_sh(sh_a), .ni_bub(bub_a),
+      .ni_dst(dst_a), .ni_fwthr(fwthr_a), .ni_fw(fw_a));
 
   tt_um_msf_ctrl_ni b (
       .clk(clk), .rst_n(rst_n), .uio_in(uio_in), .ui_in(ui_in),
@@ -88,8 +99,10 @@ module ni_miter (
       .rx_word(rx_word), .crc_busy(crc_busy), .crc_lo(crc_lo), .crc_hi(crc_hi),
       .pw_we(), .pw_port(), .pw_data(), .oe_off(), .cap_stat(cap_stat), .cap_tpos(cap_tpos),
       .dbg_sel(dbg_sel), .dbg_q(),
-      .ni_fthr1(fth_b), .ni_cur(cur_b), .ni_exec(exec_b), .ni_pc(pc_b), .ni_ir(ir_b),
-      .ni_qa(qa_b), .ni_qb(qb_b), .ni_run(run_b));
+      .ni_dthr(fth_b), .ni_cur(cur_b), .ni_exec(exec_b), .ni_pc(pc_b), .ni_ir(ir_b),
+      .ni_qa(qa_b), .ni_qb(qb_b), .ni_run(run_b),
+      .ni_t0(t0_b), .ni_t1(t1_b), .ni_t2(t2_b), .ni_t3(t3_b), .ni_sh(sh_b), .ni_bub(bub_b),
+      .ni_dst(dst_b), .ni_fwthr(fwthr_b), .ni_fw(fw_b));
 
   // a word another thread may run: nothing that touches shared state
   function quiet(input [15:0] w);
@@ -132,13 +145,23 @@ module ni_miter (
   always @(*) assume(rst_n == !f_init);
 
   wire in_e = cur_a == 2'd0 || cur_a == k;
+  wire [224:0] tk_a = k == 2'd1 ? t1_a : k == 2'd2 ? t2_a : k == 2'd3 ? t3_a : t0_a;
+  wire [224:0] tk_b = k == 2'd1 ? t1_b : k == 2'd2 ? t2_b : k == 2'd3 ? t3_b : t0_b;
   always @(*)
     if (!f_init) begin
+      // the property
       assert(cur_a == cur_b && run_a == run_b);         // the same slots
       if (in_e) begin
         assert(exec_a == exec_b);
         if (exec_a) assert(pc_a == pc_b && ir_a == ir_b && qa_a == qa_b && qb_a == qb_b);
       end
       assert(out_a == out_b && oe_a == oe_b && uo_a == uo_b);
+      // what makes it inductive
+      assert(sh_a == sh_b && bub_a == bub_b && fth_a == fth_b);
+      assert(t0_a == t0_b && tk_a == tk_b);
+      if (in_e && !bub_a) assert(dst_a == dst_b);
+      assert(fwthr_a == fwthr_b);
+      if (fwthr_a == 2'd0 || fwthr_a == k)             // (its value is only used when enabled)
+        assert(fw_a[19] == fw_b[19] && (!fw_a[19] || fw_a[18:0] == fw_b[18:0]));
     end
 endmodule

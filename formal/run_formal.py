@@ -191,19 +191,29 @@ def prepare(mutant=None):
     return d
 
 
+NI_THREAD = ("{{pcs[{p}+:10], zf[{t}], nf[{t}], st[{t}], sk[{k3}+:3], srd[{k3}+:3], sop[{w}+:16], "
+             "wsel[{k4}+:4], wcond[{k3}+:3], wprev[{t}], whit[{t}], sto[{w}+:16], sto_en[{t}], "
+             "ldh[{w}+:16], ldq[{t}], tmo[{w}+:16], fge[{t}], wlate[{t}], late[{t}], ni_rf{t}}}")
 NI_PORTS = """    output reg  [7:0]  dbg_q,
-    // formal/ni_miter.v: the ghosts and the issue stage, on ports
-    output wire [1:0]  ni_fthr1,
+    // formal/ni_miter.v: the issue stage and all the state, on ports
+    output wire [1:0]  ni_dthr,
     output wire [1:0]  ni_cur,
     output wire        ni_exec,
     output wire [9:0]  ni_pc,
     output wire [15:0] ni_ir,
     output wire [15:0] ni_qa,
     output wire [15:0] ni_qb,
-    output wire [3:0]  ni_run
-);"""
+    output wire [3:0]  ni_run,
+    output wire [224:0] ni_t0, ni_t1, ni_t2, ni_t3,
+    output wire [105:0] ni_sh,
+    output wire        ni_bub,
+    output wire [53:0] ni_dst,
+    output wire [1:0]  ni_fwthr,
+    output wire [19:0] ni_fw
+);
+  wire [127:0] ni_rf0, ni_rf1, ni_rf2, ni_rf3;"""
 NI_ASSIGNS = """
-  assign ni_fthr1 = f_fthr1;
+  assign ni_dthr = d_thr;
   assign ni_cur = cur;
   assign ni_exec = exec;
   assign ni_pc = dbg_pc;
@@ -211,18 +221,42 @@ NI_ASSIGNS = """
   assign ni_qa = qa;
   assign ni_qb = qb;
   assign ni_run = run;
+""" + "".join(f"  assign ni_t{t} = " + NI_THREAD.format(t=t, p=10 * t, k3=3 * t, k4=4 * t, w=16 * t) + ";\n"
+              for t in range(4)) + """  assign ni_sh = {run, own, bub, cnt, sr, sr_po, sr_pi, sr_lsb, waddr, fbase, fn, fwp, frp,
+                  fdrop, lguard, gpins};
+  assign ni_bub = bub;
+  assign ni_dst = {dir, dqa, dqb, dra, drb};
+  assign ni_fwthr = fw_thr;
+  assign ni_fw = {fw_en, fw_a, fw_d};
 endmodule
 """
 
 
 def ni_copy(d):
-    """tt_um_msf_ctrl_ni.v for target ni: the core under another name, its ghosts
-    and issue stage on ports (its own assertions are removed in the flow)."""
+    """tt_um_msf_ctrl_ni.v and tt_um_msf_regfile_ni.v for target ni: the core under
+    another name with its state on ports (its own assertions are removed in the
+    flow), and the register file with its contents on a port."""
+    s = open(os.path.join(d, "tt_um_msf_regfile.v")).read()
+    for old, new in (("module tt_um_msf_regfile (", "module tt_um_msf_regfile_ni ("),
+                     ("    output wire [15:0] qc\n);",
+                      "    output wire [15:0] qc,\n    output wire [127:0] f_all\n);"),
+                     ("  assign qc = rf[rc];\n",
+                      "  assign qc = rf[rc];\n"
+                      "  assign f_all = {rf[7], rf[6], rf[5], rf[4], rf[3], rf[2], rf[1], rf[0]};\n")):
+        assert s.count(old) == 1, old
+        s = s.replace(old, new)
+    open(os.path.join(d, "tt_um_msf_regfile_ni.v"), "w").write(s)
     s = open(os.path.join(d, "tt_um_msf_ctrl.v")).read()
     for old, new in (("module tt_um_msf_ctrl (", "module tt_um_msf_ctrl_ni ("),
                      ("    output reg  [7:0]  dbg_q\n);", NI_PORTS)):
         assert s.count(old) == 1, old
         s = s.replace(old, new)
+    assert s.count("tt_um_msf_regfile u_rf") == 4
+    s = s.replace("tt_um_msf_regfile u_rf", "tt_um_msf_regfile_ni u_rf")
+    for t, lo in enumerate((0, 16, 32, 48)):
+        old = f".qa(qa_w[{lo + 15}:{lo}])"
+        assert s.count(old) == 1, old
+        s = s.replace(old, f".f_all(ni_rf{t}), " + old)
     end = s.rindex("endmodule")
     s = s[:end] + NI_ASSIGNS.lstrip("\n") + s[end + len("endmodule"):]
     open(os.path.join(d, "tt_um_msf_ctrl_ni.v"), "w").write(s)
@@ -255,7 +289,7 @@ NI_MUTANTS = [
 DEFAULT_TARGETS = ["ctrl", "cap", "top"]
 TARGETS = {"ctrl": ("tt_um_msf_ctrl", CTRL_FILES), "cap": ("tt_um_msf_cap", ["tt_um_msf_cap.v"]),
            "top": ("tt_um_msf", TOP_FILES),
-           "ni": ("ni_miter", ["ni_miter.v", "tt_um_msf_ctrl_ni.v", "tt_um_msf_regfile.v",
+           "ni": ("ni_miter", ["ni_miter.v", "tt_um_msf_ctrl_ni.v", "tt_um_msf_regfile_ni.v",
                                "tt_um_msf_alu.v"])}
 
 
