@@ -102,6 +102,7 @@ ALL_MODULES = [
     "test_guard",
     "test_usb_fs",
     "test_eth10_rx",
+    "test_mcu_v3_peer",
 ]
 
 

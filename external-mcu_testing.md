@@ -4,6 +4,10 @@ An LP-MSPM0G3519 is the controller and the FPGA core the target, over PMOD JA. T
 core runs free at 12 MHz, not stepped by the PS, so unlike the C board tests this one
 runs it at speed against a real device. CAN is out of scope.
 
+Branch `v3` adds a second test on the same wires and the same MCU build: [the v3
+board test](#the-v3-board-test), for what v3 added (RX mode 3, the line receivers at
+the chip's cycles a bit, the late guard). The MCU notices which FPGA program it faces.
+
 | Protocol | FPGA UIO | MCU pins | Expected behaviour |
 | --- | --- | --- | --- |
 | UART | UIO[0] RX, UIO[1] TX | UART1: PA8 TX, PA9 RX | 115200 8N1; each byte comes back |
@@ -321,10 +325,118 @@ PA0 (SDA) also drives the LaunchPad's red LED through J18, so that LED may flick
 with I2C traffic. It should be harmless; if SDA looks wrong in the table, try with J18
 removed.
 
+## The v3 board test
+
+For branch `v3`. The FPGA runs [`firmware/mcu_v3_peer.s`](firmware/mcu_v3_peer.s),
+loaded by [`fpga/ps/mcu_v3`](fpga/ps/mcu_v3/README.md). The MCU runs the same
+`mcu_ext/protocol_tests` build as above: it starts with v2 protocol passes and switches
+to v3 passes for good once the peer asks for calibration (two `S` bytes in a row on
+UART1, which the v2 peer never sends). The MCU is the judge: it knows what it sent.
+
+| v3 part | What the MCU does, each pass | A pass means |
+|---|---|---|
+| RX mode 3 (phase-tracking Manchester) | Sends five Ethernet frames: 64 bytes at 0, +100 and -100 ppm, 1518 bytes at -100 ppm, and 64 bytes with one bit flipped | The four good frames come back `81` with their length; the flipped one `82` |
+| NRZI receiver, de-stuffing, resync | Sends four USB DATA1 packets (36 bytes, with a run of ones to stuff): 0, +2500 and -2500 ppm (USB allows 0.25 %), and one with a bit flipped | `81`, 36 bytes, SYNC `80`, PID `4B`; the flipped one `82` |
+| Late guard | In each of the peer's four states, reads POCI (UIO7) with its pull-up, then its pull-down, and reads SCL (UIO2) | Driven low reads 0 both ways. Off the bus follows the pull. Only state B, where T0 is late and named, takes UIO7 off; UIO2 stays driven throughout |
+| The pipeline | Everything above runs on it | |
+
+**How the line signals are made.** The MCU's SPI draws them on MOSI (UIO6): 16 Mbit/s,
+16-bit words fed by the CPU with interrupts off. First the MCU sends a known pattern
+of 513 transitions, 32 SPI bits apart. The FPGA times it and returns T, the core
+cycles it took. One SPI bit is then T / 16384 core cycles, so the MCU can put every
+symbol where the FPGA's clock wants it, whatever its own oscillator does (the
+LaunchPad runs on SYSOSC, good to a few per cent). Each edge lands on the nearest SPI
+bit: up to 31 ns from where it belongs, at random. SCLK and CS are taken off their
+pins, so no 16 MHz clock runs beside MOSI.
+
+**What it shows, and what it does not.** The FPGA clocks the core at 12 MHz, so the
+frames run at 2.4 Mbit/s and the packets at 3 Mbit/s. That is 5 and 4 core cycles a
+bit, the same as 10BASE-T at 50 MHz and USB full speed at 48 MHz. So the core does
+cycle for cycle what the chip would, against a peer with its own clock. But these
+are not 10 and 12 Mbit/s: the chip's speed comes from the sign-off STA, not from
+this test. The edge spread, up to 31 ns at 12 MHz, scales to 7.5 ns at 50 MHz;
+`test_eth10_rx` covers 10 ns at 50 MHz in simulation.
+
+### Running it
+
+1. Program the v3 bitstream: `fpga/rtl` from branch `v3`, built as before
+   (`fpga/vivado/build.tcl`). The board wrapper and block design are unchanged.
+2. On the Vitis machine: `vitis -s fpga/ps/mcu_v3/build_vitis.py`, then launch
+   `mcu_v3.elf` with PuTTY logging on the Zynq console. It prints `Loading the v3
+   board peer (274 words)`.
+3. In CCS, rebuild `mcu_ext/protocol_tests` and flash it. The project has two new
+   files, `v3_lines.c` and `v3_test.c`, so let CCS rebuild its makefiles. Log the
+   XDS110 Application/User UART at 115200 8N1, as before.
+4. Reset the MCU. After about a second it prints `MCU ==== v3 board test`, then a pass
+   every second or so. Let it run at least 20 passes.
+
+The wiring is the same as for the v2 test, J16 and J17 included. J18 can stay: the
+test reads SCL, not SDA, because SDA's LED could hold a released line low.
+
+### What to send back
+
+The MCU's log: its banner, the last pass and the `MCU v3 totals` line, or the whole
+file. The FPGA's log: the last pass summary and its `FPGA totals` line.
+
+### Reading them
+
+A good pass at the MCU. Each `stream` figure is the CPU cycles the SPI took over the
+cycles its words should take:
+
+```
+MCU ---- v3 pass 1 ----
+MCU cal  T=12288 (MCU clock 32000 kHz against the FPGA's 12 MHz) stream 33088/33088 cycles -> PASS
+MCU eth  0: 64 bytes +0 ppm: want 81, got 81 length 64 stream .../... cycles -> PASS
+MCU eth  4: 64 bytes +0 ppm, a bit flipped: want 82, got 82 length 64 ... -> PASS
+MCU usb  0: +0 ppm: want 81, got 81 bytes 36 SYNC 80 PID 4B ... -> PASS
+MCU guard B T0 late, guarded:    want up=1 down=0 SCL=0 LATE=8011, got up=1 down=0 SCL=0 LATE=8011 -> PASS
+MCU v3 totals: cal pass=1 fail=0 timeout=0 invalid=0 | eth pass=5 ... | usb pass=4 ... | guard pass=4 ...
+```
+
+`T` and the MCU clock depend on the LaunchPad's SYSOSC: anything from about 31.4 to
+32.6 MHz is normal.
+
+| Seen | Points at |
+|---|---|
+| No v3 banner; v2 passes that time out | The FPGA is not running `mcu_v3`, or the UIO1-PA9 wire |
+| `NOT VALID (the stream had gaps)` | The SPI paused between words, or the CPU fell behind: that stream's result says nothing about the FPGA. Every line on every pass means the MCU's SPI cannot stream gapless, and the line tests need another generator |
+| `cal ... FAIL` with T well away from 12288, or T=0 | The FPGA did not see the pattern's transitions: the MOSI wire (PB17-UIO6) or ground |
+| `TIMEOUT` on eth or usb | No verdict came back: UIO1-PA9 |
+| Status `84` | The FPGA saw no frame or packet, or not all of one: MOSI |
+| Status `83` | No SFD where one should be: the frame's start was damaged |
+| `82` on good frames or packets | Bits damaged on the way in. If it follows the ppm (only +100, say), the receiver's tracking. If it comes and goes, the wire |
+| guard A or C or D `up=1` | UIO7 was not driven when it should have been: the peer, or the PB19 wire |
+| guard B `up=0` | UIO7 stayed driven while T0 was late and guarded: the guard did not act. Is the bitstream v3? |
+| guard D `up=1` | The guard took UIO7 for a thread it does not name (F15's planted bug, on the board) |
+| `SCL=1` | UIO2 was not driven: the guard took a pin it does not name, or the PA1 wire |
+| `LATE=` other than shown | Read the FPGA's log: it prints the same `LATE_RD` value |
+
+The FPGA's summary repeats what it sent the MCU. Where the two logs disagree on a
+byte, the fault is on that wire.
+
+### Checked before the board
+
+- `test/test_mcu_v3_peer.py`: the peer on the RTL against the MCU's side. It builds
+  `v3_lines.c` on the PC and plays the MCU's exact SPI words into MOSI, from an MCU
+  clock 1.3 % fast and then 1.7 % slow. It decodes the UART as the MCU does, and
+  reads the guard pins with the MCU's pulls. Every verdict must match.
+- `mcu_ext/tests/run_compile_test.sh`: the MCU's v3 code compiles with every warning on.
+  Every DriverLib call and pin name it uses was checked against TI's MSPM0 SDK (the
+  headers and the SysConfig templates that name the pins, 9 Nov 2026).
+- `fpga/tests/run_mcu_monitor_test.py` and `run_ps_loader_compile_test.sh`: the A53 app's
+  summary on a pass's bytes, and its compile against the Vitis stubs.
+
+Not checked before the board: whether the MSPM0's SPI really sends its words back to
+back. TI's forum has reports of gaps, so every stream is timed and a stream with gaps
+is reported as not valid. Also unchecked: the real MCU's pin set-up, beyond what the
+compiler and the SDK's headers show.
+
 ## Relevant files
 
 - `firmware/mcu_protocol_target.s`: the FPGA peer; its header documents the limits
   and the event format.
+- `firmware/mcu_v3_peer.s`, `fpga/ps/mcu_v3/`, `mcu_ext/protocol_tests/v3_test.c` and
+  `v3_lines.c`, `test/test_mcu_v3_peer.py`: the v3 board test.
 - `fpga/ps/mcu_test/src/main.c`: A53 loader and event monitor.
 - `mcu_ext/protocol_tests/`: MCU tests and serial log; `p_test.syscfg` for pins and
   rates; `spi_test.c` for the SPI bytes, which `test_mcu_peer_tables_match_the_mcu_code`

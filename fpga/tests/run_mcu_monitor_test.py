@@ -49,16 +49,31 @@ class Trace:
         self.events((PINS, pins), (ACT, moved), (SENT, sent))
 
 
-def build(out_dir):
+def build(out_dir, app="mcu_test", firmware="mcu_protocol_target.s"):
+    out_dir = out_dir / app
+    out_dir.mkdir(exist_ok=True)
     image = out_dir / "firmware_image.h"
     subprocess.run([sys.executable, str(PS / "loader" / "generate_image.py"),
-                    str(REPO / "firmware" / "mcu_protocol_target.s"), "--output", str(image)],
+                    str(REPO / "firmware" / firmware), "--output", str(image)],
                    check=True, stdout=subprocess.DEVNULL)
     exe = out_dir / "mcu_monitor"
     subprocess.run(["gcc", "-std=c99", "-O1", "-Wall", "-Wextra", "-Werror", "-DMSF_HOST",
-                    f"-I{out_dir}", f"-I{PS / 'common'}", str(PS / "mcu_test" / "src" / "main.c"),
+                    f"-I{out_dir}", f"-I{PS / 'common'}", str(PS / app / "src" / "main.c"),
                     str(HERE / "mcu_monitor_replay.c"), "-o", str(exe)], check=True)
     return exe
+
+
+def v3_pass_bytes():
+    """One pass of firmware/mcu_v3_peer.s, as it tells the MCU: T = 12288 (0x3000),
+    five frames, four packets, the guard. Data bytes that equal prompt letters ('S',
+    'P', 'm') must not be taken for prompts."""
+    b = [ord("S"), ord("S"), ord("s"), 0x00, 0x30]
+    for st, n in ((0x81, 64), (0x81, 0x153), (0x81, 64), (0x81, 1518), (0x82, 0x6D)):
+        b += [ord("M"), ord("m"), st, n & 0xFF, n >> 8]
+    for st in (0x81, 0x81, 0x81, 0x82):
+        b += [ord("U"), ord("u"), st, 36, 0x80, 0x4B]
+    b += [ord("A"), ord("B"), 0x11, 0x80, ord("C"), 0x10, 0x80, ord("D"), 0x21, 0x80, ord("P")]
+    return b
 
 
 def run(exe, reads):
@@ -175,6 +190,21 @@ def main():
             t.beat((2 * sent + 1) & 0xFF, moved=1)
         check("traffic with no pause is still printed", run(exe, t.reads),
               "UART got 0x07", absent=("did not fit",))
+
+        v3 = build(Path(tmp), "mcu_v3", "mcu_v3_peer.s")
+        t = Trace()
+        for byte in v3_pass_bytes():
+            t.event(1, byte)
+        check("v3: a pass's summary, data bytes kept apart from prompts", run(v3, t.reads),
+              "v3 pass 1", "cal  T=12288 cycles: MCU clock 32000 kHz",
+              "eth  0: status 81, 64 bytes", "eth  1: status 81, 339 bytes",
+              "eth  3: status 81, 1518 bytes", "eth  4: status 82, 109 bytes",
+              "usb  0: status 81, 36 bytes, SYNC 80 PID 4b", "usb  3: status 82",
+              "guard A", "guard B: T0 late: UIO7 off the bus, LATE_RD 8011",
+              "guard C: flag cleared: UIO7 back, LATE_RD 8010",
+              "guard D: the guard names T1, T0 late: UIO7 stays, LATE_RD 8021",
+              "passes 1 | framing 0 | other events 0 | stray bytes 0",
+              absent=("eth  5", "usb  4"))
     print("PASS: MCU monitor")
     return 0
 

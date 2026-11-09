@@ -1,5 +1,6 @@
 #include "ti_msp_dl_config.h"
 #include "uart_test.h"
+#include "v3_test.h"
 
 #define UART_TEST_TIMEOUT  1000000U
 
@@ -42,7 +43,7 @@ TestStatus UART_Test_run(void)
      * empty register, so a byte left there can block the next, until it is read.
      */
     while (!DL_UART_Main_isRXFIFOEmpty(UART_1_INST)) {
-        (void) DL_UART_Main_receiveData(UART_1_INST);
+        V3_Test_uartByte(DL_UART_Main_receiveData(UART_1_INST));
         uartRxCount++;
     }
     uartStray = uartRxCount;
@@ -112,6 +113,7 @@ void UART_1_INST_IRQHandler(void)
             uartRxByte = DL_UART_Main_receiveDataBlocking(UART_1_INST);
             uartRxReady = true;
             uartRxCount++;
+            V3_Test_uartByte(uartRxByte);   /* the v3 test reads every byte */
             break;
 
         default:

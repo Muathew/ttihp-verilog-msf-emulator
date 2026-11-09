@@ -43,3 +43,15 @@ is one short burst. `SPI_FRAME_GAP_CYCLES` in `spi_test.c` and the rates in
 The CCS build regenerates the `Debug/` files from `p_test.syscfg`, so they are not kept
 in git. To add a source
 file, let CCS rebuild its makefiles; a plain `gmake` in `Debug/` will not see it.
+
+## The v3 board test
+
+The same build also runs the v3 board test, against `firmware/mcu_v3_peer.s` (branch
+`v3`; `fpga/ps/mcu_v3` loads it). Nothing is set on the MCU: `main.c` runs v2 passes
+until the peer asks for calibration (two `S` bytes running on UART1), then v3 passes.
+`v3_test.c` uses the SPI as a signal generator on MOSI (SCLK and CS are taken off their
+pins), reads POCI with each pull and reads SCL, and logs each pass. `v3_lines.c` makes
+the frames, packets and SPI words. It has no TI headers, so `test/test_mcu_v3_peer.py`
+builds it on the PC and plays the same words into the RTL. `mcu_ext/tests/run_compile_test.sh`
+compiles the v3 code on the PC. What a pass does and how to read it:
+[`external-mcu_testing.md`](../../external-mcu_testing.md#the-v3-board-test).
