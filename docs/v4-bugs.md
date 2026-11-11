@@ -189,3 +189,26 @@ test. The pieces with no second reader: the timed-pin slot rules (section 6.8: b
 1-255, else held; "refuse next"; T3 first, T0 last), the external-clock layout (6.9), and
 the stuffing kinds. A reader of `docs/isa.md` alone, asked to predict the pin edges of
 `test/test_timed_pins.py`'s programs, would find any such misreading.
+
+## State at hand-over (11 Nov 2026, when Sam said to finish)
+
+Order of events, so a reviewer knows what each result applies to:
+
+1. Steps 1-5 and `msfc` written in one working tree (step 1 committed earlier as 0f11429).
+2. Final-tree cocotb suite, four shards: 319 tests in 77 modules, 316 passed, 3 failed
+   (F1 twice, I4). Fixed; `test_targets` (22 of 22) and `test_engine_sets` (4 of 4) re-run
+   and pass. **The whole suite was not re-run after those fixes.**
+3. Pure-Python tests then found T1, T2, S1 (fixed; `test_site.py`'s new tests pass).
+   `python tools/msf_timing.py --all --check-model 20000` (CI's "Firmware deadlines" step)
+   on the final tree: exit 0, 73 of 181 deadlines compared with the model, the two
+   `mcu_v3_peer.s` ones reported `LATE ON PURPOSE`. The full pytest set was still running
+   when this was written; the modules that use the checker (`test_timed_pins`,
+   `test_mcu_v3_peer`, `test_learn`, `test_engine_sets`) were being re-run too.
+4. Committed as c68fb13 (code and tests) and 670bec8 (documents), pushed as branch `v4`;
+   CI (`formal`, `test`, `docs`) queued at 20:58 UTC. The formal run is the first for F17/F18.
+   Read it with `gh run list --branch v4`, and log whatever it shows here.
+
+What a larger model should start with: the CI `formal` result (F17, F18, the edited F5 and
+F11); T1's "Check" (state splitting for `AT`/`ESEL` programs); F1's "Check" (other firmware
+relying on 10-bit folding); the last section above (a second reader of `isa.md` 6.8-6.9).
+Not done at all: see `docs/v4-open-problems.md` section C.
