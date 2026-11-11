@@ -22,6 +22,13 @@ AI-written work and the chip, and where the AI was wrong.
   formal properties, the tools in `tools/`, and the documentation. The
   agent runs the simulators and tools itself, commits, and pushes to the
   feature branches; nothing is merged to `main` without Sam.
+* **v4 (11 Nov):** the plan (`plan-v4.md`: an RTL review, a competitor re-read, five moves,
+  a ladder down) was written by the AI from Sam's brief; Sam's order was "follow this plan and
+  implement it fully", and, when stuck, "skip the error, report it, a larger model will review
+  it". Steps 1 to 5 of the plan, `msfc` and the documents were then written by the AI in one
+  conversation, with no sub-agents, and every bug it found or caused is listed with file
+  references in [`v4-bugs.md`](v4-bugs.md); what it could not check is in
+  [`v4-open-problems.md`](v4-open-problems.md).
 
 ## 2. The rule: every AI artefact meets a check it did not write itself
 
@@ -36,6 +43,8 @@ something independent of it:
 | Tests | mutation testing (`tools/mutation.py`): seeded RTL faults the tests must catch, after the tests have passed on the unmutated design (§8) |
 | Firmware | device models written from the protocol standards (PS/2, IEEE 1149.1, ADIv5, CAN 2.0, Maxim 1-Wire, 25xx flash, I2C, SPI, USB, Ethernet), not from the firmware; and the static deadline check (§6b), itself cross-checked against the ISA model |
 | The deadline checker | the ISA model (every observed `WAIT_CMP` must fall in the computed range) and a program that must be rejected |
+| `msfc`, the compiler (v4) | its own reference interpreter, written from the language's semantics and not from the code generator, on 120 random programs (variables and every change of the pins, in order); the deadline checker run on the compiler's own output; programs that must be refused, with their lines (`test/test_msfc.py`) |
+| The timed pins and the engine options (v4) | directed tests that measure the pins in cycles, the model against the RTL on random timed windows, and the planted bugs of `formal/run_formal.py`. **The formal properties have not been run**, and the specification, model and RTL were written by one session in a row: see §3's last v4 row |
 | Physical design | LibreLane's DRC, LVS and antenna checks, Tiny Tapeout's precheck, the gate-level test, and reading the timing reports rather than the badge |
 | Claims in the docs | `verification.md` §9 maps each claim to the test that backs it, and lists what is not validated |
 
@@ -71,6 +80,12 @@ Taken from the commit history; each is visible in `git log`.
 | The planted-bug run reported three PS/2 mutants as certified but late, which would have been checker bugs. The harness certified each mutant with the firmware's own Q = 240 while the tests ran it at Q = 60, kept only the last test's observations, and let mutants overwrite the waveforms sigrok judges | reproducing the three, then running the checker with the test's Q: it predicts exactly what the RTL showed (d -36..46 where it saw -36..46) and refuses them. All three harness faults are fixed and the campaign re-run |
 | Two of the drawn protocols' firmware had bugs on their first try: an `AND` before a `JZ` (`AND` sets no flags) zeroed three of EM4100's nibbles; Microwire's deadlines ran through subroutine calls the checker cannot follow | the RTL test against the frame rebuilt from the data sheet; the checker's "MAY BE LATE" |
 | README said a thread's timing never depends on what the other threads do; it does whenever two threads use a shared engine (22 cycles for a CRC alone, 42 while another thread uses the CRC unit). It said a missed deadline is never silent; a TX engine that runs dry sets no flag. It said the chip learns a protocol with no other instrument; the learner runs on a PC. And three numbers were stale (191 tests, "every firmware 20 MHz or less", "at least 9 cycles of slack") | the claim attack of 8 Nov (`plan.md` §7.13): each has a reproducer, two as tests (`test_shared_engine_wait_depends_on_other_thread`, `test_tx_underrun_is_silent`), and each claim is reworded |
+| **v4 (11 Nov).** The boot ROM's new autobaud branched with `JZ` on a flag that `AND` does not set: every UART boot hung. The same slip as EM4100's, three weeks apart | the UART boot tests (`test_boot`); fixed with an `ADDS`. `v4-bugs.md` R1 asks for a lint over all firmware |
+| v4. Growing the memory to 2,048 words broke `spi_flash.s`, which got its 512-byte wrap for free from 10-bit addresses; no test had said so, because no test had grown the memory | the full suite after the change: a read across the wrap returned zeros. The store moved to the top of the memory, with no cycle added (`v4-bugs.md` F1) |
+| v4. Putting `TS` in the deadline checker's state for every program made `onewire.s` lose its certificate: one more register that differs between paths splits the states until the checker widens | a pure-Python test that every shipped program is certified, run after the big suite. `TS` is now tracked only where a program reads it (`v4-bugs.md` T1) |
+| v4. `mcu_v3_peer.s` misses two deadlines on purpose to show the late guard, so `msf_timing.py --all` has failed since v3 added it, and CI's step with it | the same test, run for the first time on v4; the program now says `; @late` and the checker must find the miss real (`v4-bugs.md` T2). v3's CI run is the thing nobody looked at |
+| v4. `info.yaml` said the clock was "signed off at 20 ns" for a layout nobody had hardened: a target written as a result | re-reading the file while writing the README; reworded |
+| v4. The spec, the ISA model and the RTL of the timed pins and of the engine options were all written by the same session in a row, so a shared misreading passes every differential test | not caught: it is the largest risk we know of that no check covers, and `v4-bugs.md` ends with it. A second reader of `isa.md` §6.8-6.9, predicting the pin edges of `test_timed_pins`, would |
 
 ## 4. What we take from it
 

@@ -1,154 +1,89 @@
 ![](../../workflows/gds/badge.svg) ![](../../workflows/docs/badge.svg) ![](../../workflows/test/badge.svg) ![](../../workflows/formal/badge.svg) ![](../../workflows/fpga/badge.svg)
 
-# msfcore — a reprogrammable protocol-emulator ASIC
+# msfcore: a protocol-emulator ASIC where an edge leaves on its cycle, or not at all
 
-msfcore is a 16-bit CPU for IHP SG13CMOS5L (Tiny Tapeout, 6x4 tiles) whose
-instruction set is built for driving pins on exact cycles. Protocols are
-firmware, loaded over UART or a parallel port after fabrication. Entry for
-the Jane Street protocol emulator ASIC competition.
+A 16-bit CPU for pins and time, for IHP SG13CMOS5L on Tiny Tapeout (8x4 tiles, 24 digital pins).
+Protocols are firmware, loaded over UART or a parallel port after fabrication. Entry for the Jane
+Street protocol emulator ASIC competition. **This branch is v4: built and simulated. It has not been
+hardened, run through a formal solver or put on a board** ([what is shown on which version](#evidence)).
 
-One chip plays the device, drives the bus, watches it and breaks it on
-purpose: it can stand in for an SPI flash or an I2C EEPROM, probe a JTAG or
-SWD target, report every timing fault on an I2C bus with its length and keep
-the waveform around it, or find by itself how far a device's timing can be
-pushed. On a board nobody documented, it can find the debug pins, record the
-traffic, learn the protocol and send a message the transmitter never sent, with
-no other instrument (the learning itself runs on a PC, as a Python tool):
-[the session](docs/instruments.md#9-a-reverse-engineering-session-with-one-chip).
+One chip plays the device, drives the bus, watches it and breaks it on purpose: an SPI flash or I2C
+EEPROM, a JTAG or SWD probe, a monitor that reports every timing fault with its length, a margin
+finder, a pin finder for a board nobody documented. 79 firmware programs, from UART to CAN, USB
+low speed and 10BASE-T ([the list](docs/repository.md#firmware-by-role-firmware)).
 
-## The core
+```
+  ui[8]     uio[8]     uo[8]      pins: 2-flop synchronisers in, registered pads out
+    |         |          ^
++------------------------------------------------------------------------------+
+| 4 threads in a fixed rotation; every instruction's cost is fixed by the ISA  |
+| per thread: a timed-pin slot (AT, TS): a write on its cycle, or refused      |
++--------------------------+--------------------------+------------------------+
+| engine set 0             | engine set 1             | capture engine, glitch |
+| TX | RX | CRC            | TX | RX | CRC            | filters, FIFO between  |
+|                          | (an external clock too)  | the threads            |
++--------------------------+--------------------------+------------------------+
+| 2,048 x 16 SRAM (four macros), 128-word boot ROM, UART/parallel loader       |
++------------------------------------------------------------------------------+
+```
 
-* **Exact timing.** One cycle per instruction, with documented costs for
-  every op; `WAIT_CMP` waits on the absolute cycle counter, so a bit
-  schedule never drifts; edge and level waits with timeouts.
-* **A missed `WAIT_CMP` deadline is never silent.** A `WAIT_CMP` whose
-  target has passed releases at once with Z=1 and sets the thread's LATE
-  flag. (A TX engine that runs out of words just holds its line: firmware
-  timed by the engine has to keep it fed.)
-* **Four hardware threads** in a fixed rotation, each with its own
-  registers: a thread's slots depend only on which threads run, never on
-  what they do (proved, F13). The SERDES and CRC engines are shared, so a
-  thread that waits on one waits for any other thread using it. A hardware
-  FIFO passes words between them.
-* **Line-code SERDES** (NRZ, NRZI, Manchester, bit stuffing, differential
-  pairs) with receive, de-stuffing, resync and Manchester decoding; framing
-  stays in firmware, so one engine serves UART, USB and 10BASE-T.
-* **CRC unit** for any CRC up to 32 bits; **capture engine** recording 8
-  pins with a trigger (a logic analyser); **glitch filter** per input pin;
-  **debug view** of internal state on the outputs.
-* **1024 x 16 SRAM** (two IHP macros): 896 words of firmware and 128 of data,
-  with a 128-word boot ROM and a CRC-checked framed loader.
+## What is different ([architecture](docs/architecture.md))
 
-## The firmware ([`firmware/`](firmware))
+1. **An edge on its cycle, or not at all.** `AT rb` arms a thread's slot; its next pin write waits
+   there and is applied when the cycle counter reaches the time, whatever the four threads are doing.
+   A write that would be late is refused with a flag, never made late. Measured: a reply exactly
+   delta cycles after an input edge, jitter 0, with 1 to 4 threads running (`test_timed_pins`).
+2. **A program that compiles is on time.** Instruction costs are part of the ISA, so a static checker
+   certifies every deadline before the program runs, and `msfc`, a small language with time in its
+   syntax, refuses a program it cannot certify and names the source line ([msfc](docs/msfc.md)).
+3. **Evidence we did not write alone.** An ISA model written from the specification is compared with
+   the RTL on every issue of random programs; formal properties are checked against planted bugs
+   that must fail them (not yet run for v4); six protocols were drawn by a public random round and
+   judged by sigrok's decoders; [every bug we found on the way is listed](docs/v4-bugs.md).
 
-| Role | Protocols |
-|---|---|
-| Drive a bus | UART, SPI (modes 0-3), I2C (repeated start, clock stretching), USB low-speed TX and RX with CRC16, 10BASE-T TX with FCS and link pulses, WS2812, CAN 2.0A (arbitration, CRC-15, stuffing, ACK), 1-Wire (SEARCH ROM) |
-| Play a device | SPI target (64 registers, no dummy byte), 25xx SPI flash (ID, read, program, erase with WIP), I2C target (128-byte EEPROM), PS/2 keyboard |
-| Debug probes | JTAG (IEEE 1149.1 scans, chains), SWD (ADIv5 DP and MEM-AP) |
-| Watch and break | UART, I2C and SPI bus monitors that report timing faults with their lengths, and flight-recorder versions that keep the waveform around the first fault; timing-fault injection; a margin finder that sweeps a device's timing on the chip alone; an in-line interposer that changes one frame; UART-to-SPI bridge; logic analyser with streaming and replay |
-| Reverse-engineer | a pin finder that works out which of eight wires are UART, SWD and JTAG; learning a protocol from a recording, then sending a message the transmitter never sent |
-| Drawn at random, after the chip was finished | S/PDIF at 48 kHz, an EM4100 RFID tag, Microwire (93C46), a Siemens SDA 2506 EEPROM, HDMI-CEC, the Commodore serial bus: picked by a public random round, written for the unchanged chip, judged by sigrok's decoders ([results](docs/instruments.md#16-protocols-drawn-at-random--firmwaredraw_s-test_draw_py-docsdraw)) |
+Two engine sets (both directions of a link, or two protocols, at once), engines that follow the other
+side's clock (a fast SPI target), HDLC/CAN stuffing and frame/stuff/underrun flags are v4's other
+additions ([envelope](docs/envelope.md): how fast each class of protocol goes, from tests).
 
-[`docs/instruments.md`](docs/instruments.md) gives each one's limits,
-measured, and compares the approach with the RP2040's PIO: a PIO program
-only moves bits and leaves the decisions to the ARM cores, while here the
-same core makes the bit-rate decisions (an SPI target's address guess, an
-I2C ACK, a monitor's timing check) and runs the whole job on the chip.
+## Evidence
 
-## How it is checked
+| Claim | Evidence | Shown on |
+|---|---|---|
+| The RTL does what [`isa.md`](docs/isa.md) says | the model against the RTL on every issue of random programs, timed windows and both engine sets included | v4 RTL, simulation, 11 Nov |
+| The protocols work | 319 cocotb tests in 77 modules, peers written from the standards (three tests failed in the 11 Nov run and were fixed: [v4-bugs](docs/v4-bugs.md)) | v4 RTL, simulation |
+| An edge leaves on its cycle | `test/test_timed_pins.py`: jitter 0 with 1 to 4 threads, one stalled, one loading | v4 RTL, simulation |
+| Deadlines are met | `tools/msf_timing.py --all`; CI also compares it with the RTL | v4 firmware, the checker |
+| Properties hold for all time | formal F1-F16 in CI | **not run on v4**: F17 and F18 are new and F1-F16 need re-running on the changed RTL ([open problems](docs/v4-open-problems.md) A1) |
+| The layout meets timing | CI sign-off job | v2.2 on 6x4: 30 ns in every corner. **v4 on 8x4 is not hardened** |
+| It runs on real hardware | AUP-ZU3 FPGA: 67 of 67 C protocol tests; free-running against an LP-MSPM0G3519: UART, SPI, I2C, 148 of 148 passes at 12 MHz | v2.2 core. **v4 is not built on the board** |
 
-Each kind of work is checked against something written independently of it
-([`docs/verification.md`](docs/verification.md), with a table mapping every
-claim to its evidence):
+## Limits
 
-1. **An ISA model** written from [`isa.md`](docs/isa.md), not from the RTL,
-   compared with the RTL on every issue of random programs.
-2. **237 cocotb tests** in 33 modules, with peer models written from the
-   protocol standards (USB, Ethernet, I2C, SPI, IEEE 1149.1, ADIv5, CAN,
-   1-Wire, PS/2, and the six protocols drawn at random), not from the
-   firmware; sigrok's decoders, written by other people, read what the
-   firmware sends.
-3. **Formal properties** (SymbiYosys and ABC, in CI) with free memory and
-   pins; known bugs put back must each give a counterexample, and every
-   cover point must be reached.
-4. **Mutation testing**: 37 of 40 seeded RTL faults are caught, and the
-   other three cannot change behaviour.
-5. **A static deadline checker** ([`tools/msf_timing.py`](tools/msf_timing.py))
-   certifies that no `WAIT_CMP` in the firmware is ever late, on any path.
-   Its results are compared with the ISA model for one firmware only so far
-   (`uart_tx.s`, 1 of 29 deadlines: the model has no SERDES).
-6. **The FPGA board** (AUP-ZU3): 67 of 67 C protocol tests pass on the same
-   core, stepped by the Zynq. Running free at 12 MHz, the core has also passed
-   UART, SPI and I2C both ways on all 148 passes of a run with a real
-   LP-MSPM0G3519 ([MCU test](external-mcu_testing.md)), and Vivado reports
-   timing met at that clock inside the FPGA
-   ([figures](docs/fpga.md#vivado-results)).
-7. **Sign-off in CI**: a job that fails on any setup or hold violation, DRC,
-   antenna or LVS error, because the GDS badge alone does not.
-8. **The routed netlist equals the RTL**, proved formally
-   ([`formal/netlist_equiv.py`](formal/netlist_equiv.py)): from reset, on
-   every cycle and for any inputs, so the checks above apply to the layout.
+* v4 has no timing result. The 48 MHz in `info.yaml` is a target; the numbers above are v2.2's.
+  The four-macro floorplan and the hold margins are set in `src/config.json` and unconfirmed by any
+  flow ([open problems](docs/v4-open-problems.md) B).
+* Pad speed is unknown: there is no CMOS5L silicon. [`envelope.md`](docs/envelope.md) says which
+  limits are logical (one bit a cycle) and which depend on the pads.
+* The board's C tests step the core one clock at a time; only the MCU test runs it free, at 12 MHz.
+* Firmware is assembly, or `msfc` (one thread, 16-bit values, no functions).
+* Planned and not built: half-cycle sampling, the fractional divider, the ROM's read-back and memory
+  test, the demo-board driver ([plan v4](docs/plan-v4.md) has the status of every item).
+* Programs are at most 2,048 words, data included. Not a RISC-V core, by decision.
 
-## Limits, honestly
-
-* The clock is signed off at 33 MHz (30 ns) in every corner. At the slow
-  corner (1.08 V, 125 °C) the worst path, SRAM read to register file, is
-  about 26.4 ns; 50 MHz is met only at the typical corner
-  ([verification](docs/verification.md) §7). Every firmware we ship needs
-  20 MHz or less, except the S/PDIF transmitter drawn at random, which runs
-  at 30.72 MHz to make 48 kHz exactly.
-* The C board tests step the core one clock at a time: they check logic and
-  protocols on real hardware, not timing at speed. Only the
-  [MCU test](external-mcu_testing.md) runs it free, at 12 MHz on the FPGA.
-* Firmware is written in assembly.
-* 10BASE-T is transmit only: our RX engine would need about 80 MHz to receive it.
-* Most formal properties are proved for all time, but four of the
-  controller's (F3's timeout bounds, part of F10) only to depth 16
-  ([verification](docs/verification.md) §3).
-
-## Documentation
-
-* [Datasheet](docs/info.md) — pinout, boot protocol, how to test
-* [ISA v2.2](docs/isa.md) — encodings, timing model, peripherals, threads
-* [Instruments](docs/instruments.md) — device emulation, bus monitors, fault injection, logic analyser, debug probes, other buses, comparison with PIO
-* [Verification](docs/verification.md) — model, random differential tests, formal, deadlines, FPGA, hardening, mutation, claims and evidence
-* [How AI was used](docs/ai.md) — who did what, the independent check for each AI-written artefact, and where the AI was wrong
-* [Plan](docs/plan.md) — what is left before tape-out, with status
-* [FPGA port](docs/fpga.md) — AUP-ZU3 board mapping, block design, build, status
-* [FPGA PS software](fpga/ps/README.md) — Zynq loader and the C protocol tests
-* [Test suite](test/README.md) — running the cocotb tests
-* [History](docs/history.md) — decisions, plans and problems, as one log
-* [Competitor research](docs/research.md) — other entries and prior art, dated surveys
-* [GDS viewer](https://muathew.github.io/ttihp-verilog-msf-emulator/) — 3D view of the hardened layout
-
-## Repository layout
-
-| Path | Contents |
-|---|---|
-| `src/` | RTL (Verilog-2005): `project.v` top, `tt_um_msf_ctrl.v` core, `_serdes`, `_crc`, `_cap`, `_filt`, `_pio`, `_sram`, `_bootrom`, `_regfile`, `_alu`; the LibreLane config (`config.json`, `pdn_cfg.tcl`) |
-| `librelane_plugin_msf_pdn.py`, `odb_sram_stripes.py` | a LibreLane step that puts the power stripes on the SRAM macros' supply pins (CMOS5L) |
-| `firmware/` | assembly programs, `msf.inc` constants, `report.inc` (the monitors' event reporter) |
-| `test/` | cocotb suite, assembler (`assembler.py`), ISA reference model (`isa_model.py`), boot ROM source (`bootloader.s`) |
-| `formal/` | formal properties and their runner (`run_formal.py`: SymbiYosys with ABC) |
-| `tools/` | `msf_boot.py` host loader, `msf_timing.py` deadline checker, `check_signoff.py` sign-off check, `mutation.py` mutation score, `gds_metrics.py` hardening table, `synth_check.py` area pre-check |
-| `fpga/` | AUP-ZU3 RTL, board constraints, Vivado block design, Zynq PS loader and C protocol tests |
-
-## Running
+## Try it
 
 ```sh
-pip install -r test/requirements.txt        # cocotb; plus Icarus Verilog
-cd test && make                              # RTL suite (Windows: python run_tests.py --all)
-python tools/msf_timing.py --all             # certify every firmware deadline
-python tools/devsim.py sdspi.s test_sdspi Card 600000   # a program against its test's device, on the ISA model
-python formal/run_formal.py --engine abc     # needs SymbiYosys (OSS CAD Suite)
-python tools/mutation.py                     # mutation score (hours: every module)
-python test/assembler.py                     # regenerate the boot ROM after editing bootloader.s
-python tools/msf_boot.py firmware/uart_tx.s --port COM5   # load onto silicon
+python tools/msfc.py firmware/msfc/spi_mode0.msf --run 700   # compile, certify, run on the ISA model
+python tools/msf_timing.py firmware/uart_tx.s                 # certify every deadline of a program
+python tools/msf_timing.py firmware/uart_tx.s -D BIT=9        # too fast for its own loop: refused
+cd test && python run_tests.py -m test_timed_pins             # the timed pins on the RTL (Icarus, cocotb)
 ```
+
+The playground in `site/` runs the assembler, checker and model in a browser (needs the repository
+public). More commands, the layout and every document: [what is where](docs/repository.md). How AI
+was used, and where it was wrong: [`docs/ai.md`](docs/ai.md).
 
 ## What is Tiny Tapeout?
 
-Tiny Tapeout is an educational project that makes it easier and cheaper than
-ever to get digital designs manufactured on a real chip. See
-https://tinytapeout.com.
+Tiny Tapeout is an educational project that makes it easier and cheaper than ever to get digital
+designs manufactured on a real chip. See https://tinytapeout.com.

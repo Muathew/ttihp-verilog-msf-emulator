@@ -18,21 +18,29 @@ Kept current as items land, like the other plans' tables.
 
 | # | Item | Section | Status |
 |---|---|---|---|
-| 0 | Decisions by Sam and Muath | §16 | open |
-| 1 | Baseline: v3 unchanged, hardened on 8x4 to the end; four-macro floorplan trial | §7.1 | not started |
-| 2 | Step 1: fixes from the review (B1-B11), reset synchroniser, registered pads | §6.2 | not started |
-| 3 | Step 2: 2048 words (four macros), 11-bit PC | §6.3 | not started |
-| 4 | Step 3: timed pins (`AT`, `TS`) | §6.4 | not started |
-| 5 | Step 4: two engine sets, external clock, general stuffing, half-cycle sampling | §6.5 | not started |
-| 6 | Step 5: boot ROM: autobaud, read-back, memory test, chip ID | §6.6 | not started |
-| 7 | Sign-off on 8x4 at 20 ns, hold margin, SDF gate-level runs | §7 | not started |
-| 8 | Verification of v4: model, formal, mutation, cost proof | §8 | not started |
-| 9 | FPGA build and board run of v4 (Muath) | §11 | not started |
-| 10 | Tag the netlist; flexibility campaign after the tag | §9 | not started |
-| 11 | `msfc`, the demo-board driver, the bring-up kit | §10 | not started |
-| 12 | Bench session, photos, video | §11 | not started |
-| 13 | Write-up | §12 | not started |
+| 0 | Decisions by Sam and Muath | §16 | taken as recommended on Sam's order of 11 Nov ("follow this plan and implement it fully"); 7, 8, 9, 10 are Muath's or Sam's to act on |
+| 1 | Baseline: v3 unchanged, hardened on 8x4 to the end; four-macro floorplan trial | §7.1 | **needs the other machine**: not run. Done here: the v3 baseline suite passes (286 of 286, 11 Nov); the 8x4 die is 1724.16 x 710.64 um (read from the template's DEF); `src/config.json` has the four-macro floorplan (8 um apart); a pre-hardening synthesis of v4 so far gives 12,514 cells / 1,724 flops, 54 % of 32 tiles with four macros (v3: 12,183 / 1,692) |
+| 2 | Step 1: fixes from the review (B1-B11), reset synchroniser, registered pads | §6.2 | **built and tested** (11 Nov, commit 0f11429): B1-B5, B7, B9-B11; 9 new tests (`test_v4_fixes`); B6 is step 5, B8 step 4. Not run: formal F18, hardening (B7, B9 unconfirmed) |
+| 3 | Step 2: 2048 words (four macros), 11-bit PC | §6.3 | **built and tested** (11 Nov): RTL, model, assembler, checker, FIFO/capture/debug view, `fpga/rtl`; the capture default stays 512/256 so v3 programs run unchanged (the plan said 1024). The full suite found one program that relied on the old 10-bit wrap (`spi_flash.s`, bug F1 in `v4-bugs.md`); fixed. Floorplan trial not run |
+| 4 | Step 3: timed pins (`AT`, `TS`) | §6.4 | **built and tested** (11 Nov): `ESEL`, ports on page 1, refusal, checker, model; 9 tests (a reply with jitter 0 with 1 to 4 threads among them), random timed windows, RTL == model. F17 written, not run |
+| 5 | Step 4: two engine sets, external clock, general stuffing, half-cycle sampling | §6.5 | **a, b, c (RX and TX), d, e built and tested** (11 Nov): second TX/RX/CRC set (4 tests), engines on `ui`/`uo`, external clock (RX 2 cycles a bit, TX 6; 7 option tests), HDLC/CAN stuffing, frame/stuff/underrun errors, STAT bit 15. **f (half-cycle sampling) and g (fractional divider) not built**: the plan's cut order, and f needs the model study first |
+| 6 | Step 5: boot ROM: autobaud, read-back, memory test, chip ID | §6.6 | **autobaud and chip ID built and tested** (11 Nov): the ROM times a 0xFF byte (`ui_in[3]` strap), the loader is 115 words (`test_autobaud_loads_at_any_clock`); page 3 reads 0x4D53 ('MS'), 0x0400 (version 4.0), a capability word 0x0BBF (its ROM-memory-test bit is clear) and `CNT_H`. **ROM read-back and the memory test not built** |
+| 7 | Sign-off on 8x4 at 20 ns, hold margin, SDF gate-level runs | §7 | **needs the other machine**: not run. `src/config.json` and the two SDC files carry the changes the plan asks for, unconfirmed by any flow (`v4-open-problems.md` B) |
+| 8 | Verification of v4: model, formal, mutation, cost proof | §8 | **partly done** (11 Nov): the model is compared with the RTL on every issue of random programs with timed windows and both engine sets; the final-tree run is 319 cocotb tests in 77 modules, of which 316 passed; the other 3 (two flash-target tests, one engine-sets test) failed in it, were fixed (`v4-bugs.md` F1, I4) and pass in reruns of their modules. **Not done:** formal (none of F1-F18 has been run on v4: YoWASP cannot run here, `v4-open-problems.md` A1; CI's `formal.yaml` is the first run), the mutation score, the cost proof |
+| 9 | FPGA build and board run of v4 (Muath) | §11 | not started; `fpga/rtl` has v4's RTL for the build (the board-specific SRAM and ROM wrappers are not touched) |
+| 10 | Tag the netlist; flexibility campaign after the tag | §9 | not started (needs a hardened netlist) |
+| 11 | `msfc`, the demo-board driver, the bring-up kit | §10 | **`msfc` built** (11 Nov): `tools/msfc.py`, `docs/msfc.md`, 3 programs, 7 tests (120 random programs against its own interpreter; edges at the pins; refusals with source lines); one thread, 16-bit values. **Not built:** the demo-board driver, the bring-up kit, inlined functions and threads in `msfc`, ten programs rewritten (three are) |
+| 12 | Bench session, photos, video | §11 | not started (needs people, a board and the MCU) |
+| 13 | Write-up | §12 | **drafted** (11 Nov): one-screen `README.md`, `docs/architecture.md` (for someone who knows PIO and PRU), `docs/envelope.md` (what each class of protocol can do, from tests), `docs/msfc.md`, `docs/ai.md` updated, `docs/v4-bugs.md` and `docs/v4-open-problems.md` for review. **Not done:** the cold read, the playground's v4 examples, the `instruments.md` one-page summary, the second draw and the newcomers |
 | 14 | Final GDS on the final commit, repository public, submission form | §13 | not started |
+
+**Progress note, 11 Nov (end of the first working session on this plan).** Items 2-6, the
+model and tests of item 8, `msfc` and the write-up's documents are built in one working tree
+and committed on branch `v4` (code and tests in one commit, documents in another: the steps
+were developed together and share files, so they are not separable). Everything that needs a
+solver, a flow, a board or a person is listed in [`v4-open-problems.md`](v4-open-problems.md);
+every bug found on the way, fixed or not, with file references, is in
+[`v4-bugs.md`](v4-bugs.md), written for a larger model to review.
 
 ## 0. The plan on one page
 

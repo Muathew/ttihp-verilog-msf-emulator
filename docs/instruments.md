@@ -59,8 +59,10 @@ define), read status (`05`), write enable and disable (`06`, `04`), `READ`
 (`03`) and `FAST_READ` (`0B`) with a 3-byte address, page program (`02`:
 each byte is ANDed in, as programming only clears bits, and the address
 wraps inside its 256-byte page) and the erases (`20`, `52`, `D8`, `60`,
-`C7`). The store is 512 bytes, one byte a word in SRAM 512-1023, mirrored
-over the 24-bit address space. An erase runs while CS is high and pauses
+`C7`). The store is 512 bytes, one byte a word in SRAM 1536-2047 (the top of
+the 2,048 words, so a read running off its end wraps for no cycle; on a
+1,024-word chip the same words appear at 512-1023), mirrored over the 24-bit
+address space. An erase runs while CS is high and pauses
 while it is low, so a host polling the status sees WIP set and then clear,
 as from a real part; WEL clears when a program or erase ends.
 

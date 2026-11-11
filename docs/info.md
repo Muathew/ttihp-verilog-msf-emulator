@@ -21,15 +21,19 @@ generic building blocks that firmware composes into protocols.
 |---|---|
 | Core | 16-bit RISC, 8 registers per thread, 5-bit opcodes + a 32-entry extension group, single-cycle execute, deterministic cycle costs |
 | 4 hardware threads | barrel-interleaved (XMOS-style): the running threads take cycles in turn (T0 alone: every cycle; *n* running: every *n*-th); each thread has its own PC, registers, flags, timeout and stall state, and its timing depends only on which threads run, never on what they do |
+| Timed pins (v4) | `AT t` then a pin write: the pad changes on cycle *t* + 1, whatever the four threads are doing, or the write is refused (Z = 1, LATE flag, late guard) if *t* has passed: an edge leaves the chip on its cycle or not at all. `TS` gives the cycle an input event really happened, so a reply is `WAIT_EDGE; TS; ADDS; AT; write`, exactly *delta* cycles after the edge |
+| Two engine sets (v4) | a second TX engine, RX engine and CRC unit, chosen per thread by `ESEL` bit 0: two protocols at once, both directions of a link, a monitor that receives and re-sends; no engine is shared between threads on different sets |
+| Engine options (v4) | engines on all 24 pins (RX on `ui`, TX on `uo`), bit stuffing of any length and kind (HDLC, CAN, USB), frame / stuff / underrun error flags, and an **external clock**: the engine shifts on edges of a pin gated by another, so an SPI target runs word by word from the master's clock, down to 6 cycles a bit transmit and 2 receive |
 | FIFO | a queue between the threads, kept in data RAM with its positions in hardware: one instruction to push (`FIFO_PUT`, 1 cycle) or pop (`FIFO_GET`, 2 cycles), words dropped by a full FIFO counted |
 | Blocking ops | `WAIT_EDGE` (any/rising/falling edge or level, on `uio` or `ui` pins), `WAIT_CMP` (cycle counter == register), `LD`, `TX_PUSH`, `TX_WAIT`, `RX_POP`, `CRC_W`, `CRC_RDL` stall the thread with a programmable timeout (Z=1 on timeout) |
-| Memory | 1024 x 16 SRAM in two IHP two-port macros (512 words each) + 128-word boot ROM. Fetch: 0-127 ROM, 128-1023 SRAM. Data (`LD`/`ST`/`MEM_W`/FIFO): all 1024 SRAM words, so 0-127 is free data RAM |
+| Memory | 2048 x 16 SRAM in four IHP two-port macros (512 words each) + 128-word boot ROM. Fetch: 0-127 ROM, 128-2047 SRAM. Data (`LD`/`ST`/`MEM_W`/FIFO): all 2048 SRAM words, so 0-127 is free data RAM (v4; v2.2 and v3 had 1024) |
 | Shift register | 16-bit SR, load/read, `SHIFT_OUT`/`SHIFT_IN`/`XFER` (full duplex) on configurable pins, MSB- or LSB-first |
 | SERDES TX | NRZ / NRZI / Manchester, bit stuffing, differential pin pair, 1-16 bit words, programmable symbol period, double buffered (gapless), release mode for exact idle/EOP timing |
 | SERDES RX | NRZ / NRZI / Manchester, de-stuffing, edge resync, continuous or async-character (UART-style) start, overrun flag |
 | CRC unit | any CRC up to 32 bits, normal or reflected, 1-16 bits per write, bit-serial in the background (CRC-8, CRC-5/16 USB, CRC-32 Ethernet ...) |
 | Capture engine | a logic analyser: records 8 pins into an SRAM ring buffer every *n* cycles (two samples a word, or a word per change with its time), level or edge trigger with pre-trigger history, using only data-RAM cycles the core leaves free |
 | Pins | `uio[7:0]` with per-bit set/clear/toggle/write of OUT and OE (open drain = OE), `uo_out[7:0]` written by firmware, `ui_in[7:0]` readable; all inputs pass a 2-flip-flop synchroniser; an optional glitch filter per `uio` pin removes pulses shorter than 1-15 cycles |
+| Identity (v4) | `ESEL #6` then `PR`: chip ID `MS`, ISA version, capability bits, and the high half of a 32-bit cycle counter; a v2.2 or v3 chip reads 0, so a host tool can tell the generations apart |
 | Clock | up to 33 MHz in every corner (signed off at 30 ns, slow corner 1.08 V 125 °C included); 50 MHz at the typical corner. The demos run at 12 or 20 MHz (`docs/verification.md` §7) |
 | Power | about 1.8-2.1 mW at 12.5 MHz (typical corner, estimated from the routed netlist with a gate-level workload; `docs/verification.md` §7b) |
 
@@ -52,7 +56,7 @@ The full ISA is in `docs/isa.md` (repository).
 | Address | Fetch | Data |
 |---|---|---|
 | 0-127 | boot ROM | data RAM |
-| 128-1023 | SRAM (firmware; bank 1 from 512) | SRAM |
+| 128-2047 | SRAM (firmware; banks 1-3 from 512, 1024, 1536) | SRAM |
 
 At reset `ui_in[0]` selects: **1** = run firmware already in SRAM at 128;
 **0** = boot loader. `ui_in[1]` selects the loader's byte source: **0** = UART
@@ -68,6 +72,12 @@ cmd 'W' (0x57): write len words at addr     cmd 'G' (0x47): jump to addr (len 0)
 Each frame is answered with ACK `0x06` / NAK `0x15` on `uio[0]` (UART) and on
 `uo_out[3:0]` (bit0 waiting, bit1 OK, bit2 CRC error, bit3 starting firmware).
 `tools/msf_boot.py firmware.s --port COMx` assembles and loads a program.
+
+**Boot at any clock (v4).** With `ui_in[3]` high in UART mode the host sends one 0xFF
+byte first; the ROM times its start bit (one bit of low, then eight ones) and sets both
+bit-time dividers from it, so the same loader works at any clock and any rate. With
+`ui_in[3]` low the old fixed rate (104 cycles a bit, 115200 baud at 12 MHz) is kept.
+`tools/msf_boot.py --autobaud` sends the byte.
 
 **Reset (v4).** Hold `rst_n` low for at least three clock cycles. It resets every
 flip-flop at once but is released through a two-flop synchroniser, so the core

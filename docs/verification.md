@@ -90,6 +90,15 @@ inputs**, so the proofs hold for every program and environment.
 | F15 | (v3) the late guard: from the cycle after a guarded thread's late `WAIT_CMP` released, the guard's pins are off the bus (their OE forced to 0), and they stay off while that LATE flag is set; with no guarded flag set no pin is held off |
 | F16 | (v3, target `ni`, run by `--top ni`) thread non-interference on two copies of the core (`formal/ni_miter.v`): both get the same inputs; T0 and one more thread *k* run the same program in both, the other threads anything that touches no shared state (pins, SR, MEM_W pointer, FIFO, engines, ports, `TSTART`/`TSTOP`), each copy its own. Then the slot owner is the same in both copies every cycle, T0 and *k* issue in the same cycles the same words from the same addresses with the same operands, and the pins are the same. `LATE_RD`, which reads every thread's flag, is left out on purpose |
 
+| F17 | (v4, `ctrl` target) timed pins, for every program (isa.md 6.8): a pin write that the slot accepts as held is applied in the cycle `CNT` reaches its time and in no other, as the operation it was; a refused write (time passed, or the slot occupied) makes no write, sets Z = 1 and the thread's LATE flag, and a held or refused write makes none now. The ghost restates the rule with a down counter and its own copy of the `AT` operand, not with the design's compare |
+| F18 | (v4, `top` target) the pad registers (`uio_out`, `uio_oe`, `uo_out`) hold in every cycle what the old combinational expressions give (`(OUT & ~mask) \| (val & mask)`, `OE & ~guard`): registering the pads moved no edge |
+
+F5 was extended (a timed event writes the pins in any cycle: `exec` or a due event), F11 too
+(a LATE flag also rises at a refused timed write). **None of F1-F18 has been run on v4**: the
+YoWASP Yosys on the development PC aborts inside `sat` (on v3 too) and has no `yosys-abc`, so
+`formal/parse_check.py` (new) only shows that all four targets elaborate; the `formal` workflow
+runs the proofs. See `v4-open-problems.md`.
+
 Every `cover()` point (WAIT edge/CMP/timeout release, LD release in T1, dual
 issue, TSTOP, all four threads running and issuing, a push to a full FIFO,
 a pop of an empty one) is shown
@@ -110,6 +119,10 @@ and each must make the proof fail:
 | a stalled thread holds on to the next slot | F13 (`run_formal.py`'s mutant list) |
 | no forwarding into E (v3) | F14 |
 | the guard ignores which threads it names (v3) | F15 |
+| a held timed event is applied one cycle late (v4) | F17. **Not shown**: the proof has not run (`v4-open-problems.md` A1); the mutant's text anchor resolves |
+| a refused timed write still goes out (v4) | F17. Not shown, as above |
+| a held timed write forgets its operation (v4) | F17. Not shown, as above |
+| the pad registers load the old values instead of the next ones (v4; `--top top`) | F18. Not shown, as above |
 | `STAT` shows any thread's LATE flag, not the reader's (v3; `--top ni`) | F16 is meant to: no single-copy property sees it. **Not shown yet**: at depth 5 F16 passes with this mutant in (9 Nov). Reaching it takes about 15 cycles from reset: two `TSTART`s, a third thread late, then *k*'s `STAT` and an instruction that reads its result |
 
 A mutant stops at its first counterexample, so the cheap targets go first
@@ -142,8 +155,12 @@ finish; `--top top` runs it alone.
 
 | Module | Scope |
 |---|---|
-| `test_core`, `test_isa_v2` | every instruction, hand-derived expected values, exact cycle costs, input-sync latency; FIFO costs, full / empty / drops / status; both SRAM banks (data, calls, code and branches across 511/512, the MEM_W pointer wrapping at 1023) |
+| `test_core`, `test_isa_v2` | every instruction, hand-derived expected values, exact cycle costs, input-sync latency; FIFO costs, full / empty / drops / status; all four SRAM banks (v4: data in banks 2 and 3, calls, `JR` and code across 511/512, 1023/1024 and 1535/1536, a thread started above 1024, the MEM_W pointer wrapping at 2047, a FIFO and the capture buffer above 1023) |
 | `test_regressions` | one test per review bug B1-B5 (each failed on v1) |
+| `test_v4_fixes` (v4) | the RTL review's fixes: the store-ahead rule on the model (`StoreAheadError` at W+1 and W+2) and on the RTL (the detector in `tb.v` sees the old word run at W+2; W+3 and, with two threads, W+2 run the new word, RTL == model), the reset at any phase of its release and asserted with no clock edge, the debug strap loaded by a two-edge reset, the pads equal the old combinational expressions in every cycle through three engine modes, OE writes and the late guard, the assembler's refusal of `TSTART #4`-`#7` |
+| `test_timed_pins` (v4) | `AT`/`TS`/`ESEL`: the pad changes in cycle T+1 with one to four threads running (one stalled, one loading, one counting); the reply idiom `WAIT_EDGE; TS; ADDS; AT; write` answers exactly delta cycles after the edge for four edge phases against the thread slots and one to four threads (TS = E+2, reply in E+delta+3); a passed time is refused (Z = 1, LATE, no pin change) and a time that is exactly now is applied at once; four events in one cycle, T3 first and T0 last (RTL == model); a second timed write finds the slot occupied; `TSTOP` cancels a held event and `TSTART` puts a thread back on page 0; a held `PIN_W` lands as a write, not a set; the deadline checker certifies a reply with room and refuses one without |
+| `test_engine_sets` (v4) | two CRC units at once (CRC-32 and CRC-16, each against a bit-serial reference, neither disturbed by the other); two UARTs at once from two threads, one TX engine each, decoded from the pins; TX on `uo[3]` received on `ui[5]` by the other set's RX engine; set 1 wins a shared pin, `STAT` and `TX_WAIT` follow the thread's own set |
+| `test_engine_options` (v4) | page 2: TX stuffing for HDLC / CAN kinds against a reference, RX de-stuffing and E_STUFF, E_FRAME with the stop-bit check and `ERR_CLR`, E_UNDER with `stream`, STAT bit 15; the external clock: RX in all four SPI modes at 8 and 4 cycles a bit with a partial word dropped when CS rises, TX as an SPI slave (modes 0 and 1, two words, pin released while CS is high), and the measured speed limits (RX 2 cycles a bit, TX 6) |
 | `test_peripherals` | CRC check values (CRC-8/16/32/5), TX in every mode decoded from the pins, RX with +-2 % baud and +-1.5 % + jitter, RX at every divisor 4-40, TX->RX loopback; Manchester RX: two frames at +-2 % with +-1 cycle of jitter (re-locking between them) and a TX->RX loopback at 1 Mbit/s; the glitch filter: which pulses pass, its exact delay, and UART bytes with spikes at every bit centre decoded wrongly without it and rightly with it |
 | `test_threads` | isolation, start/stop/restart, zero-cost branches, determinism of T0 vs any T1 load, events in the other thread's slot, a TMO per thread, the FIFO between threads, a wait on every pin of both banks in both threads with the other pins high; four threads: one issue in four cycles each, TID and STAT, the cost of changing the running set (derived from the rule), and T0's pin timing unchanged whatever T1-T3 do |
 | `test_capture` | the capture engine: every recorded word against a model of the spec's rules (both modes, several sample periods, level and edge triggers, the ring with pre-trigger history, `ui` as source), the core's timing identical with and without recording, the overflow flag, and `logic_analyzer.s`'s UART dump decoded back into the driven samples |
@@ -162,6 +179,11 @@ The instruments these test are described, with their figures, in
 [`instruments.md`](instruments.md). Firmware tests run against models
 stepped one clock at a time beside the RTL (`test/fw_tb.py`), the same
 lock-step idea as the FPGA harness below.
+
+The random differential tests (v4) also put in "patch" stores into code at exactly the
+allowed distance, timed-pin windows (`ESEL #2`, `AT` with times that are ahead, now and behind,
+the reply idiom, two windows sharing a slot), CRC bursts on engine set 1 in T1's code, and code
+and data in all four banks (threads at 1020 and 1530, across bank boundaries).
 
 `test_guard` (v3) checks the late guard: one thread guarding its own pins, a
 guard naming only another thread leaving them alone, and one thread guarding
@@ -244,6 +266,15 @@ that runs alone) and the tool also says whether each release is jitter-free.
 | `onewire.s` (8 deadlines) | 1 | 64..5756 | 63 cycles |
 | `can.s` (6 deadlines, BT = 480) | 2 | 28..444 | 27 cycles |
 | `eth_10baset_tx.s` (link-pulse gap) | 1 | 63988..63995 | 63987 cycles |
+
+v4: the checker follows `ESEL` (the port page decides what `PW`/`PR` mean and what they
+cost), keeps the `TS` of the last wait as a time relative to now (set the way the waited-on
+register of a `WAIT_CMP` is) and the time `AT` armed. A pin write issued with `AT` armed is a
+deadline: it needs its time 0 to 65,280 cycles ahead when it issues, or the hardware refuses
+it. The report gives the slack (d at issue) and "on its cycle whatever the other threads do";
+a time it cannot derive is refused with the reason. For a reply `WAIT_EDGE; TS; LDR; ADDS; AT;
+write` with four threads it certifies d = 17..20 at the write for delta 40, which is what the
+RTL test measures.
 
 Checks on the checker, in CI (`test` workflow): `--check-model` runs each
 program on the ISA model and every `WAIT_CMP` issue observed must lie inside
@@ -489,6 +520,11 @@ change behaviour.
 | The SPI monitor decodes SCK periods of 28 cycles in a byte, 36 between bytes, all modes | `test_mon_spi_limits` at those values |
 | The two threads cooperate without locks (UART in, SPI out) | `test_bridge`, all SPI modes |
 | Up to four threads run in a fixed rotation; a thread's slots depend only on which threads run, and a thread that uses no shared engine runs the same whatever the others do | `test_threads` four-thread tests and `test_t0_timing_independent_of_t1`; `test_random_four_threads` (RTL == model on every issue, the running set changing at random); formal F1-F6, F4 for four threads, and F13 (with its mutant). The limit, found 8 Nov: the TX, RX and CRC engines are shared, so waiting on one depends on the other threads (`test_shared_engine_wait_depends_on_other_thread`: 22 cycles, or 42 while another thread uses the CRC) |
+| An edge leaves the chip on its cycle or not at all, whatever the threads do (v4) | `test_timed_pins`: with one to four threads (one stalled, one loading) an `AT` write changes the pad in cycle T+1 exactly; the reply to an input edge is exactly `delta` cycles after it for every edge phase; a time that has passed is refused with Z = 1 and LATE and no pin changes. Formal F17 (not run: `v4-open-problems.md`); RTL == model on random programs with timed windows and on a four-events-in-one-cycle program; the deadline checker certifies a reply with room and refuses one without |
+| Two threads can use a TX, RX and CRC engine each, so one's timing does not depend on the other's (v4) | `test_engine_sets`: two UARTs from two threads decoded at the pins, two CRC units independent, `STAT` and `TX_WAIT` per set; `test_random_*` with T1 on CRC set 1, RTL == model. Plan 7.13's caveat on shared engines no longer applies to threads on different sets |
+| The chip can be an SPI slave on the master's clock, in every mode, at 6 cycles a bit transmit and 2 receive (v4) | `test_engine_options`: all four modes against a bus-master model, bytes through the RX engine and MISO sampled at the master's edge; limits measured (RX 2, TX 6 cycles a bit in zero-delay simulation, 8 with a cycle of margin) |
+| HDLC and CAN framing's bit stuffing, with errors, run on the engines (v4) | `test_engine_options` against a stuffing reference: TX for both kinds and several n, RX round trip, E_STUFF on a violation, E_FRAME on a bad stop bit, E_UNDER for a stream that runs dry |
+| The reset releases every flop on one clock edge; the pads never glitch when an engine takes a pin (v4) | `test_v4_fixes` (release at any phase, asserted with no clock edge, pads equal the old combinational expressions every cycle); formal F18 (not run); gate-level simulation with delays: not done (needs the hardened netlist) |
 | The hardware FIFO hands words between threads in order, one instruction each way, and never overfills | `test_threads.test_fifo_between_threads`, `test_isa_v2` FIFO tests, formal F8, the random differential test (§2) |
 | The RX engine receives Manchester, re-locking after each frame | `test_rx_manchester_frames_jitter` (+-2 % rate, +-1 cycle jitter), `test_rx_manchester_loopback` |
 | The glitch filter removes pulses shorter than its length, delays the rest by exactly that, and leaves unfiltered pins alone | `test_filter_removes_short_pulses`, `test_filter_delay`, `test_filter_uart_spikes` |
@@ -514,6 +550,10 @@ What is **not** validated yet:
   pull-ups, USB and 10BASE-T signal levels.
 * Timing is checked by static analysis only (§7): the gate-level
   simulations have no delays.
+* v4's formal properties, F17 and F18 and the edited F5 and F11, have not been run
+  by anything: Yosys parses all four targets (`formal/parse_check.py`) but this PC cannot run the
+  solvers, and CI has not run them yet. The same goes for the hardening of v4: four macros on the
+  8x4 die, hold margins of 0.3/0.25 ns and the debug-select false path are written, not run.
 * Some formal properties are bounded (depth 16 from reset): four of the
   controller's (§3) and those of the top level. The properties cover the
   control pipeline; the SERDES and CRC datapaths are checked in simulation
