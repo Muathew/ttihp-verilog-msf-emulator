@@ -34,6 +34,17 @@ architectural state at the *start* of the cycle (see snapshot()).
 M16 = 0xFFFF
 M10 = 0x3FF                     # 10-bit PC and addresses (1024 words)
 
+STORE_AHEAD = 3                 # isa.md section 1: a word written in cycle w may issue from w+3
+
+
+class StoreAheadError(AssertionError):
+    """A word was issued less than STORE_AHEAD cycles after a store wrote it.
+
+    isa.md section 1 (plan-v4 B1): the word that issues in cycle c is read at the
+    edge that ends c-2 and a store lands at the edge that ends its own cycle, so
+    the old word runs, or (a read in the cycle of the write) the result is undefined
+    on silicon. The model refuses the program instead of picking one outcome."""
+
 # opcodes
 LDR, ADDS, SUBS, AND, OR, XOR, SHL, SHR, MOV, JMP, JZ, JNZ, JP, JN, NOP, EXT = range(16)
 PIN_W, PIN_R, SETM, CLRM, CNT_R, INCR, DECR, IN_RD, CALL, RET, WAIT_EDGE, WAIT_CMP, \
@@ -72,6 +83,7 @@ class IsaModel:
             self.mem[a] = w & M16
         self.uio_pad = uio_pad or (lambda c: 0)
         self.ui_pad = ui_pad or (lambda c: 0)
+        self.wcycle = {}           # SRAM address -> the cycle a store last wrote it
         self.th = [Thread(i) for i in range(4)]
         self.th[0].ready_at = 1
         self.alive = 1             # running threads (bit mask; T0 always)
@@ -157,6 +169,11 @@ class IsaModel:
 
     def fetch(self, a):
         return self.rom[a] if a < 128 else self.mem[a]
+
+    def store(self, addr, value, c):
+        """An SRAM write by an instruction issued in cycle c (ST, MEM_W, FIFO_PUT)."""
+        self.mem[addr] = value
+        self.wcycle[addr] = c
 
     # ---------------------------------------------------------------- clock
     def step(self):
@@ -280,6 +297,10 @@ class IsaModel:
     def _issue(self, t, c):
         a = t.pc
         w = self.fetch(a)
+        if a >= 128 and c - self.wcycle.get(a, -STORE_AHEAD) < STORE_AHEAD:
+            raise StoreAheadError(
+                f"thread {t.tid} issues the word at {a} in cycle {c}, written in cycle "
+                f"{self.wcycle[a]}: a store must land {STORE_AHEAD} cycles before the word issues")
         self.trace.append(("I", c, t.tid, a, w, self.snapshot()))
         op = w >> 11
         fa, fb, fc = (w >> 8) & 7, (w >> 5) & 7, (w >> 2) & 7
@@ -362,7 +383,7 @@ class IsaModel:
         elif op == SHIFT_IN:
             self._sr_in(c)
         elif op == MEM_W:
-            self.mem[self.waddr] = R[fa]
+            self.store(self.waddr, R[fa], c)
             self.waddr = (self.waddr + 1) & M10
         elif op == LDH:
             R[fa] = (imm8 << 8) | (R[fa] & 0xFF)
@@ -406,7 +427,7 @@ class IsaModel:
         elif sub == X_LD:
             self._block(t, c, kind="ld", rd=ra, data=self.mem[R[rb] & M10])
         elif sub == X_ST:
-            self.mem[R[ra] & M10] = R[rb]
+            self.store(R[ra] & M10, R[rb], c)
         elif sub == X_SWAP:
             v = R[rb]
             R[ra] = ((v & 0xFF) << 8) | (v >> 8)
@@ -423,7 +444,7 @@ class IsaModel:
             port = ra                       # PW #port, rb
             if port == P_FIFO:
                 if self.fcount() < self.fsize():
-                    self.mem[self.faddr(self.fwp)] = R[rb]
+                    self.store(self.faddr(self.fwp), R[rb], c)
                     self.fwp += 1
                     t.z = 0
                 else:

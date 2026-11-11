@@ -25,8 +25,10 @@ module tt_um_msf_serdes (
     input  wire [7:0]  uio_in,      // synchronised pad inputs
     output wire        tx_full,
     output wire        tx_busy,
-    output wire [7:0]  tx_mask,
+    output wire [7:0]  tx_mask,     // the pins the engine drives, and their levels, now
     output wire [7:0]  tx_val,
+    output wire [7:0]  tx_mask_n,   // the same as they will be next cycle (the pad
+    output wire [7:0]  tx_val_n,    // registers load these: plan-v4 B4)
     output wire        rx_avail,
     output wire        rx_overrun,
     output wire [15:0] rx_word
@@ -72,16 +74,41 @@ module tt_um_msf_serdes (
     endcase
   end
 
+  // The line level and the symbol-on-the-line flag as they will be next cycle: the
+  // same priorities as the register updates below, which load them. With the next
+  // TX_CFG they give the pads' next values, so the pads can be registered without
+  // an extra cycle (plan-v4 B4).
+  wire        tx_cfg_wr = per_we && per_sub == X_TXCFG;
+  wire [15:0] tx_cfg_n  = tx_cfg_wr ? per_wd : tx_cfg;
+  reg         tx_line_n, tx_act_n;
+  always @(*) begin
+    tx_line_n = tx_line;
+    tx_act_n  = tx_act;
+    if (tx_cfg_wr) begin
+      tx_line_n = per_wd[12]; tx_act_n = 1'b0;
+    end else if (tx_en && tx_bound) begin
+      if (tx_mode == 2'd2 && tx_act && !tx_half) begin
+        tx_line_n = tx_bit;                 // Manchester second half
+      end else if (tx_stuff || tx_have || tx_full_r) begin
+        tx_line_n = tx_lvl; tx_act_n = 1'b1;
+      end else begin
+        tx_act_n = 1'b0;                    // out of data: the line holds
+      end
+    end
+  end
+
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
       tx_cfg <= 16'h0; tx_div <= 16'd1; tx_buf <= 16'h0; tx_sr <= 16'h0;
       tx_tmr <= 16'h0; tx_cnt <= 5'd0; tx_full_r <= 1'b0; tx_act <= 1'b0;
       tx_half <= 1'b1; tx_bit <= 1'b0; tx_line <= 1'b0; tx_ones <= 3'd0;
-    end else if (per_we && per_sub == X_TXCFG) begin
+    end else if (tx_cfg_wr) begin
       tx_cfg <= per_wd;
-      tx_cnt <= 5'd0; tx_full_r <= 1'b0; tx_act <= 1'b0; tx_half <= 1'b1;
-      tx_ones <= 3'd0; tx_tmr <= 16'h0; tx_line <= per_wd[12];
+      tx_cnt <= 5'd0; tx_full_r <= 1'b0; tx_act <= tx_act_n; tx_half <= 1'b1;
+      tx_ones <= 3'd0; tx_tmr <= 16'h0; tx_line <= tx_line_n;
     end else begin
+      tx_line <= tx_line_n;
+      tx_act  <= tx_act_n;
       if (per_we && per_sub == X_TXDIV) tx_div <= per_wd;
       if (per_we && per_sub == X_TXPUSH) begin
         tx_buf    <= per_wd;
@@ -91,14 +118,11 @@ module tt_um_msf_serdes (
         if (!tx_bound) begin
           tx_tmr <= tx_tmr - 16'd1;
         end else if (tx_mode == 2'd2 && tx_act && !tx_half) begin
-          tx_line <= tx_bit;                // Manchester second half
-          tx_half <= 1'b1;
+          tx_half <= 1'b1;                  // Manchester second half (the level: tx_line_n)
           tx_tmr  <= tx_dm1;
         end else if (tx_stuff || tx_have || tx_full_r) begin
-          tx_line <= tx_lvl;
           tx_bit  <= tx_emit_b;
           tx_half <= (tx_mode != 2'd2);
-          tx_act  <= 1'b1;
           tx_tmr  <= tx_dm1;
           if (tx_stuff) begin
             tx_ones <= 3'd0;
@@ -112,8 +136,6 @@ module tt_um_msf_serdes (
               tx_full_r <= 1'b0;
             end
           end
-        end else begin
-          tx_act <= 1'b0;                   // out of data: line holds
         end
       end
     end
@@ -132,6 +154,15 @@ module tt_um_msf_serdes (
   wire tx_own = tx_en && (!tx_cfg[14] || tx_act);
   assign tx_mask = tx_own ? (tx_b0 | tx_b1) : 8'd0;
   assign tx_val  = (tx_line ? tx_b0 : 8'd0) | (tx_line ? 8'd0 : tx_b1);
+
+  // the same, one cycle on, from the next TX_CFG, line level and symbol flag
+  wire [2:0] tx_p0n = tx_cfg_n[2:0];
+  wire [2:0] tx_p1n = tx_cfg_n[2:0] + 3'd1;
+  wire [7:0] tx_b0n = 8'd1 << tx_p0n;
+  wire [7:0] tx_b1n = tx_cfg_n[3] ? (8'd1 << tx_p1n) : 8'd0;
+  wire       tx_ownn = tx_cfg_n[13] && (!tx_cfg_n[14] || tx_act_n);
+  assign tx_mask_n = tx_ownn ? (tx_b0n | tx_b1n) : 8'd0;
+  assign tx_val_n  = (tx_line_n ? tx_b0n : 8'd0) | (tx_line_n ? 8'd0 : tx_b1n);
 
   // =====================================================================
   // RX engine

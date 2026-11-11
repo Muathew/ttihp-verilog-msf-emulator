@@ -125,6 +125,8 @@ async def test_debug_single_step(dut):
     for _ in range(5):
         await edge()
     dut.rst_n.value = 1
+    for _ in range(2):             # the reset synchroniser (isa.md section 1)
+        await edge()
     pcs = []
     for _ in range(60):
         await edge()

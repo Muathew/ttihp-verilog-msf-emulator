@@ -40,7 +40,10 @@ module tt_um_msf_sram (
   assign rd   = a_bank ? rd1 : rd0;
   assign b_rd = b_bank ? b_rd1 : b_rd0;
 
-  wire a_on0 = !raddr[9], a_on1 = raddr[9];
+  // Port A of bank 0 reads only for fetch addresses 128 and up (plan-v4 B5): below that
+  // the boot ROM supplies the word, so the read would be unused, and while the
+  // loader runs it could meet a port-B write of the same word at one edge.
+  wire a_on0 = !raddr[9] && (raddr[8:7] != 2'b00), a_on1 = raddr[9];
   wire b_on0 = b_en && !b_addr[9], b_on1 = b_en && b_addr[9];
 
   RM_IHPSG13_2P_512x16_c2_bm_bist sram0 (

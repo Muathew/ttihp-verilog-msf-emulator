@@ -38,6 +38,7 @@ async def test_gl_elaboration_smoke(dut):
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 10)
     dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 2)  # the reset synchroniser (isa.md section 1)
 
     # Run 100 cycles -- the CPU will fetch from SRAM (all zeros after reset)
     # and execute NOPs, but the key check is that the sim doesn't hang
@@ -73,6 +74,7 @@ async def test_gl_reset_recover(dut):
         dut.rst_n.value = 0
         await ClockCycles(dut.clk, 10)
         dut.rst_n.value = 1
+        await ClockCycles(dut.clk, 2)  # the reset synchroniser (isa.md section 1)
 
         for _ in range(50):
             await RisingEdge(dut.clk)

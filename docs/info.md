@@ -69,6 +69,12 @@ Each frame is answered with ACK `0x06` / NAK `0x15` on `uio[0]` (UART) and on
 `uo_out[3:0]` (bit0 waiting, bit1 OK, bit2 CRC error, bit3 starting firmware).
 `tools/msf_boot.py firmware.s --port COMx` assembles and loads a program.
 
+**Reset (v4).** Hold `rst_n` low for at least three clock cycles. It resets every
+flip-flop at once but is released through a two-flop synchroniser, so the core
+starts on the third clock edge after `rst_n` rises, the same edge for every flop.
+`ui_in[2]` and the boot-mode pins are read while the reset is low and on the two
+edges after it rises.
+
 Keep `ui_in[2]` low during reset: high selects the debug view (below), which
 takes over `uo_out`, so the loader's status bits and the parallel loader's
 acknowledge would not be seen. In parallel mode that means the data bus

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// msfcore control unit (ISA v2.1, docs/isa.md): fetch / decode / execute
+// msfcore control unit (ISA v4, docs/isa.md): fetch / decode / execute
 // for four hardware threads, blocking-op (stall) engine, shift register,
 // data-RAM port, pin writes and the peripheral bus.
 //
@@ -73,8 +73,10 @@ module tt_um_msf_ctrl (
     output wire        pw_we,
     output wire [2:0]  pw_port,
     output wire [15:0] pw_data,
-    // the late guard: pins whose output enables are forced off (tt_um_msf_pio)
+    // the late guard: pins whose output enables are forced off (tt_um_msf_pio),
+    // now and as they will be next cycle (the pad registers load the latter)
     output wire [7:0]  oe_off,
+    output wire [7:0]  oe_off_n,
     input  wire [15:0] cap_stat,
     input  wire [9:0]  cap_tpos,
     // debug view (project.v shows dbg_q on uo_out in debug mode)
@@ -571,22 +573,32 @@ module tt_um_msf_ctrl (
         end
       end
 
-      // LATE: set by a late WAIT_CMP's release, cleared by PW #7 (one bit per thread);
-      // PW #7 with bit 15 set loads the late guard instead: rb[11:8] the threads,
-      // rb[7:0] the pins
-      if (exec && x_pw && f_a == P_LATE && !qb[15]) late <= late & ~qb[3:0];
-      if (exec && x_pw && f_a == P_LATE &&  qb[15]) begin
-        lguard <= qb[11:8];
-        gpins  <= qb[7:0];
-      end
-      if (rel && wlate_c) late[cur] <= 1'b1;
+      // LATE, and the late guard: the next values are computed above (late_n ...)
+      late <= late_n; lguard <= lguard_n; gpins <= gpins_n;
 
       if (do_tstart) begin               // a fresh thread (wins over the above)
         zf[tt] <= 1'b0; nf[tt] <= 1'b0; st[tt] <= 1'b0; whit[tt] <= 1'b0; ldq[tt] <= 1'b0;
-        late[tt] <= 1'b0;
       end
     end
   end
+
+  // LATE: set by a late WAIT_CMP's release, cleared by PW #7 (one bit per thread) and by
+  // TSTART of the thread; PW #7 with bit 15 set loads the late guard instead: rb[11:8] the
+  // threads, rb[7:0] the pins. Written as next values so the pad registers can load the
+  // guard's effect a cycle ahead (plan-v4 B4).
+  reg [3:0] late_n, lguard_n;
+  reg [7:0] gpins_n;
+  always @(*) begin
+    late_n = late; lguard_n = lguard; gpins_n = gpins;
+    if (exec && x_pw && f_a == P_LATE && !qb[15]) late_n = late & ~qb[3:0];
+    if (exec && x_pw && f_a == P_LATE &&  qb[15]) begin
+      lguard_n = qb[11:8];
+      gpins_n  = qb[7:0];
+    end
+    if (rel && wlate_c) late_n[cur] = 1'b1;
+    if (do_tstart) late_n[tt] = 1'b0;      // a fresh thread (wins over the above)
+  end
+  assign oe_off_n = (|(late_n & lguard_n)) ? gpins_n : 8'h00;
 
   // ------------------------------------------------------------------
   // Shared datapath state: CNT, SR, MEM_W pointer; per-thread TMO

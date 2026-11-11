@@ -65,7 +65,9 @@ async def run_and_compare(dut, src, cycles, uio=None, ui=None, data=None, probe=
     dut.ui_in.value = 1
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 4)
-    dut.rst_n.value = 1                       # cycle 0 starts now
+    dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 2)             # the reset synchroniser (isa.md section 1)
+    # cycle 0 starts now: the core's first active edge is the next one
     rtl = []
     for c in range(cycles):
         dut.uio_in.value = uio[c]

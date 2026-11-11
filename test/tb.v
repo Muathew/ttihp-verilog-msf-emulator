@@ -44,6 +44,25 @@ module tb ();
   always @(negedge clk)
     if (user_project.u_ctrl.exec && user_project.u_ctrl.op == 5'h1B)
       wcmp_evt <= !wcmp_evt;
+
+  // Store-ahead detector (docs/isa.md section 1, plan-v4 B1): toggles when a word
+  // issues one or two cycles after a store (ST, MEM_W, FIFO_PUT) wrote it, the rule the
+  // ISA model refuses (StoreAheadError). The word then runs its old content on this
+  // RTL, and silicon does not define a fetch in the cycle of the write. Words below 128
+  // come from the boot ROM. msf_tb.start_clock starts the watcher that fails the test.
+  reg        sa_evt = 1'b0;
+  reg        sa_v1 = 1'b0, sa_v2 = 1'b0;
+  reg [10:0] sa_a1 = 11'd0, sa_a2 = 11'd0;
+  wire [10:0] sa_pc = {1'b0, user_project.u_ctrl.dbg_pc};
+  always @(negedge clk) begin
+    if (user_project.u_ctrl.exec && sa_pc >= 11'd128 &&
+        ((sa_v1 && sa_a1 == sa_pc) || (sa_v2 && sa_a2 == sa_pc)))
+      sa_evt <= !sa_evt;
+    sa_v2 <= sa_v1;
+    sa_a2 <= sa_a1;
+    sa_v1 <= user_project.u_ctrl.b_en && user_project.u_ctrl.b_we;
+    sa_a1 <= {1'b0, user_project.u_ctrl.b_addr};
+  end
 `endif
 
 endmodule

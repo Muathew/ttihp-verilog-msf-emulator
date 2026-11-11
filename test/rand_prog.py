@@ -4,7 +4,9 @@
 Programs are structured so they keep making progress: bounded DECR/JNZ loops,
 forward conditional skips, CALL/RET to leaf subroutines (R7 is reserved for
 CALL), JR through a computed address, WAITs bounded by a small TMO, data-RAM
-traffic confined to SRAM 0..127 and 960..1023 (never code), FIFO pushes /
+traffic confined to SRAM 0..127 and 960..1023 (never code, except the "patch":
+a store of a fresh instruction into the word exactly three or more instructions
+ahead, isa.md section 1), FIFO pushes /
 pops / status reads and re-configurations (block kept inside those regions),
 code in both SRAM banks (T1 at 500, across the 511/512 boundary; T0's
 subroutines at 505 or 700, so CALL / RET / JR cross banks), CRC bursts bracketed
@@ -13,6 +15,8 @@ dual mode T0 starts/stops/restarts T1, both threads hammer shared pins/SR/
 data RAM/FIFO, and each thread may set its own TMO.
 """
 import random
+
+from assembler import assemble
 
 ALU3 = ["ADDS", "SUBS", "AND", "OR", "XOR"]
 MASKS = ["OE_SET", "PIN_SET", "PIN_TGL", "UO_SET", "UO_TGL", "OE_TGL",
@@ -29,6 +33,7 @@ class Gen:
         self.lines = []
         self.subs = []          # leaf subroutine bodies
         self.no_crc = False     # T1 code never touches the (shared) CRC unit
+        self.in_patch = False
 
     def L(self, s):
         self.lines.append(s)
@@ -45,11 +50,38 @@ class Gen:
         return f"R{self.r.randrange(7 if avoid7 else 8)}"
 
     # ------------------------------------------------------------------ pieces
+    def patch(self):
+        """Self-modifying code at the edge of what isa.md section 1 allows: store a
+        fresh instruction into a word that is the third instruction after the store (or
+        later), then run it. The word is one of the thread's own registers' simple
+        ops, so it changes state visibly but not the control flow."""
+        r = self.r
+        a, b = self.reg(), self.reg()
+        while b == a:
+            b = self.reg()
+        x, y, z = self.reg(), self.reg(), self.reg()
+        word = assemble(r.choice([
+            f"LDR {x}, #{r.randrange(256)}", f"INCR {x}", f"DECR {x}", f"ADDS {x}, {y}, {z}",
+            f"XOR {x}, {y}, {z}", f"MOV {x}, {y}", f"SHL {x}, {y}, #{r.randrange(8)}",
+            f"PIN_W {x}", f"{r.choice(MASKS)} {r.randrange(256)}", f"CNT_R {x}", "NOP"]))[0]
+        lab = self.label("p")
+        self.L(f"LDI {a}, {lab}")
+        self.L(f"LDI {b}, {word}")
+        self.L(f"ST {a}, {b}")
+        self.in_patch = True
+        for _ in range(r.randrange(2, 4)):      # two or more instructions in between
+            self.simple(crc_ok=False)
+        self.in_patch = False
+        self.L(f"{lab}:")
+        self.L("NOP")                           # the word that is replaced
+
     def simple(self, crc_ok=True):
         r = self.r
         k = r.randrange(30)
         a, b, c = self.reg(), self.reg(), self.reg()
-        if k < 4:
+        if k == 25 and not self.in_patch:
+            self.patch()
+        elif k < 4:
             self.L(f"LDR {a}, #{r.randrange(256)}")
         elif k < 6:
             self.L(f"LDH {a}, #{r.randrange(256)}")

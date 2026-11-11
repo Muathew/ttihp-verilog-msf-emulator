@@ -2,14 +2,28 @@
 """Shared cocotb helpers for the msfcore test modules."""
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles, RisingEdge, ReadOnly, Timer
+from cocotb.triggers import ClockCycles, Edge, RisingEdge, ReadOnly, Timer
 
 from assembler import assemble
 
 CLK_NS = 80  # 12.5 MHz sim clock; the design is cycle-based, period is arbitrary
+RESET_SYNC = 2  # clock edges between rst_n rising and the core's cycle 0 (isa.md section 1)
 
 
 _clock_task = None
+
+
+async def _store_ahead_watch(dut):
+    """Fail the test the moment a word issues within two cycles of a store writing
+    it (tb.v's detector; isa.md section 1: the old word would run). A test that
+    does it on purpose does not call start_clock."""
+    try:
+        evt = dut.sa_evt
+    except AttributeError:
+        return                                  # a gate-level run has no such signal
+    await Edge(evt)
+    raise AssertionError("store-ahead: a word issued within two cycles of a store "
+                         "writing it (docs/isa.md section 1)")
 
 
 def start_clock(dut, period_ns=CLK_NS):
@@ -18,6 +32,7 @@ def start_clock(dut, period_ns=CLK_NS):
     global _clock_task
     if _clock_task is None or _clock_task.done():
         _clock_task = cocotb.start_soon(Clock(dut.clk, period_ns, unit="ns").start())
+        cocotb.start_soon(_store_ahead_watch(dut))
 
 
 def load_words(dut, words, start=128):
@@ -45,6 +60,11 @@ async def reset(dut, ui_in=1, uio_in=0, cycles=5):
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, cycles)
     dut.rst_n.value = 1
+    # v4 (plan-v4 B2): the reset is released through two flops, so the core's cycle 0
+    # is the third edge after rst_n rises. Wait for the second, so that what the caller
+    # does next happens in the core's cycle 0, as it did before the synchroniser
+    # (the pads stay as they were: no test drives them in these two cycles).
+    await ClockCycles(dut.clk, RESET_SYNC)
 
 
 async def boot_asm(dut, asm, ui_in=1, uio_in=0, extra=None):

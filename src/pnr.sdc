@@ -84,3 +84,11 @@ if { [info exists ::env(OPENLANE_SDC_IDEAL_CLOCKS)] && $::env(OPENLANE_SDC_IDEAL
     set_propagated_clock [all_clocks]
 }
 
+# The debug view (docs/isa.md section 8): ui_in[7:1] steer a multiplexer onto uo_out
+# and no flop samples them. By its specification the select is static between clock
+# steps, and the host reads the view after it has settled, so it is not a clocked
+# path. It is the only pad-to-pad path in the design (the pads uio_out, uio_oe and
+# uo_out's firmware side come from flops), so this removes exactly that one from
+# the setup and hold checks (plan-v4 B7: declared from the RTL, not from a report).
+set_false_path -from [get_ports ui_in*] -to [get_ports uo_out*]
+

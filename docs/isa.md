@@ -1,5 +1,16 @@
-# ISA Spec — `msfcore` (Protocol Emulator Core) v3
+# ISA Spec — `msfcore` (Protocol Emulator Core) v4
 
+> v4 (branch `v4`, from 2026-11-11; `docs/plan-v4.md`), built in steps, each of which
+> is listed here when it lands. **Step 1** (the review's fixes): a store into code
+> must be **three** instructions ahead (§1: v3 fetches a cycle earlier than v2.2, and
+> v3's text still said two; the ISA model now raises an error on a violation); the
+> reset is released through a two-flop synchroniser, so every flop leaves reset on
+> one clock edge and the core's cycle 0 is two cycles later than in v3 (§1); the
+> pads are driven straight from flops, with no change of timing; the limit of RX mode
+> 3 is stated (§6.2). Every v3 program that stores into code at least three
+> instructions ahead, and every program that does not store into code, runs unchanged
+> and takes the same cycles from the core's cycle 0.
+>
 > v3 (2026-11-08, branch `v3`): a decode stage, for a 20 ns clock, with every cost
 > in §5 and §7 unchanged; the **late guard** (`LATE_CLR` with bit 15, §5 and §6.5):
 > a thread that misses a deadline lets go of the pins it names; and the RX
@@ -38,8 +49,20 @@
   * Fetch: words 0–127 come from the **boot ROM**, 128–1023 from the SRAM.
   * Data (`LD`/`ST`/`MEM_W`/FIFO): always the SRAM, all 1024 words. SRAM 0–127 is
     therefore 128 words of data RAM that never collide with code; 128–1023 is
-    code (self-modifying writes are allowed but must be ≥ 2 instructions ahead
-    of the write in single-thread mode, ≥ 1 slot in multi-thread mode).
+    code. **Stores into code** (a store, `MEM_W` or `FIFO_PUT` into a word that is
+    later issued): the word that issues in cycle *c* was read from the SRAM at the
+    clock edge that ends cycle *c*−2, and a store issued in cycle *w* lands at the
+    edge that ends cycle *w*, so a word is safe to issue from cycle *w*+3. Issued in
+    *w*+1 or *w*+2 it runs its **old** content, and a fetch in the very cycle of the
+    write reads and writes one address on the macro's two ports at one edge, which
+    silicon does not define. In single-thread mode that is a target three or more
+    instructions after the store (`W+3`); with *n* threads a thread owns every *n*-th
+    cycle, so a thread can change its own instruction *k* ahead only if *k*·*n* ≥ 3
+    (two threads: `W+2`; three or four: `W+1`), and another thread's instruction
+    only if it does not issue within two cycles. There is no bypass in the hardware (it
+    would sit on the fetch address, the latest signal in the core), and the ISA model
+    raises an error on a violation. v2.2 fetched a cycle later and allowed one
+    instruction less; v3's text kept v2.2's rule by mistake (plan-v4 B1).
 * **Shift register `SR`** (16-bit) with configurable output/input pins (§4).
 * **Pins:** `uio` (8 bidirectional: `OUT`, `OE`, input), `uo_out` (8 outputs:
   `UO`), `ui_in` (8 inputs).
@@ -47,11 +70,21 @@
   visible to instructions executing at cycle *t+2* (*t+2+len* on a `uio` pin
   the glitch filter is turned on for, §6.7).
 * **Outputs are registered:** a pin write executed in cycle *t* appears on the
-  pad from cycle *t+1*.
-* **Reset:** PC(T0)=0 (boot ROM), T1 stopped, all registers 0, flags 0, `OUT`=
-  `OE`=`UO`=0, `SR`=0, `SER_CFG`=out 7/in 7/MSB-first, `TMO`=0xFFFF (both
-  threads), `MEM_W` pointer = 128, FIFO empty at SRAM 64–127, peripherals
-  disabled.
+  pad from cycle *t+1*. Since v4 `uio_out` and `uio_oe` come straight from flops
+  that hold the final value (the register, the TX engine's override and the late
+  guard already applied), so a pad never glitches when an engine takes or releases a
+  pin; the timing is unchanged. (`uo_out` is the `UO` register, or the debug view while
+  it is selected, §8.)
+* **Reset:** PC(T0)=0 (boot ROM), T1–T3 stopped, all registers 0, flags 0, `OUT`=
+  `OE`=`UO`=0, `SR`=0, `SER_CFG`=out 7/in 7/MSB-first, `TMO`=0xFFFF (every
+  thread), `MEM_W` pointer = 128, FIFO empty at SRAM 64–127, peripherals
+  disabled. **`rst_n` is asserted on every flop at once and released through a
+  two-flop synchroniser (v4, plan-v4 B2): every flop leaves reset on the same clock
+  edge, whatever the phase of the release.** The core's cycle 0 (the cycle the boot
+  ROM's word 0 issues in) is the third clock edge after `rst_n` rises, two cycles later
+  than in v3; every cycle count in this document is from cycle 0. Hold `rst_n` low for
+  at least three clocks: the debug-view select `ui_in[2]` (§8) is sampled on the
+  clock edges while the synchronised reset is low.
 
 ## 2. Encoding
 
@@ -135,8 +168,8 @@ Reserved bits must be 0 (the assembler enforces this).
 | 24 | `CRC_SETH rb` | CRC[31:16] ← rb |
 | 25 | `CRC_POLL rb` | POLY[15:0] ← rb |
 | 26 | `CRC_POLH rb` | POLY[31:16] ← rb |
-| 27 | `TSTART #t,rb` | (re)start thread *t* at rb[9:0] with cleared state (§7); *t* in the ra field, 1–3, 0 = T1 (`TSTART rb`) |
-| 28 | `TSTOP #t` | stop thread *t* (§7); *t* as for `TSTART` (`TSTOP` = T1) |
+| 27 | `TSTART #t,rb` | (re)start thread *t* at rb[9:0] with cleared state (§7); *t* in the ra field, 1–3, 0 = T1 (`TSTART rb`). The hardware reads only ra[1:0], so ra = 4–7 would alias 0–3: the assembler refuses `#4`–`#7` |
+| 28 | `TSTOP #t` | stop thread *t* (§7); *t* as for `TSTART` (`TSTOP` = T1), the same two bits |
 | 29 | `TID ra` | ra ← executing thread id (0–3) |
 | 30 | `PW #p,rb` | peripheral port *p* (0–7, in the ra field) ← rb (§6.5) |
 | 31 | `PR ra,#p` | ra ← peripheral port *p* (0–7, in the rb field) (§6.5) |
@@ -266,6 +299,12 @@ apply. At 50 MHz it takes 10BASE-T with up to 10 ns of edge jitter at random and
 ±100 ppm (`test_eth10_rx`); 802.3 allows 13.5 ns, but sampling at 20 ns adds 20 ns
 of spread, which leaves the centres and the boundaries 1.5 ns apart even with a
 perfect clock: more needs sampling on both clock edges or a faster clock.
+**Limit (plan-v4 B10):** the phase is a 16-bit number and a centre moves it to within
+a sixteenth of the bit's middle (the first centre of a frame to 0.5, the lock's to
+between 0.25 and 0.75) before `RX_DIV` is added. The sum must not wrap, or a bit
+boundary is missed, so `RX_DIV` must stay below about 0.25 of a bit a cycle (16,384):
+a bit period of **four cycles is the least, five (13,107) is what the tests cover**.
+Below four cycles a bit the mode is not defined.
 
 ### 6.3 CRC unit
 32-bit `CRC` and `POLY`. `CRC_W` processes `len` (=`CRC_CFG[3:0]`+1) bits of rb,

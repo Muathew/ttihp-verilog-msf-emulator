@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // msfcore register file: 8 x 16-bit, 2 combinational read ports (+ a third
 // for the debug view), 1 write port, async reset. `clr` synchronously zeroes
-// every register (used to give hardware thread T1 a clean register set on
+// every register (used to give a hardware thread a clean register set on
 // TSTART); clr wins over we.
-// One instance per hardware thread (u_rf = T0, u_rf1 = T1) in tt_um_msf_ctrl.
+// One instance per hardware thread (u_rf = T0, u_rf1 = T1, u_rf2 = T2,
+// u_rf3 = T3) in tt_um_msf_ctrl.
 `default_nettype none
 
 module tt_um_msf_regfile (

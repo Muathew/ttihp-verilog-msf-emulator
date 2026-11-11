@@ -5,10 +5,10 @@ project:
   discord:      ""      # Your discord username, for communication and automatically assigning you a Tapeout role (optional)
   description:  "Reprogrammable protocol-emulator CPU: 4 deterministic hardware threads, line-code SERDES, CRC unit, logic-analyser capture; UART/SPI/I2C/USB-LS/10BASE-T, device emulation and bus monitors in firmware"      # One line description of what your project does
   language:     "Verilog" # other examples include SystemVerilog, Amaranth, VHDL, etc
-  clock_hz:     12000000  # 12 MHz (USB low speed = 8 cycles/bit); run at 20 MHz for 10BASE-T
+  clock_hz:     48000000  # 48 MHz: USB full speed = 4 cycles/bit (low speed 32). Design target, signed off at 20 ns (docs/plan-v4.md item 7); every board run so far is at 12 MHz
 
-  # How many tiles your design occupies? (IHP tile ~202 x 155 um)
-  tiles: "6x4"          # competition allocation: 24 tiles
+  # How many tiles your design occupies? A single tile is about 202 x 155 um.
+  tiles: "8x4"          # 8x4 is the shuttle's final size (Jane Street, 11 Nov 2026); 6x4 until then
 
   # Your top module name must start with "tt_um_". Make it unique by including your github username:
   top_module:  "tt_um_msf"

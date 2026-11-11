@@ -43,6 +43,7 @@ async def test_blink_smoke(dut):
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 5)
     dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 2)  # the reset synchroniser (isa.md section 1)
 
     # Wait for the program to execute and observe uio_out[0]
     # In msfcore, jump to 128 takes 3 cycles, then OE_SET, LDR, PIN_W
@@ -107,6 +108,7 @@ async def test_alu_and_regfile(dut):
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 5)
     dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 2)  # the reset synchroniser (isa.md section 1)
 
     # Run for 25 cycles with trace
     for cyc in range(25):
@@ -152,6 +154,7 @@ async def test_backward_branch_loop(dut):
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 5)
     dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 2)  # the reset synchroniser (isa.md section 1)
 
     # Track values seen on uio_out
     seen_values = []
@@ -195,6 +198,7 @@ async def test_call_and_ret(dut):
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 5)
     dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 2)  # the reset synchroniser (isa.md section 1)
 
     await ClockCycles(dut.clk, 35)
 
@@ -228,6 +232,7 @@ async def test_cycle_counter(dut):
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 5)
     dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 2)  # the reset synchroniser (isa.md section 1)
 
     await ClockCycles(dut.clk, 30)
 
@@ -269,6 +274,7 @@ async def test_shift_datapath(dut):
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 5)
     dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 2)  # the reset synchroniser (isa.md section 1)
 
     await ClockCycles(dut.clk, 30)
     dut._log.info("Shift datapath executed successfully!")
@@ -299,6 +305,7 @@ async def test_pin_io_and_oe(dut):
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 5)
     dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 2)  # the reset synchroniser (isa.md section 1)
 
     await ClockCycles(dut.clk, 25)
 
@@ -334,6 +341,7 @@ async def test_wait_edge(dut):
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 5)
     dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 2)  # the reset synchroniser (isa.md section 1)
 
     # Wait 15 cycles for CPU to boot from ROM and enter WAIT_EDGE
     await ClockCycles(dut.clk, 15)
@@ -379,6 +387,7 @@ async def test_wait_cmp(dut):
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 5)
     dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 2)  # the reset synchroniser (isa.md section 1)
 
     # Wait 15 cycles to reach WAIT_CMP
     await ClockCycles(dut.clk, 15)

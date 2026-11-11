@@ -35,6 +35,7 @@ ALL_MODULES = [
     "test_isa_v2",
     "test_peripherals",
     "test_threads",
+    "test_v4_fixes",
     "test_boot",
     "test_random_diff",
     "test_protocols",

@@ -43,6 +43,7 @@ async def reset_core(dut, direct_boot=True, uio_in=0):
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 5)
     dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 2)  # the reset synchroniser (isa.md section 1)
     await ClockCycles(dut.clk, 2)
 
 
@@ -294,6 +295,7 @@ async def test_uart_bootloader_over_the_wire(dut):
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 5)
     dut.rst_n.value = 1
+    await ClockCycles(dut.clk, 2)  # the reset synchroniser (isa.md section 1)
     await ClockCycles(dut.clk, 2)
 
     # Wait for the bootloader to finish boot-select and arm its idle-poll at the
