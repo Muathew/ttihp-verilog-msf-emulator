@@ -36,8 +36,8 @@ class TxMonitor:
                 return
             self.samples.append(int(self.dut.uio_out.value))
 
-    def bytes(self):
-        return uart_decode(self.samples, 104, pin=0)
+    def bytes(self, bit=104):
+        return uart_decode(self.samples, bit, pin=0)
 
 
 async def uart_boot(dut, stream, pre_idle=300, gap=0, after=4000):
@@ -142,3 +142,23 @@ async def test_direct_boot_timing_unchanged(dut):
     await reset(dut, ui_in=1)
     await ClockCycles(dut.clk, 30)
     assert int(dut.user_project.u_ctrl.u_rf.rf[1].value) == 8
+
+
+@cocotb.test()
+async def test_autobaud_loads_at_any_clock(dut):
+    """v4 (plan-v4 B6): with ui_in[3] high in UART mode the host sends 0xFF first; the ROM times
+    its start bit and sets both dividers, so the loader works at 33, 61 and 160 cycles a bit, and
+    its ACKs come back at that rate. Without the strap the old 104 is kept (every test above)."""
+    words = assemble(FW, base_addr=128)
+    for bit in (61, 160, 33):
+        start_clock(dut)
+        await reset(dut, ui_in=0b1000, uio_in=2)       # loader, UART, autobaud strap
+        mon = TxMonitor(dut)
+        await ClockCycles(dut.clk, 300)
+        await uart_send(dut, 0xFF, bit_cycles=bit)      # the calibration byte
+        for b in boot_frame(words):
+            await uart_send(dut, b, bit_cycles=bit)
+        await ClockCycles(dut.clk, 60 * bit)
+        assert [sram(dut, 128 + i) for i in range(len(words))] == words, f"{bit} cycles a bit"
+        assert int(dut.uio_out.value) & 0xFE == 0x42
+        assert mon.bytes(bit) == [ACK, ACK], f"{bit} cycles a bit: {mon.bytes(bit)}"

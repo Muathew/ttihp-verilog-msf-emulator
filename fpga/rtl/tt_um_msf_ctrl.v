@@ -38,12 +38,12 @@ module tt_um_msf_ctrl (
     input  wire [7:0]  uio_in,      // synchronised
     input  wire [7:0]  ui_in,       // synchronised
     // instruction fetch (registered memory)
-    output wire [9:0]  imem_raddr,
+    output wire [10:0] imem_raddr,
     input  wire [15:0] imem_rd,
     // SRAM port B (data)
     output wire        b_en,
     output wire        b_we,
-    output wire [9:0]  b_addr,
+    output wire [10:0] b_addr,
     output wire [15:0] b_wd,
     input  wire [15:0] b_rd,
     // pin registers (tt_um_msf_pio)
@@ -60,7 +60,19 @@ module tt_um_msf_ctrl (
     output wire        per_we,
     output wire [4:0]  per_sub,
     output wire [15:0] per_wd,
+    output wire        per_set,     // v4: the engine set (ESEL bit 0) the write / pop is for
+    // engine options, port page 2 (isa.md 6.9): a write goes to the set per_set names; a read
+    // asks each set for the port opt_rport and the thread takes its own set's answer
+    output wire        opt_we,
+    output wire [2:0]  opt_port,
+    output wire [15:0] opt_wd,
+    output wire [2:0]  opt_rport,
+    input  wire [15:0] opt_rd,
+    input  wire [15:0] opt_rd1,
+    input  wire        err_any,     // an error flag of set 0 / set 1 is set (STAT bit 15)
+    input  wire        err_any1,
     output wire        rx_pop,
+    // engine set 0 ...
     input  wire        tx_full,
     input  wire        tx_busy,
     input  wire        rx_avail,
@@ -69,6 +81,16 @@ module tt_um_msf_ctrl (
     input  wire        crc_busy,
     input  wire [15:0] crc_lo,
     input  wire [15:0] crc_hi,
+    // ... and set 1 (v4, isa.md 3.2): a thread's TX, RX and CRC instructions and STAT bits
+    // 0-4 address the set its ESEL bit 0 names
+    input  wire        tx_full1,
+    input  wire        tx_busy1,
+    input  wire        rx_avail1,
+    input  wire        rx_overrun1,
+    input  wire [15:0] rx_word1,
+    input  wire        crc_busy1,
+    input  wire [15:0] crc_lo1,
+    input  wire [15:0] crc_hi1,
     // peripheral ports 2-7 (tt_um_msf_cap): writes out, status in
     output wire        pw_we,
     output wire [2:0]  pw_port,
@@ -78,7 +100,7 @@ module tt_um_msf_ctrl (
     output wire [7:0]  oe_off,
     output wire [7:0]  oe_off_n,
     input  wire [15:0] cap_stat,
-    input  wire [9:0]  cap_tpos,
+    input  wire [10:0] cap_tpos,
     // debug view (project.v shows dbg_q on uo_out in debug mode)
     input  wire [6:0]  dbg_sel,      // {page, view}
     output reg  [7:0]  dbg_q
@@ -116,13 +138,13 @@ module tt_um_msf_ctrl (
   reg [3:0]  run;             // running threads (T0 always)
   reg [1:0]  own;             // thread that owns this cycle (T0 in single mode)
   reg        bub;             // this cycle's decode slot is a bubble
-  reg [39:0] pcs;             // per-thread PC (10 bits each)
+  reg [43:0] pcs;             // per-thread PC (11 bits each)
   reg [3:0]  zf, nf;          // per-thread flags
 
   wire       multi = |run[3:1];
   wire [1:0] cur   = own;
   wire       fl_c  = bub;
-  wire [9:0] pc0   = pcs[9:0];
+  wire [10:0] pc0  = pcs[10:0];
 
   // the next running thread after a, in the order T0..T3 (a if alone)
   function [1:0] next_after(input [1:0] a, input [3:0] r);
@@ -159,6 +181,18 @@ module tt_um_msf_ctrl (
   reg  [3:0]  lguard;         // the late guard: threads whose LATE takes gpins off the bus
   reg  [7:0]  gpins;          //   and the uio pins it takes off (their OE forced to 0)
 
+  // v4 (docs/plan-v4.md section 6.1, 6.4): the thread's selector byte {port page, engine set}
+  // and the timed-pin slot (isa.md sections 3.2 and 6.8)
+  reg [15:0] esel;           // 4 bits per thread: bit 0 engine set (step 4), bits 3:1 port page
+  reg [3:0]  at_arm;         // AT armed: the thread's next pin write is timed
+  reg [3:0]  at_bad;         //   ... and the slot was occupied by AT time: refuse that write
+  reg [3:0]  at_pend;        // an event is held
+  reg [63:0] at_time;        // its time (or the armed time)
+  reg [7:0]  p_tgt;          // the held write: 2 bits a thread, the register (OUT, OE, UO)
+  reg [7:0]  p_opk;          //   the kind (write, set, clear, toggle)
+  reg [31:0] p_val;          //   and its operand
+  reg [63:0] ts;             // TS: CNT of the event that released the last WAIT
+
   wire        st_c   = st[cur];
   wire [15:0] tmo_c  = tmo[16*cur +: 16];
   wire        fge_c  = fge[cur];
@@ -172,14 +206,15 @@ module tt_um_msf_ctrl (
 
   // shared state
   reg [15:0] cnt;             // free-running cycle counter
+  reg [15:0] cnt_hi;          // v4: its high half (isa.md 6.10)
   reg [15:0] sr;              // shift register
   reg [2:0]  sr_po, sr_pi;    // SR output / input pin
   reg        sr_lsb;
-  reg [9:0]  waddr;           // MEM_W pointer
+  reg [10:0] waddr;           // MEM_W pointer
 
   // FIFO (port 0): words in SRAM [base, base+size), pointers here. Size is
   // 2 << fn (2..256); the block is size-aligned (base's low bits ignored).
-  reg [9:0]  fbase;
+  reg [10:0] fbase;
   reg [2:0]  fn;
   reg [8:0]  fwp, frp;        // free-running write / read counts
   reg [6:0]  fdrop;           // words a full FIFO dropped (modulo 128)
@@ -188,17 +223,17 @@ module tt_um_msf_ctrl (
   wire [8:0] fcount = fwp - frp;
   wire       fempty = (fcount == 9'd0);
   wire       ffull  = (fcount == fsize);
-  wire [9:0] fblock  = fbase & ~{1'b0, fmask};
-  wire [9:0] faddr_w = fblock | {1'b0, fwp & fmask};
-  wire [9:0] faddr_r = fblock | {1'b0, frp & fmask};
+  wire [10:0] fblock  = fbase & ~{2'b00, fmask};
+  wire [10:0] faddr_w = fblock | {2'b00, fwp & fmask};
+  wire [10:0] faddr_r = fblock | {2'b00, frp & fmask};
 
   // ------------------------------------------------------------------
   // Decode
   // ------------------------------------------------------------------
   wire [15:0] ir    = fl_c ? 16'h7000 : dir;          // bubble decodes as NOP
   wire        exec  = !st_c && !fl_c;                 // an instruction issues
-  wire [9:0]  pc_c  = pcs[10*cur +: 10];
-  wire [9:0]  apc1  = multi ? pc_c + 10'd1 : pc0;     // issuing address + 1
+  wire [10:0] pc_c  = pcs[11*cur +: 11];
+  wire [10:0] apc1  = multi ? pc_c + 11'd1 : pc0;     // issuing address + 1
 
   wire [4:0]  op    = ir[15:11];
   wire [2:0]  f_a   = ir[10:8];
@@ -222,8 +257,28 @@ module tt_um_msf_ctrl (
   wire x_tstrt = ext && sub == X_TSTART, x_tstop = ext && sub == X_TSTOP;
   wire x_tid   = ext && sub == X_TID;
   wire x_pw    = ext && sub == X_PW,     x_pr    = ext && sub == X_PR;
-  wire x_put   = x_pw && f_a == P_FIFO,  x_fcfg  = x_pw && f_a == P_FCFG;
-  wire x_get   = x_pr && f_b == P_FIFO,  x_fstat = x_pr && f_b == P_FCFG;
+  // the port page of the executing thread (ESEL, isa.md 3.2): 0 = v3's ports, 1 = timed pins
+  wire [3:0] esel_c = esel[4*cur +: 4];
+  wire       page0  = (esel_c[3:1] == 3'd0);
+  wire       page1  = (esel_c[3:1] == 3'd1);
+  wire x_esel  = (op == OP_SETM) && msel == 3'd6;
+  wire x_put   = x_pw && page0 && f_a == P_FIFO,  x_fcfg  = x_pw && page0 && f_a == P_FCFG;
+  wire x_get   = x_pr && page0 && f_b == P_FIFO,  x_fstat = x_pr && page0 && f_b == P_FCFG;
+  // the engine set of the executing thread (ESEL bit 0), and its status as that thread sees it
+  wire       set_c     = esel_c[0];
+  wire       s_tx_full = set_c ? tx_full1 : tx_full;
+  wire       s_tx_busy = set_c ? tx_busy1 : tx_busy;
+  wire       s_rx_av   = set_c ? rx_avail1 : rx_avail;
+  wire       s_rx_ovr  = set_c ? rx_overrun1 : rx_overrun;
+  wire [15:0] s_rx_word = set_c ? rx_word1 : rx_word;
+  wire       s_crc_busy = set_c ? crc_busy1 : crc_busy;
+  wire [15:0] s_crc_lo = set_c ? crc_lo1 : crc_lo;
+  wire [15:0] s_crc_hi = set_c ? crc_hi1 : crc_hi;
+  wire page2   = (esel_c[3:1] == 3'd2);                           // engine options
+  wire page3   = (esel_c[3:1] == 3'd3);                           // identity and the 32-bit counter
+  wire x_late  = x_pw && page0 && f_a == P_LATE;                  // LATE_CLR / the guard
+  wire x_at    = x_pw && page1 && f_a == 3'd0;                    // AT rb
+
   wire x_perw  = ext && (sub == X_TXCFG || sub == X_TXDIV || sub == X_RXCFG ||
                          sub == X_RXDIV || sub == X_CRCCFG || sub == X_CRCSETL ||
                          sub == X_CRCSETH || sub == X_POLL || sub == X_POLH);
@@ -333,8 +388,8 @@ module tt_um_msf_ctrl (
   // a FIFO pop is a load from the read slot (an empty FIFO reads nothing)
   wire is_blk = (op == OP_WEDGE) || (op == OP_WCMP) || x_ld || x_get || x_txp ||
                 x_txw || x_rxp || x_crcw || x_crcrl;
-  wire blk_ready = (x_txp && !tx_full) || (x_txw && !tx_busy) || (x_rxp && rx_avail) ||
-                   ((x_crcw || x_crcrl) && !crc_busy);
+  wire blk_ready = (x_txp && !s_tx_full) || (x_txw && !s_tx_busy) || (x_rxp && s_rx_av) ||
+                   ((x_crcw || x_crcrl) && !s_crc_busy);
   wire enter   = exec && is_blk && !blk_ready;   // WAIT_* and LD are never "ready"
   wire blk_now = exec && is_blk &&  blk_ready;   // completes in its issue cycle
 
@@ -370,6 +425,7 @@ module tt_um_msf_ctrl (
       wire [2:0]  k  = sk[3*t +: 3];
       wire        p  = ws[3] ? ui_in[ws[2:0]] : uio_in[ws[2:0]];
       wire        pv = wprev[t];
+      wire        es = esel[4*t];             // this thread's engine set
       reg         e;
       always @(*) begin
         case (wc)
@@ -387,10 +443,10 @@ module tt_um_msf_ctrl (
       assign cond_now[t] =
           (k == K_EDGE || k == K_CMP) ? (evt[t] || whit[t]) :
           (k == K_LD)     ? 1'b1 :
-          (k == K_TXPUSH) ? !tx_full :
-          (k == K_TXWAIT) ? !tx_busy :
-          (k == K_RXPOP)  ? rx_avail :
-                            !crc_busy;          // K_CRCW, K_CRCRD
+          (k == K_TXPUSH) ? !(es ? tx_full1 : tx_full) :
+          (k == K_TXWAIT) ? !(es ? tx_busy1 : tx_busy) :
+          (k == K_RXPOP)  ? (es ? rx_avail1 : rx_avail) :
+                            !(es ? crc_busy1 : crc_busy);          // K_CRCW, K_CRCRD
     end
   endgenerate
 
@@ -401,9 +457,9 @@ module tt_um_msf_ctrl (
   // ------------------------------------------------------------------
   // Register write-back (always for the thread that owns the cycle)
   // ------------------------------------------------------------------
-  wire [15:0] stat = {1'b0, late[cur], cur[1], run[3], run[2], cap_stat[13], cap_stat[15], ffull,
-                      !fempty, cur[0], run[1], crc_busy, rx_overrun, rx_avail, tx_busy,
-                      tx_full};
+  wire [15:0] stat = {set_c ? err_any1 : err_any, late[cur], cur[1], run[3], run[2], cap_stat[13], cap_stat[15], ffull,
+                      !fempty, cur[0], run[1], s_crc_busy, s_rx_ovr, s_rx_av, s_tx_busy,
+                      s_tx_full};
 
   reg        wbx_en;
   reg [15:0] wbx_d;
@@ -417,27 +473,41 @@ module tt_um_msf_ctrl (
       OP_PINR: wbx_d = {8'h00, uio_in};
       OP_CNTR: wbx_d = cnt;
       OP_INRD: wbx_d = {8'h00, ui_in};
-      OP_CALL: wbx_d = {6'd0, apc1};
+      OP_CALL: wbx_d = {5'd0, apc1};
       OP_LDH:  wbx_d = {imm8, qa[7:0]};
       OP_EXT: begin
         case (sub)
           X_SRRD:   wbx_d = sr;
           X_SWAP:   wbx_d = {qb[7:0], qb[15:8]};
           X_STAT:   wbx_d = stat;
-          X_CRCRDH: wbx_d = crc_hi;
+          X_CRCRDH: wbx_d = s_crc_hi;
           X_TID:    wbx_d = {14'd0, cur};
           X_PR:     begin                       // port reads (#0 = pop: LD path)
             wbx_en = !x_get;
-            case (f_b)
+            wbx_d  = 16'd0;
+            if (page0) case (f_b)
               P_FCFG:  wbx_d = {fdrop, fcount};
               P_LATE:  wbx_d = {gpins, lguard, late};
               3'd2:    wbx_d = cap_stat;
-              3'd3:    wbx_d = {6'd0, cap_tpos};
+              3'd3:    wbx_d = {5'd0, cap_tpos};
+              default: wbx_d = 16'd0;
+            endcase
+            else if (page2) wbx_d = set_c ? opt_rd1 : opt_rd;              // engine options
+            else if (page3) case (f_b)                                      // isa.md 6.10
+              3'd0:    wbx_d = 16'h4D53;                                    // "MS"
+              3'd1:    wbx_d = 16'h0400;                                    // ISA v4.0
+              3'd2:    wbx_d = 16'h0BBF;                                    // capabilities (no ROM memory test), log2(words) = 11
+              3'd3:    wbx_d = cnt_hi;
+              default: wbx_d = 16'd0;
+            endcase
+            else if (page1) case (f_b)
+              3'd0:    wbx_d = ts[16*cur +: 16];                                 // TS
+              3'd1:    wbx_d = {13'd0, at_bad[cur], at_pend[cur], at_arm[cur]}; // AT_STAT
               default: wbx_d = 16'd0;
             endcase
           end
-          X_RXPOP:  begin wbx_d = rx_word; wbx_en = rx_avail;  end
-          X_CRCRDL: begin wbx_d = crc_lo;  wbx_en = !crc_busy; end
+          X_RXPOP:  begin wbx_d = s_rx_word; wbx_en = s_rx_av;  end
+          X_CRCRDL: begin wbx_d = s_crc_lo;  wbx_en = !s_crc_busy; end
           default:  wbx_en = 1'b0;
         endcase
       end
@@ -451,7 +521,7 @@ module tt_um_msf_ctrl (
   assign wb_a  = rel_wb ? srd_c : (op == OP_CALL) ? 3'd7 : f_a;
   assign wb_d  = !rel_wb ? wbx_d :
                  (sk_c == K_LD)    ? ld_data :
-                 (sk_c == K_RXPOP) ? rx_word : crc_lo;
+                 (sk_c == K_RXPOP) ? s_rx_word : s_crc_lo;
 
   // ------------------------------------------------------------------
   // Control flow
@@ -459,12 +529,12 @@ module tt_um_msf_ctrl (
   wire br_take = (op == OP_JZ && zc) || (op == OP_JNZ && !zc) ||
                  (op == OP_JP && !nc) || (op == OP_JN && nc);
   wire redirect = exec && (op == OP_JMP || op == OP_CALL || op == OP_RET || x_jr || br_take);
-  reg [9:0] tgt;
+  reg [10:0] tgt;
   always @(*) begin
-    if (op == OP_JMP || op == OP_CALL) tgt = ir[9:0];
-    else if (op == OP_RET)             tgt = qa[9:0];
-    else if (x_jr)                     tgt = qb[9:0];
-    else                               tgt = apc1 + {rel9[8], rel9};
+    if (op == OP_JMP || op == OP_CALL) tgt = ir[10:0];
+    else if (op == OP_RET)             tgt = qa[10:0];
+    else if (x_jr)                     tgt = qb[10:0];
+    else                               tgt = apc1 + {{2{rel9[8]}}, rel9};
   end
 
   wire       do_tstop = exec && x_tstop && run[tt];
@@ -473,7 +543,7 @@ module tt_um_msf_ctrl (
   // multi mode: the word fetched now still belongs to the next cycle's owner
   wire       f_ok     = run_n[fth] && !(do_tstart && tt == fth);
 
-  reg [39:0] pcs_n;
+  reg [43:0] pcs_n;
   reg        bub_n;
   reg [1:0]  own_n;
   always @(*) begin
@@ -481,26 +551,26 @@ module tt_um_msf_ctrl (
     if (!multi) begin
       // ---- single-thread mode: T0 owns every cycle ----
       if (st[0]) begin
-        if (rel) pcs_n[9:0] = pc0 + 10'd1;       // release: mem[W+1] issues next
+        if (rel) pcs_n[10:0] = pc0 + 11'd1;      // release: mem[W+1] issues next
       end else if (redirect) begin
-        pcs_n[9:0] = tgt; bub_n = 1'b1;
+        pcs_n[10:0] = tgt; bub_n = 1'b1;
       end else if (enter || do_tstart) begin
         bub_n = 1'b0;                            // hold pc0 = W+1
       end else begin
-        pcs_n[9:0] = pc0 + 10'd1; bub_n = 1'b0;
+        pcs_n[10:0] = pc0 + 11'd1; bub_n = 1'b0;
       end
-      if (do_tstart) pcs_n[10*tt +: 10] = qb[9:0];  // T0 issues next cycle, the new thread after
+      if (do_tstart) pcs_n[11*tt +: 11] = qb[10:0]; // T0 issues next cycle, the new thread after
     end else begin
       // ---- multi-thread mode: the owner advances its own PC ----
       if (!st[cur] && !bub) begin
-        if (redirect) pcs_n[10*cur +: 10] = tgt;
-        else          pcs_n[10*cur +: 10] = pc_c + 10'd1;
+        if (redirect) pcs_n[11*cur +: 11] = tgt;
+        else          pcs_n[11*cur +: 11] = pc_c + 11'd1;
       end
-      if (do_tstart) pcs_n[10*tt +: 10] = qb[9:0];  // (also a thread restarting itself)
+      if (do_tstart) pcs_n[11*tt +: 11] = qb[10:0]; // (also a thread restarting itself)
       if (f_ok) begin
         own_n = fth; bub_n = 1'b0;
         // back to single mode with T0's word in flight: fetch-ahead again
-        if (run_n[3:1] == 3'd0 && !st[0]) pcs_n[9:0] = pc0 + 10'd1;
+        if (run_n[3:1] == 3'd0 && !st[0]) pcs_n[10:0] = pc0 + 11'd1;
       end else begin
         own_n = next_after(cur, run_n); bub_n = 1'b1;
       end
@@ -509,7 +579,7 @@ module tt_um_msf_ctrl (
 
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      pcs <= 40'd0; bub <= 1'b1; run <= 4'b0001; own <= 2'd0;
+      pcs <= 44'd0; bub <= 1'b1; run <= 4'b0001; own <= 2'd0;
     end else begin
       run <= run_n; pcs <= pcs_n; bub <= bub_n; own <= own_n;
     end
@@ -523,7 +593,7 @@ module tt_um_msf_ctrl (
   // to word 0, which the decode stage takes in the first cycle after reset, as
   // v2.2 decodes it. No path from rst_n to the address: a reset released on a
   // clock edge cannot fetch word 0 twice.
-  assign imem_raddr = multi_n ? pcs_n[10*fth_n +: 10] : pcs_n[9:0];
+  assign imem_raddr = multi_n ? pcs_n[11*fth_n +: 11] : pcs_n[10:0];
 
   // ------------------------------------------------------------------
   // Flags and per-thread blocking state
@@ -545,6 +615,8 @@ module tt_um_msf_ctrl (
         zf[cur] <= 1'b0;
       end else if (exec && x_put) begin
         zf[cur] <= ffull;                      // Z = 1: full, the word was dropped
+      end else if (pwr_do && armed_c) begin
+        zf[cur] <= t_refuse;                   // a timed pin write: Z = 1 refused, 0 accepted
       end else if (rel) begin
         zf[cur] <= !rel_ok || fge_c;           // a pop of an empty FIFO: Z = 1
       end
@@ -590,12 +662,13 @@ module tt_um_msf_ctrl (
   reg [7:0] gpins_n;
   always @(*) begin
     late_n = late; lguard_n = lguard; gpins_n = gpins;
-    if (exec && x_pw && f_a == P_LATE && !qb[15]) late_n = late & ~qb[3:0];
-    if (exec && x_pw && f_a == P_LATE &&  qb[15]) begin
+    if (exec && x_late && !qb[15]) late_n = late & ~qb[3:0];
+    if (exec && x_late &&  qb[15]) begin
       lguard_n = qb[11:8];
       gpins_n  = qb[7:0];
     end
     if (rel && wlate_c) late_n[cur] = 1'b1;
+    if (t_refuse) late_n[cur] = 1'b1;      // a timed pin write that could not keep its time
     if (do_tstart) late_n[tt] = 1'b0;      // a fresh thread (wins over the above)
   end
   assign oe_off_n = (|(late_n & lguard_n)) ? gpins_n : 8'h00;
@@ -608,11 +681,12 @@ module tt_um_msf_ctrl (
 
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      cnt <= 16'd0; sr <= 16'd0; sr_po <= 3'd7; sr_pi <= 3'd7; sr_lsb <= 1'b0;
-      waddr <= 10'd128; tmo <= {4{16'hFFFF}};
-      fbase <= 10'd64; fn <= 3'd5; fwp <= 9'd0; frp <= 9'd0; fdrop <= 7'd0;
+      cnt <= 16'd0; cnt_hi <= 16'd0; sr <= 16'd0; sr_po <= 3'd7; sr_pi <= 3'd7; sr_lsb <= 1'b0;
+      waddr <= 11'd128; tmo <= {4{16'hFFFF}};
+      fbase <= 11'd64; fn <= 3'd5; fwp <= 9'd0; frp <= 9'd0; fdrop <= 7'd0;
     end else begin
       cnt <= cnt + 16'd1;
+      if (cnt == 16'hFFFF) cnt_hi <= cnt_hi + 16'd1;
       if (exec) begin
         if (x_srld) sr <= qb;
         else if (op == OP_SHOUT)
@@ -622,8 +696,8 @@ module tt_um_msf_ctrl (
         if (x_sercf) begin
           sr_po <= qb[2:0]; sr_pi <= qb[5:3]; sr_lsb <= qb[6];
         end
-        if (op == OP_MEMW) waddr <= waddr + 10'd1;
-        else if (x_mema)   waddr <= qb[9:0];
+        if (op == OP_MEMW) waddr <= waddr + 11'd1;
+        else if (x_mema)   waddr <= qb[10:0];
         if (x_tmo) tmo[16*cur +: 16] <= qb;
         if (x_tstrt) tmo[16*tt +: 16] <= tmo_c; // a thread starts with its starter's TMO
         if (x_put) begin
@@ -632,7 +706,7 @@ module tt_um_msf_ctrl (
         end
         if (x_get && !fempty) frp <= frp + 9'd1;
         if (x_fcfg) begin
-          fbase <= qb[9:0]; fn <= qb[12:10];
+          fbase <= {qb[13], qb[9:0]}; fn <= qb[12:10];
           fwp <= 9'd0; frp <= 9'd0; fdrop <= 7'd0;
         end
       end
@@ -640,42 +714,140 @@ module tt_um_msf_ctrl (
   end
 
   // ------------------------------------------------------------------
-  // Pin writes (one per cycle, executing thread only)
+  // Pin writes: the held timed events that are due this cycle (T3 first, T0 last, so the
+  // lower thread's write wins on a bit and toggles stack), then the executing thread's
+  // own write (isa.md 6.8). Without a timed write this is v3's one write a cycle.
   // ------------------------------------------------------------------
+  localparam [1:0] T_OUT = 2'd0, T_OE = 2'd1, T_UO = 2'd2;
+  localparam [1:0] PK_WR = 2'd0, PK_SET = 2'd1, PK_CLR = 2'd2, PK_TGL = 2'd3;
+
+  // what the executing instruction writes: register, kind and operand (a pin write is
+  // PIN_W, SETM/CLRM selectors 0-5, OUT_W, SHIFT_OUT and XFER)
+  reg        pwr_v;
+  reg [1:0]  pwr_tgt, pwr_opk;
+  reg [7:0]  pwr_val;
   always @(*) begin
-    out_we = 1'b0; out_d = out_q;
-    oe_we  = 1'b0; oe_d  = oe_q;
-    uo_we  = 1'b0; uo_d  = uo_q;
-    if (exec) begin
-      case (op)
-        OP_PINW: begin out_we = 1'b1; out_d = qa[7:0]; end
-        OP_SETM: case (msel)
-          3'd0: begin oe_we  = 1'b1; oe_d  = oe_q  | imm8; end
-          3'd1: begin out_we = 1'b1; out_d = out_q | imm8; end
-          3'd2: begin out_we = 1'b1; out_d = out_q ^ imm8; end
-          3'd3: begin uo_we  = 1'b1; uo_d  = uo_q  | imm8; end
-          3'd4: begin uo_we  = 1'b1; uo_d  = uo_q  ^ imm8; end
-          3'd5: begin oe_we  = 1'b1; oe_d  = oe_q  ^ imm8; end
-          default: ;
-        endcase
-        OP_CLRM: case (msel)
-          3'd0: begin oe_we  = 1'b1; oe_d  = oe_q  & ~imm8; end
-          3'd1: begin out_we = 1'b1; out_d = out_q & ~imm8; end
-          3'd2: begin out_we = 1'b1; out_d = imm8;          end
-          3'd3: begin uo_we  = 1'b1; uo_d  = uo_q  & ~imm8; end
-          3'd4: begin uo_we  = 1'b1; uo_d  = imm8;          end
-          3'd5: begin oe_we  = 1'b1; oe_d  = imm8;          end
-          default: ;
-        endcase
-        OP_SHOUT: begin
-          out_we = 1'b1; out_d = out_q; out_d[sr_po] = sr_out;
-        end
-        OP_EXT: begin
-          if (x_xfer) begin out_we = 1'b1; out_d = out_q; out_d[sr_po] = sr_out; end
-          if (x_outw) begin uo_we = 1'b1; uo_d = qb[7:0]; end
-        end
-        default: ;
+    pwr_v = 1'b1; pwr_tgt = T_OUT; pwr_opk = PK_WR; pwr_val = imm8;
+    case (op)
+      OP_PINW: pwr_val = qa[7:0];
+      OP_SETM: case (msel)
+        3'd0: begin pwr_tgt = T_OE;  pwr_opk = PK_SET; end
+        3'd1: begin pwr_tgt = T_OUT; pwr_opk = PK_SET; end
+        3'd2: begin pwr_tgt = T_OUT; pwr_opk = PK_TGL; end
+        3'd3: begin pwr_tgt = T_UO;  pwr_opk = PK_SET; end
+        3'd4: begin pwr_tgt = T_UO;  pwr_opk = PK_TGL; end
+        3'd5: begin pwr_tgt = T_OE;  pwr_opk = PK_TGL; end
+        default: pwr_v = 1'b0;                    // ESEL (6) and 7 write no pin
       endcase
+      OP_CLRM: case (msel)
+        3'd0: begin pwr_tgt = T_OE;  pwr_opk = PK_CLR; end
+        3'd1: begin pwr_tgt = T_OUT; pwr_opk = PK_CLR; end
+        3'd2: begin pwr_tgt = T_OUT; pwr_opk = PK_WR;  end
+        3'd3: begin pwr_tgt = T_UO;  pwr_opk = PK_CLR; end
+        3'd4: begin pwr_tgt = T_UO;  pwr_opk = PK_WR;  end
+        3'd5: begin pwr_tgt = T_OE;  pwr_opk = PK_WR;  end
+        default: pwr_v = 1'b0;
+      endcase
+      OP_SHOUT: begin pwr_opk = sr_out ? PK_SET : PK_CLR; pwr_val = 8'd1 << sr_po; end
+      OP_EXT: begin
+        if (x_xfer)       begin pwr_opk = sr_out ? PK_SET : PK_CLR; pwr_val = 8'd1 << sr_po; end
+        else if (x_outw)  begin pwr_tgt = T_UO; pwr_val = qb[7:0]; end
+        else              pwr_v = 1'b0;
+      end
+      default: pwr_v = 1'b0;
+    endcase
+  end
+
+  // the timed-pin slot of the executing thread, when a pin write arrives
+  wire        pwr_do   = exec && pwr_v;
+  wire        armed_c  = at_arm[cur];
+  wire [15:0] at_time_c = at_time[16*cur +: 16];
+  wire [15:0] behind   = cnt - at_time_c;                  // 0: the time is now
+  wire        b_now    = (behind == 16'd0);
+  wire        b_late   = !b_now && (behind[15:8] == 8'd0); // 1..255 cycles ago: passed
+  wire        t_refuse = pwr_do && armed_c && (at_bad[cur] || b_late);
+  wire        t_hold   = pwr_do && armed_c && !at_bad[cur] && !b_now && !b_late;
+  wire        t_now    = pwr_do && armed_c && !at_bad[cur] && b_now;
+  wire        imm_now  = pwr_do && (!armed_c || t_now);    // the instruction's write is applied now
+
+  wire [3:0] due;                                          // a held event whose time is now
+  genvar tk;
+  generate
+    for (tk = 0; tk < 4; tk = tk + 1) begin : g_due
+      assign due[tk] = at_pend[tk] && (cnt == at_time[16*tk +: 16]);
+    end
+  endgenerate
+
+  function [7:0] pin_apply(input [7:0] old, input [1:0] k, input [7:0] v);
+    case (k)
+      PK_WR:   pin_apply = v;
+      PK_SET:  pin_apply = old | v;
+      PK_CLR:  pin_apply = old & ~v;
+      default: pin_apply = old ^ v;
+    endcase
+  endfunction
+
+  reg [7:0] pin_o, pin_e, pin_u;
+  integer   pk;
+  always @(*) begin
+    pin_o = out_q; pin_e = oe_q; pin_u = uo_q;
+    out_we = 1'b0; oe_we = 1'b0; uo_we = 1'b0;
+    for (pk = 3; pk >= 0; pk = pk - 1) begin
+      if (due[pk]) begin
+        case (p_tgt[2*pk +: 2])
+          T_OUT: begin pin_o = pin_apply(pin_o, p_opk[2*pk +: 2], p_val[8*pk +: 8]); out_we = 1'b1; end
+          T_OE:  begin pin_e = pin_apply(pin_e, p_opk[2*pk +: 2], p_val[8*pk +: 8]); oe_we  = 1'b1; end
+          default: begin pin_u = pin_apply(pin_u, p_opk[2*pk +: 2], p_val[8*pk +: 8]); uo_we = 1'b1; end
+        endcase
+      end
+    end
+    if (imm_now) begin
+      case (pwr_tgt)
+        T_OUT: begin pin_o = pin_apply(pin_o, pwr_opk, pwr_val); out_we = 1'b1; end
+        T_OE:  begin pin_e = pin_apply(pin_e, pwr_opk, pwr_val); oe_we  = 1'b1; end
+        default: begin pin_u = pin_apply(pin_u, pwr_opk, pwr_val); uo_we = 1'b1; end
+      endcase
+    end
+    out_d = pin_o; oe_d = pin_e; uo_d = pin_u;
+  end
+
+  // the slot, the selector byte and TS
+  integer ak;
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      esel <= 16'd0; at_arm <= 4'd0; at_bad <= 4'd0; at_pend <= 4'd0; at_time <= 64'd0;
+      p_tgt <= 8'd0; p_opk <= 8'd0; p_val <= 32'd0; ts <= 64'd0;
+    end else begin
+      for (ak = 0; ak < 4; ak = ak + 1) begin
+        if (due[ak]) at_pend[ak] <= 1'b0;                  // the event has been applied
+        if (run[ak] && st[ak] && evt[ak] && !whit[ak]) ts[16*ak +: 16] <= cnt;   // the first event of a wait (a stopped thread's is invisible: TSTART clears TS)
+      end
+      if (rel && !rel_ok && (sk_c == K_EDGE || sk_c == K_CMP))
+        ts[16*cur +: 16] <= cnt;                           // no event: the release cycle
+      if (exec && x_esel) esel[4*cur +: 4] <= imm8[3:0];
+      if (exec && x_at) begin                              // AT rb: arm the slot
+        at_arm[cur] <= 1'b1;
+        if (at_pend[cur] && !due[cur]) at_bad[cur] <= 1'b1;   // occupied: refuse the next write
+        else begin
+          at_bad[cur] <= 1'b0;
+          at_time[16*cur +: 16] <= qb;
+        end
+      end
+      if (pwr_do && armed_c) begin                         // the timed write arrives
+        at_arm[cur] <= 1'b0;
+        at_bad[cur] <= 1'b0;                               // (refuse-next is used up)
+        if (t_hold) begin
+          at_pend[cur] <= 1'b1;
+          p_tgt[2*cur +: 2] <= pwr_tgt; p_opk[2*cur +: 2] <= pwr_opk; p_val[8*cur +: 8] <= pwr_val;
+        end
+      end
+      if (do_tstart) begin                                 // a fresh thread
+        esel[4*tt +: 4] <= 4'd0; at_arm[tt] <= 1'b0; at_bad[tt] <= 1'b0; at_pend[tt] <= 1'b0;
+        ts[16*tt +: 16] <= 16'd0;
+      end
+      if (do_tstop) begin                                  // a stopped thread's event is cancelled
+        at_arm[tt] <= 1'b0; at_bad[tt] <= 1'b0; at_pend[tt] <= 1'b0;
+      end
     end
   end
 
@@ -689,12 +861,12 @@ module tt_um_msf_ctrl (
   wire do_get  = exec && x_get && !fempty;
   assign b_en   = do_memw || do_st || do_ld || do_put || do_get;
   assign b_we   = do_memw || do_st || do_put;
-  assign b_addr = do_memw ? waddr : do_st ? qa[9:0] : do_put ? faddr_w :
-                  do_get ? faddr_r : qb[9:0];
+  assign b_addr = do_memw ? waddr : do_st ? qa[10:0] : do_put ? faddr_w :
+                  do_get ? faddr_r : qb[10:0];
   assign b_wd   = do_memw ? qa : qb;
 
   // ports 2-7 belong to the capture engine
-  assign pw_we   = exec && x_pw && (f_a >= 3'd2);
+  assign pw_we   = exec && x_pw && page0 && (f_a >= 3'd2);
   assign pw_port = f_a;
   assign pw_data = qb;
 
@@ -703,11 +875,16 @@ module tt_um_msf_ctrl (
   assign per_sub = per_rel ? ((sk_c == K_TXPUSH) ? X_TXPUSH : X_CRCW) : sub;
   assign per_wd  = per_rel ? sop_c : qb;
   assign rx_pop  = (blk_now && x_rxp) || (rel && rel_ok && sk_c == K_RXPOP);
+  assign per_set = set_c;          // the write or pop is for the executing thread's set
+  assign opt_we    = exec && x_pw && page2;
+  assign opt_port  = f_a;
+  assign opt_wd    = qb;
+  assign opt_rport = f_b;
 
   // ------------------------------------------------------------------
   // Debug / testbench visibility (only the debug view depends on these)
   // ------------------------------------------------------------------
-  wire [9:0] pc_p      = pc0;        // v1 name, T0 fetch pointer
+  wire [10:0] pc_p     = pc0;        // v1 name, T0 fetch pointer
   wire       stall     = st[0];
   wire       z         = zf[0];
   wire       n         = nf[0];
@@ -715,19 +892,19 @@ module tt_um_msf_ctrl (
   // the late guard: while a guarded thread's LATE flag is set, its pins are off the bus
   assign oe_off = (|(late & lguard)) ? gpins : 8'h00;
   wire [1:0] dbg_thr   = cur;
-  wire [9:0] dbg_pc    = apc1 - 10'd1;
+  wire [10:0] dbg_pc   = apc1 - 11'd1;
   wire       dbg_rel   = rel;
 
   // ------------------------------------------------------------------
   // Debug view: one byte of state chosen by dbg_sel (isa.md §8). The last
   // issued instruction is held so the view can be read between clock steps.
   // ------------------------------------------------------------------
-  reg [9:0]  lpc;
+  reg [10:0] lpc;
   reg [15:0] lir;
   reg [1:0]  lthr;
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      lpc <= 10'd0; lir <= 16'h0; lthr <= 2'd0;
+      lpc <= 11'd0; lir <= 16'h0; lthr <= 2'd0;
     end else if (exec) begin
       lpc <= dbg_pc; lir <= ir; lthr <= cur;
     end
@@ -740,16 +917,17 @@ module tt_um_msf_ctrl (
     else if (dbg_sel[6]) case (dbg_sel[4:0])
       5'h00: dbg_q = {run, st};
       5'h01: dbg_q = {nf[3], zf[3], nf[2], zf[2], nf[1], zf[1], nf[0], zf[0]};
-      5'h02: dbg_q = pcs[7:0];
-      5'h03: dbg_q = pcs[17:10];
-      5'h04: dbg_q = pcs[27:20];
-      5'h05: dbg_q = pcs[37:30];
-      5'h06: dbg_q = {pcs[39:38], pcs[29:28], pcs[19:18], pcs[9:8]};
+      5'h02: dbg_q = pcs[7:0];                       // T0..T3 fetch pointers, low bytes
+      5'h03: dbg_q = pcs[18:11];
+      5'h04: dbg_q = pcs[29:22];
+      5'h05: dbg_q = pcs[40:33];
+      5'h06: dbg_q = {pcs[42:41], pcs[31:30], pcs[20:19], pcs[9:8]};   // bits 9:8
+      5'h07: dbg_q = {4'd0, pcs[43], pcs[32], pcs[21], pcs[10]};      // bit 10
       default: dbg_q = 8'h00;
     endcase
     else case (dbg_sel[4:0])
       5'h00: dbg_q = lpc[7:0];
-      5'h01: dbg_q = {1'b0, lthr[1], st[1], st[0], multi, lthr[0], lpc[9:8]};
+      5'h01: dbg_q = {lpc[10], lthr[1], st[1], st[0], multi, lthr[0], lpc[9:8]};
       5'h02: dbg_q = lir[7:0];
       5'h03: dbg_q = lir[15:8];
       5'h04: dbg_q = {4'd0, nf[1], zf[1], nf[0], zf[0]};
@@ -778,10 +956,10 @@ module tt_um_msf_ctrl (
 
   // ---- ghost: where did the word issuing now come from? (v3: fetched two
   //      cycles back, for the thread that was then next in line) ----
-  reg [9:0] f_faddr1, f_faddr;
+  reg [10:0] f_faddr1, f_faddr;
   reg [1:0] f_fthr1, f_fthr;
   always @(posedge clk) begin
-    f_faddr1 <= rst_n ? imem_raddr : 10'd0;     // in reset the ROM register holds word 0
+    f_faddr1 <= rst_n ? imem_raddr : 11'd0;     // in reset the ROM register holds word 0
     f_fthr1  <= multi_n ? fth_n : 2'd0;
     f_faddr  <= f_faddr1;
     f_fthr   <= f_fthr1;
@@ -806,15 +984,15 @@ module tt_um_msf_ctrl (
   end
 
   // ---- ghost: per-thread expected next issue address ----
-  reg [39:0] f_next;
+  reg [43:0] f_next;
   reg [3:0]  f_has;
-  wire [9:0] f_succ = redirect ? tgt : dbg_pc + 10'd1;
+  wire [10:0] f_succ = redirect ? tgt : dbg_pc + 11'd1;
   always @(posedge clk) begin
     if (f_init) begin
       f_has <= 4'b0;
     end else begin
-      if (exec)      begin f_next[10*cur +: 10] <= f_succ; f_has[cur] <= 1'b1; end
-      if (do_tstart) begin f_next[10*tt +: 10] <= qb[9:0]; f_has[tt] <= 1'b1; end
+      if (exec)      begin f_next[11*cur +: 11] <= f_succ; f_has[cur] <= 1'b1; end
+      if (do_tstart) begin f_next[11*tt +: 11] <= qb[10:0]; f_has[tt] <= 1'b1; end
     end
   end
 
@@ -877,7 +1055,7 @@ module tt_um_msf_ctrl (
       //     registers as they are now: the operands equal the shadow register file
       if (exec) assert(qa == f_rf[{cur, f_ra}] && qb == f_rf[{cur, f_rb}]);
       // F2 no skipped / repeated instruction per thread
-      if (exec && f_has[cur]) assert(dbg_pc == f_next[10*cur +: 10]);
+      if (exec && f_has[cur]) assert(dbg_pc == f_next[11*cur +: 11]);
       // F3 WAIT release causes (catches B2): a WAIT completes by its own
       //    event, or by timeout after exactly TMO+1 stalled cycles
       if (rel && (sk_c == K_EDGE || sk_c == K_CMP) && rel_ok)
@@ -911,7 +1089,8 @@ module tt_um_msf_ctrl (
       if (!multi) assert(cur == 2'd0);
       assert(run[cur] && run[0]);
       // F5 side effects only from an issuing (or completing) instruction
-      if (out_we || oe_we || uo_we || b_en) assert(exec);
+      if (b_en) assert(exec);
+      if (out_we || oe_we || uo_we) assert(exec || (|due));    // v4: a timed event writes in any cycle
       if (wb_en)  assert(exec || rel);
       if (per_we) assert(exec || rel);
       if (exec && rel) assert(0);
@@ -923,23 +1102,25 @@ module tt_um_msf_ctrl (
   //     cleared (or the guard changed); with no guarded LATE flag nothing is held off
   always @(posedge clk) begin
     if (!f_init && rst_n && !$past(f_init)) begin
-      if ($past(rel && f_late_c && lguard[cur] && !(exec && x_pw && f_a == P_LATE)))
+      if ($past(rel && f_late_c && lguard[cur] && !(exec && x_late)))
         assert(oe_off == gpins);
       if (!(|(late & lguard))) assert(oe_off == 8'h00);
       if (|(late & lguard)) assert(oe_off == gpins);
     end
   end
 
-  // F11 a LATE flag rises only at a late WAIT_CMP's release in its thread,
-  //     and falls only by PW #7 or TSTART of that thread
+  // F11 a LATE flag rises only at a late WAIT_CMP's release in its thread (or, v4, at a
+  //     timed pin write of that thread that was refused), and falls only by PW #7 or
+  //     TSTART of that thread
   generate
     for (t = 0; t < 4; t = t + 1) begin : g_f11
       always @(posedge clk)
         if (!f_init && !$past(f_init)) begin
           if (late[t] && !$past(late[t]))
-            assert($past(rel) && $past(cur) == t && $past(f_late_c));
+            assert(($past(rel) && $past(cur) == t && $past(f_late_c)) ||
+                   ($past(t_refuse) && $past(cur) == t));
           if (!late[t] && $past(late[t]))
-            assert(($past(exec && x_pw) && $past(f_a) == P_LATE && $past(qb[t])) ||
+            assert(($past(exec && x_late) && $past(qb[t])) ||
                    ($past(do_tstart) && $past(tt) == t));
         end
     end
@@ -996,6 +1177,77 @@ module tt_um_msf_ctrl (
     end
   end
 
+  // F17 (v4) timed pins, for every program (isa.md 6.8): a write the slot accepts as held is
+  //     applied in the cycle CNT reaches its time and in no other, as the operation it was,
+  //     and a refused one changes no pin. The ghost restates the rule with a down counter
+  //     and its own copy of the AT operand, not with the design's compare and slot.
+  reg [3:0]  g_arm, g_bad, g_pend;
+  reg [15:0] g_at [0:3];
+  reg [15:0] g_left [0:3];
+  reg [1:0]  g_tgt [0:3];
+  reg [1:0]  g_opk [0:3];
+  reg [7:0]  g_val [0:3];
+  wire [15:0] g_ahead = g_at[cur] - cnt;               // cycles until the armed time
+  wire g_isnow  = (g_ahead == 16'd0);
+  wire g_ispast = !g_isnow && (g_ahead >= 16'd65281);  // 1..255 behind, the other way round
+  wire g_hold   = pwr_do && g_arm[cur] && !g_bad[cur] && !g_isnow && !g_ispast;
+  integer gk;
+  always @(posedge clk) begin
+    if (f_init) begin
+      g_arm <= 4'd0; g_bad <= 4'd0; g_pend <= 4'd0;
+    end else begin
+      for (gk = 0; gk < 4; gk = gk + 1) begin
+        if (g_pend[gk]) begin
+          if (g_left[gk] == 16'd0) g_pend[gk] <= 1'b0;
+          else g_left[gk] <= g_left[gk] - 16'd1;
+        end
+      end
+      if (exec && x_at) begin
+        g_arm[cur] <= 1'b1;
+        g_bad[cur] <= g_pend[cur] && (g_left[cur] != 16'd0);
+        g_at[cur]  <= qb;
+      end
+      if (pwr_do && g_arm[cur]) begin
+        g_arm[cur] <= 1'b0;
+        if (g_hold) begin
+          g_pend[cur] <= 1'b1;
+          g_left[cur] <= g_ahead - 16'd1;
+          g_tgt[cur] <= pwr_tgt; g_opk[cur] <= pwr_opk; g_val[cur] <= pwr_val;
+        end
+      end
+      if (do_tstart) begin g_arm[tt] <= 1'b0; g_bad[tt] <= 1'b0; g_pend[tt] <= 1'b0; end
+      if (do_tstop)  begin g_arm[tt] <= 1'b0; g_bad[tt] <= 1'b0; g_pend[tt] <= 1'b0; end
+    end
+  end
+  generate
+    for (t = 0; t < 4; t = t + 1) begin : g_f17
+      always @(*)
+        if (!f_init) begin
+          // applied in its cycle and no other
+          assert(due[t] == (g_pend[t] && g_left[t] == 16'd0));
+          // the same operation the write was
+          if (due[t]) assert(p_tgt[2*t +: 2] == g_tgt[t] && p_opk[2*t +: 2] == g_opk[t] &&
+                             p_val[8*t +: 8] == g_val[t]);
+          // the slot holds exactly the ghost's events
+          assert(at_pend[t] == g_pend[t]);
+        end
+    end
+  endgenerate
+  always @(*)
+    if (!f_init) begin
+      // a refusal makes no write and leaves Z and LATE set for the thread
+      if (t_refuse) assert(!imm_now);
+      // a held write makes none now either
+      if (t_hold) assert(!imm_now);
+      // only the executing thread's instruction or a due event writes the pins
+      if ((out_we || oe_we || uo_we) && !(|due)) assert(imm_now);
+    end
+  always @(posedge clk)
+    if (!f_init && !$past(f_init)) begin
+      if ($past(t_refuse)) assert(late[$past(cur)] && zf[$past(cur)]);
+      if ($past(pwr_do && armed_c && !t_refuse)) assert(!zf[$past(cur)] || $past(do_tstart && tt == cur));
+    end
+
   // reachability (the properties above are not vacuous)
   always @(*) if (!f_init) begin
     cover(rel && sk_c == K_EDGE && rel_ok);
@@ -1008,6 +1260,11 @@ module tt_um_msf_ctrl (
     cover(run == 4'b1111 && exec && cur == 2'd3);
     cover(exec && x_put && ffull);
     cover(rel && sk_c == K_LD && fge_c);
+    cover(t_hold);
+    cover(t_refuse && at_bad[cur]);
+    cover(t_refuse && b_late);
+    cover(t_now);
+    cover(|due && exec && cur != 2'd0);
   end
 `endif
 endmodule

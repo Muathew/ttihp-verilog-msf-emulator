@@ -55,10 +55,11 @@ async def test_pin_mask_ops(dut):
 
 @cocotb.test()
 async def test_two_banks(dut):
-    """1024 words (isa.md §1): data in bank 1, CALL / RET between banks,
+    """Banks 0 and 1 (isa.md §1): data in bank 1, CALL / RET between banks,
     straight-line code and a backward branch across the 511/512 boundary,
-    the MEM_W pointer wrapping from 1023 to 0, and the same costs as in
-    bank 0 (a taken JMP into the other bank is 2 cycles)."""
+    the MEM_W pointer running on from 1023 into bank 2 (v4: it wrapped here
+    with two banks), and the same costs as in bank 0 (a taken JMP into the
+    other bank is 2 cycles)."""
     await boot_asm(dut, CLEAR + """
         LDI  R1, 965              ; bank 1 data
         LDI  R2, 0xBEEF
@@ -69,7 +70,7 @@ async def test_two_banks(dut):
         MEM_A R1
         LDR  R2, #0x5A
         MEM_W R2                  ; [1023]
-        MEM_W R2                  ; [0]: the pointer wraps
+        MEM_W R2                  ; [1024]: on into bank 2
         CNT_R R6
         JMP  edge                 ; into bank 0 just below the boundary
     back: CNT_R R7
@@ -91,10 +92,80 @@ async def test_two_banks(dut):
     await ClockCycles(dut.clk, 120)
     assert (reg(dut, 3), reg(dut, 4), reg(dut, 5)) == (0xBEEF, 0x44, 9)
     assert sram(dut, 965) == 0xBEEF
-    assert (sram(dut, 1023), sram(dut, 0)) == (0x5A, 0x5A)
+    assert (sram(dut, 1023), sram(dut, 1024)) == (0x5A, 0x5A)
     # CNT_R R6 (c), JMP (c+1, 2 cycles), edge: 2 LDR, 3 x (3 INCR, DECR,
     # taken JNZ 2 / last not taken 1), JMP back (2), CNT_R R7
     assert reg(dut, 7) == 1 + 2 + 2 + 3 * 6 - 1 + 2
+
+
+@cocotb.test()
+async def test_four_banks(dut):
+    """2048 words (isa.md §1, v4): data in banks 2 and 3, code in both (CALL, JR,
+    RET, a backward branch across 1023/1024, a jump across 1535/1536), a thread
+    started above 1024 (TSTART takes PC bit 10), the MEM_W pointer running on
+    from 1535 into bank 3 and wrapping 2047 -> 0, and a FIFO above 1023 (the base's
+    bit 10 is FIFO_CFG's bit 13)."""
+    await boot_asm(dut, CLEAR + """
+        LDI  R1, 1100             ; bank 2 data
+        LDI  R2, 0xBEEF
+        ST   R1, R2
+        LD   R3, R1
+        LDI  R1, 1990             ; bank 3 data
+        LDI  R2, 0xCAFE
+        ST   R1, R2
+        LD   R4, R1
+        CALL far2                 ; code in bank 2, returns here
+        LDI  R2, far3
+        JR   R2                   ; code in bank 3, jumps back to back3
+    back3:
+        LDI  R1, 1535
+        MEM_A R1
+        LDR  R2, #0x5A
+        MEM_W R2                  ; [1535]
+        MEM_W R2                  ; [1536]
+        LDI  R1, 2047
+        MEM_A R1
+        LDR  R2, #0x6B
+        MEM_W R2                  ; [2047]
+        MEM_W R2                  ; [0]: the pointer wraps at 2048
+        LDI  R1, 1088 & 1023 | 2 << 10 | 1 << 13   ; FIFO at 1088, 8 words
+        FIFO_CFG R1
+        LDR  R2, #0x71
+        FIFO_PUT R2
+        LDR  R2, #0x72
+        FIFO_PUT R2
+        FIFO_GET R7
+        LDI  R2, t1code
+        TSTART R2                 ; a thread in bank 3
+    halt: JMP halt
+    .org 1018
+    far2: LDR  R5, #0
+        LDR  R6, #2
+    lp2: INCR R5                  ; 1020
+        INCR R5                   ; 1021
+        INCR R5                   ; 1022
+        INCR R5                   ; 1023
+        INCR R5                   ; 1024: bank 2
+        DECR R6
+        JNZ  lp2                  ; back across the boundary
+        RET
+    .org 1532
+    far3: NOP
+        NOP
+        NOP
+        NOP                       ; 1535
+        LDR  R6, #0x36            ; 1536: bank 3
+        JMP  back3
+    .org 1600
+    t1code: LDI R1, 0x1234
+    t1h: JMP t1h
+    """)
+    await ClockCycles(dut.clk, 500)
+    assert (reg(dut, 3), reg(dut, 4), reg(dut, 5), reg(dut, 6)) == (0xBEEF, 0xCAFE, 10, 0x36)
+    assert (sram(dut, 1100), sram(dut, 1990)) == (0xBEEF, 0xCAFE)
+    assert [sram(dut, a) for a in (1535, 1536, 2047, 0)] == [0x5A, 0x5A, 0x6B, 0x6B]
+    assert [sram(dut, a) for a in (1088, 1089)] == [0x71, 0x72] and reg(dut, 7) == 0x71
+    assert reg(dut, 1, thread=1) == 0x1234
 
 
 @cocotb.test()
@@ -199,7 +270,7 @@ async def test_ld_costs_two_cycles(dut):
 @cocotb.test()
 async def test_mem_a_and_wrap(dut):
     """MEM_A sets the MEM_W pointer; it runs on from 511 into bank 1 and
-    wraps 1023 -> 0 (10 bits)."""
+    wraps 2047 -> 0 (11 bits)."""
     await run(dut, """
         LDI   R1, 511
         MEM_A R1
@@ -207,14 +278,14 @@ async def test_mem_a_and_wrap(dut):
         MEM_W R2          ; 511
         LDR   R2, #0x22
         MEM_W R2          ; 512
-        LDI   R1, 1023
+        LDI   R1, 2047
         MEM_A R1
         LDR   R2, #0x33
-        MEM_W R2          ; 1023
+        MEM_W R2          ; 2047
         LDR   R2, #0x44
         MEM_W R2          ; 0
     """)
-    assert [sram(dut, a) for a in (511, 512, 1023, 0)] == [0x11, 0x22, 0x33, 0x44]
+    assert [sram(dut, a) for a in (511, 512, 2047, 0)] == [0x11, 0x22, 0x33, 0x44]
 
 
 @cocotb.test()

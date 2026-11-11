@@ -34,7 +34,7 @@ module ni_miter (
     input wire [15:0] crc_lo,
     input wire [15:0] crc_hi,
     input wire [15:0] cap_stat,
-    input wire [9:0]  cap_tpos,
+    input wire [10:0] cap_tpos,
     input wire [6:0]  dbg_sel
 );
   (* anyconst *) reg [1:0] k;
@@ -60,11 +60,11 @@ module ni_miter (
 
   wire [1:0]  fth_a, fth_b, cur_a, cur_b;
   wire        exec_a, exec_b;
-  wire [9:0]  pc_a, pc_b;
+  wire [10:0] pc_a, pc_b;
   wire [15:0] ir_a, ir_b, qa_a, qa_b, qb_a, qb_b;
   wire [3:0]  run_a, run_b;
-  wire [224:0] t0_a, t1_a, t2_a, t3_a, t0_b, t1_b, t2_b, t3_b;
-  wire [105:0] sh_a, sh_b;
+  wire [225:0] t0_a, t1_a, t2_a, t3_a, t0_b, t1_b, t2_b, t3_b;
+  wire [107:0] sh_a, sh_b;
   wire        bub_a, bub_b;
   wire [53:0] dst_a, dst_b;
   wire [1:0]  fwthr_a, fwthr_b;
@@ -80,7 +80,7 @@ module ni_miter (
       .per_we(), .per_sub(), .per_wd(), .rx_pop(),
       .tx_full(tx_full), .tx_busy(tx_busy), .rx_avail(rx_avail), .rx_overrun(rx_overrun),
       .rx_word(rx_word), .crc_busy(crc_busy), .crc_lo(crc_lo), .crc_hi(crc_hi),
-      .pw_we(), .pw_port(), .pw_data(), .oe_off(), .cap_stat(cap_stat), .cap_tpos(cap_tpos),
+      .pw_we(), .pw_port(), .pw_data(), .oe_off(), .oe_off_n(), .cap_stat(cap_stat), .cap_tpos(cap_tpos),
       .dbg_sel(dbg_sel), .dbg_q(),
       .ni_dthr(fth_a), .ni_cur(cur_a), .ni_exec(exec_a), .ni_pc(pc_a), .ni_ir(ir_a),
       .ni_qa(qa_a), .ni_qb(qb_a), .ni_run(run_a),
@@ -97,7 +97,7 @@ module ni_miter (
       .per_we(), .per_sub(), .per_wd(), .rx_pop(),
       .tx_full(tx_full), .tx_busy(tx_busy), .rx_avail(rx_avail), .rx_overrun(rx_overrun),
       .rx_word(rx_word), .crc_busy(crc_busy), .crc_lo(crc_lo), .crc_hi(crc_hi),
-      .pw_we(), .pw_port(), .pw_data(), .oe_off(), .cap_stat(cap_stat), .cap_tpos(cap_tpos),
+      .pw_we(), .pw_port(), .pw_data(), .oe_off(), .oe_off_n(), .cap_stat(cap_stat), .cap_tpos(cap_tpos),
       .dbg_sel(dbg_sel), .dbg_q(),
       .ni_dthr(fth_b), .ni_cur(cur_b), .ni_exec(exec_b), .ni_pc(pc_b), .ni_ir(ir_b),
       .ni_qa(qa_b), .ni_qb(qb_b), .ni_run(run_b),
@@ -145,8 +145,8 @@ module ni_miter (
   always @(*) assume(rst_n == !f_init);
 
   wire in_e = cur_a == 2'd0 || cur_a == k;
-  wire [224:0] tk_a = k == 2'd1 ? t1_a : k == 2'd2 ? t2_a : k == 2'd3 ? t3_a : t0_a;
-  wire [224:0] tk_b = k == 2'd1 ? t1_b : k == 2'd2 ? t2_b : k == 2'd3 ? t3_b : t0_b;
+  wire [225:0] tk_a = k == 2'd1 ? t1_a : k == 2'd2 ? t2_a : k == 2'd3 ? t3_a : t0_a;
+  wire [225:0] tk_b = k == 2'd1 ? t1_b : k == 2'd2 ? t2_b : k == 2'd3 ? t3_b : t0_b;
   always @(*)
     if (!f_init) begin
       // the property

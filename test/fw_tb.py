@@ -163,7 +163,7 @@ async def fw_boot(dut, name, data=None, defines=None, uio_in=0, late_ok=False):
             path, record = m["source"], m["out"]
             defines = {**(defines or {}), **m["defines"]}
     words = assemble_file(path, base_addr=128, defines=defines)
-    for a in range(1024):
+    for a in range(2048):
         dut.user_project.u_sram.mem[a].value = 0
     load_words(dut, words, 128)
     for a, w in (data or {}).items():

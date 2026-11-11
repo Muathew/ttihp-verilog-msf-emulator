@@ -32,7 +32,7 @@ architectural state at the *start* of the cycle (see snapshot()).
 """
 
 M16 = 0xFFFF
-M10 = 0x3FF                     # 10-bit PC and addresses (1024 words)
+M11 = 0x7FF                     # 11-bit PC and addresses (2048 words, isa.md section 1)
 
 STORE_AHEAD = 3                 # isa.md section 1: a word written in cycle w may issue from w+3
 
@@ -54,11 +54,32 @@ PIN_W, PIN_R, SETM, CLRM, CNT_R, INCR, DECR, IN_RD, CALL, RET, WAIT_EDGE, WAIT_C
  X_STAT, X_TXCFG, X_TXDIV, X_TXPUSH, X_TXWAIT, X_RXCFG, X_RXDIV, X_RXPOP, X_CRCCFG,
  X_CRCW, X_CRCRDL, X_CRCRDH, X_CRCSETL, X_CRCSETH, X_POLL, X_POLH, X_TSTART, X_TSTOP,
  X_TID, X_PW, X_PR) = range(32)
-P_FIFO, P_FCFG, P_LATE = 0, 1, 7   # peripheral ports
+P_FIFO, P_FCFG, P_LATE = 0, 1, 7   # peripheral ports (page 0)
+P_AT, P_ATSTAT = 0, 1              # page 1: AT / TS, AT_STAT (isa.md section 6.8)
+T_OUT, T_OE, T_UO = 0, 1, 2        # pin registers
+K_WR, K_SET, K_CLR, K_TGL = 0, 1, 2, 3   # pin write kinds
 P_CAPTURE = {2, 3, 4, 5, 6}     # capture engine, glitch filter: not modelled
 
 BLOCKING_EXT = {X_LD, X_TXPUSH, X_TXWAIT, X_RXPOP, X_CRCW, X_CRCRDL}
 UNMODELLED_EXT = {X_TXCFG, X_TXDIV, X_TXPUSH, X_TXWAIT, X_RXCFG, X_RXDIV, X_RXPOP}
+
+
+class CrcUnit:
+    """One CRC unit (isa.md section 6.3). The core has two, one a TX/RX/CRC engine set each;
+    a thread's ESEL bit 0 names its set (isa.md section 3.2)."""
+
+    def __init__(self):
+        self.crc = 0
+        self.poly = 0
+        self.len_m1 = 7
+        self.refl = 0
+        self.dsr = 0
+        self.rem = 0
+
+
+def _unit_attr(name):
+    """IsaModel.<crc attribute> is the attribute of the unit being used (self.cu)."""
+    return property(lambda self: getattr(self.cu, name), lambda self, v: setattr(self.cu, name, v))
 
 
 class Thread:
@@ -72,13 +93,26 @@ class Thread:
         self.ready_at = 0       # earliest cycle the next instruction may issue
         self.blk = None         # pending blocking op (dict) or None
         self.late = 0           # sticky: a WAIT_CMP found its target already passed
+        self.esel = 0           # selector byte: bit 0 engine set, bits 3:1 port page (isa.md 3.2)
+        self.ts = 0             # TS: CNT of the event that released the last WAIT
+        self.armed = self.bad = self.pend = False   # the timed-pin slot (isa.md 6.8)
+        self.at_time = 0
+        self.p_tgt = self.p_opk = self.p_val = 0
+        self.due = False        # the held event's time is this cycle (it is applied at its end)
 
 
 class IsaModel:
+    crc = _unit_attr("crc")
+    poly = _unit_attr("poly")
+    crc_len_m1 = _unit_attr("len_m1")
+    crc_refl = _unit_attr("refl")
+    crc_dsr = _unit_attr("dsr")
+    crc_rem = _unit_attr("rem")
+
     def __init__(self, rom, sram=None, uio_pad=None, ui_pad=None):
         """rom: 128 words. sram: {addr: word}. *_pad(cycle) -> pad value."""
         self.rom = list(rom) + [0x7000] * (128 - len(rom))
-        self.mem = [0] * 1024
+        self.mem = [0] * 2048
         for a, w in (sram or {}).items():
             self.mem[a] = w & M16
         self.uio_pad = uio_pad or (lambda c: 0)
@@ -99,12 +133,8 @@ class IsaModel:
         self.fbase, self.fn = 64, 5     # FIFO: SRAM block and size 2 << fn
         self.fwp = self.frp = 0         # words pushed / popped since configured
         self.fdrop = 0
-        self.crc = 0
-        self.poly = 0
-        self.crc_len_m1 = 7
-        self.crc_refl = 0
-        self.crc_dsr = 0
-        self.crc_rem = 0
+        self.units = [CrcUnit(), CrcUnit()]   # the CRC unit of engine set 0 and of set 1
+        self.cu = self.units[0]               # the unit the instruction in hand uses
         self.trace = []
 
     # ---------------------------------------------------------------- inputs
@@ -152,8 +182,17 @@ class IsaModel:
         for t in self.th:
             k = t.tid
             snap.update({f"regs{k}": list(t.regs), f"z{k}": t.z, f"n{k}": t.n,
-                         f"tmo{k}": t.tmo})
+                         f"tmo{k}": t.tmo, f"esel{k}": t.esel, f"ts{k}": t.ts,
+                         f"at{k}": self._slot(t)})
         return snap
+
+    @staticmethod
+    def _slot(t):
+        """The timed-pin slot as the RTL shows it: flags, then the time while armed or
+        held, then the held operation."""
+        return (int(t.armed), int(t.bad), int(t.pend),
+                t.at_time if (t.armed or t.pend) else 0,
+                (t.p_tgt, t.p_opk, t.p_val) if t.pend else (0, 0, 0))
 
     # ---------------------------------------------------------------- FIFO
     def fsize(self):
@@ -165,7 +204,7 @@ class IsaModel:
     def faddr(self, n):
         """SRAM address of the FIFO's n-th word (the block is size-aligned)."""
         m = self.fsize() - 1
-        return (self.fbase & ~m & M10) | (n & m)
+        return (self.fbase & ~m & M11) | (n & m)
 
     def fetch(self, a):
         return self.rom[a] if a < 128 else self.mem[a]
@@ -181,6 +220,15 @@ class IsaModel:
         cur = self.own
         run_before = self.alive
         self._restarted = None
+        # 0) timed pin events whose time is now (T3 first, T0 last: the lowest thread's
+        #    write wins), then this cycle's instruction writes; all land at the end of the cycle
+        self._writes = []
+        self._ts_new = []                        # TS captures, which land at the end of the cycle
+        for k in (3, 2, 1, 0):
+            th = self.th[k]
+            th.due = th.pend and th.at_time == self.cnt
+            if th.due:
+                self._writes.append((k, th.p_tgt, th.p_opk, th.p_val))
         # 1) event tracking for every stalled thread (every cycle)
         for t in self.th:
             b = t.blk
@@ -196,11 +244,13 @@ class IsaModel:
                 b["prev"] = pin
             elif b["kind"] == "cmp":
                 b["now"] = self.cnt == b["target"]
+            if b["kind"] in ("edge", "cmp") and b["now"] and not b["hit"]:
+                self._ts_new.append((t.tid, self.cnt))     # TS: the cycle the event happened
             b["tmo_now"] = b["tmo_en"] and b["tmo"] == 0
 
         # 2) the owning thread: release or issue
         t = self.th[cur]
-        crc_step_pending = self.crc_rem != 0
+        crc_pending = [u for u in self.units if u.rem != 0]
         if t.blk is not None:
             self._try_release(t, c)           # (also in a bubble slot)
         elif not self.bubble and c >= t.ready_at:
@@ -224,8 +274,24 @@ class IsaModel:
                 b["hit"] = True
             if b["tmo_en"] and b["tmo"] != 0:
                 b["tmo"] -= 1
-        if crc_step_pending:
+        for u in crc_pending:
+            self.cu = u
             self._crc_step()
+        for k, v in self._ts_new:
+            self.th[k].ts = v
+        for th in self.th:
+            if th.due:                            # a held event has been applied: the slot is free
+                th.pend = th.due = False
+        for _, tgt, opk, val in self._writes:     # the pin registers, in order
+            old = (self.out, self.oe, self.uo)[tgt]
+            new = (val if opk == K_WR else old | val if opk == K_SET
+                   else old & ~val if opk == K_CLR else old ^ val) & 0xFF
+            if tgt == T_OUT:
+                self.out = new
+            elif tgt == T_OE:
+                self.oe = new
+            else:
+                self.uo = new
         self.cycle += 1
 
     def _next_ready(self, t, c, redirect):
@@ -274,6 +340,7 @@ class IsaModel:
 
     def _try_release(self, t, c):
         b = t.blk
+        self.cu = self.units[b["unit"]]
         if b["kind"] in ("edge", "cmp"):
             ok = b.get("hit", False) or b.get("now", False)
         else:
@@ -285,16 +352,20 @@ class IsaModel:
             if ok:
                 self._complete(t, b)
             t.z = b.get("z", 0) if ok else 1
+            if not ok and b["kind"] in ("edge", "cmp"):
+                self._ts_new.append((t.tid, self.cnt))   # no event: TS is the release cycle
             t.blk = None
             self.trace.append(("R", c, t.tid, 0 if ok else 1))
             self._next_ready(t, c, False)
 
     def _block(self, t, c, **kw):
-        b = dict(kw, issued=c, hit=False, now=False, tmo=t.tmo, tmo_en=t.tmo != 0)
+        b = dict(kw, issued=c, hit=False, now=False, tmo=t.tmo, tmo_en=t.tmo != 0,
+                 unit=t.esel & 1)
         t.blk = b
 
     # ---------------------------------------------------------------- issue
     def _issue(self, t, c):
+        self.cu = self.units[t.esel & 1]          # the thread's engine set
         a = t.pc
         w = self.fetch(a)
         if a >= 128 and c - self.wcycle.get(a, -STORE_AHEAD) < STORE_AHEAD:
@@ -306,7 +377,7 @@ class IsaModel:
         fa, fb, fc = (w >> 8) & 7, (w >> 5) & 7, (w >> 2) & 7
         imm8 = w & 0xFF
         R = t.regs
-        nxt = (a + 1) & M10
+        nxt = (a + 1) & M11
         redirect = False
         self._ovr = None
 
@@ -324,35 +395,34 @@ class IsaModel:
             if op in (ADDS, SUBS):
                 setzn(v)
         elif op == JMP:
-            nxt, redirect = w & M10, True
+            nxt, redirect = w & M11, True
         elif JZ <= op <= JN:
             take = {JZ: t.z, JNZ: not t.z, JP: not t.n, JN: t.n}[op]
             if take:
                 rel = (w >> 2) & 0x1FF
                 rel = rel - 512 if rel & 0x100 else rel
-                nxt, redirect = (a + 1 + rel) & M10, True
+                nxt, redirect = (a + 1 + rel) & M11, True
         elif op == NOP:
             pass
         elif op == PIN_W:
-            self.out = R[fa] & 0xFF
+            self._pin(t, T_OUT, K_WR, R[fa] & 0xFF)
         elif op == PIN_R:
             R[fa] = self.uio(c)
         elif op == SETM:
             sel = fa
-            if sel == 0: self.oe |= imm8
-            elif sel == 1: self.out |= imm8
-            elif sel == 2: self.out ^= imm8
-            elif sel == 3: self.uo |= imm8
-            elif sel == 4: self.uo ^= imm8
-            elif sel == 5: self.oe ^= imm8
+            if sel == 6:
+                t.esel = imm8 & 0xF             # ESEL (isa.md 3.2)
+            else:
+                tk = {0: (T_OE, K_SET), 1: (T_OUT, K_SET), 2: (T_OUT, K_TGL), 3: (T_UO, K_SET),
+                      4: (T_UO, K_TGL), 5: (T_OE, K_TGL)}.get(sel)
+                if tk:
+                    self._pin(t, tk[0], tk[1], imm8)
         elif op == CLRM:
             sel = fa
-            if sel == 0: self.oe &= ~imm8 & 0xFF
-            elif sel == 1: self.out &= ~imm8 & 0xFF
-            elif sel == 2: self.out = imm8
-            elif sel == 3: self.uo &= ~imm8 & 0xFF
-            elif sel == 4: self.uo = imm8
-            elif sel == 5: self.oe = imm8
+            tk = {0: (T_OE, K_CLR), 1: (T_OUT, K_CLR), 2: (T_OUT, K_WR), 3: (T_UO, K_CLR),
+                  4: (T_UO, K_WR), 5: (T_OE, K_WR)}.get(sel)
+            if tk:
+                self._pin(t, tk[0], tk[1], imm8)
         elif op == CNT_R:
             R[fa] = self.cnt
         elif op == INCR:
@@ -364,10 +434,10 @@ class IsaModel:
         elif op == IN_RD:
             R[fa] = self.ui(c)
         elif op == CALL:
-            R[7] = (a + 1) & M10
-            nxt, redirect = w & M10, True
+            R[7] = (a + 1) & M11
+            nxt, redirect = w & M11, True
         elif op == RET:
-            nxt, redirect = R[7] & M10, True
+            nxt, redirect = R[7] & M11, True
         elif op == WAIT_EDGE:
             bank, pin = (imm8 >> 3) & 1, imm8 & 7
             p = ((self.ui(c) if bank else self.uio(c)) >> pin) & 1
@@ -377,14 +447,14 @@ class IsaModel:
             self._block(t, c, kind="cmp", target=R[fa],
                         late=((self.cnt - R[fa]) & M16) < 256)
         elif op == SHIFT_OUT:
-            self._sr_out()
+            self._sr_out(t)
             self.sr = (((R[fa] & 1) << 15) | (self.sr >> 1)) if self.sr_lsb else \
                 (((self.sr << 1) | (R[fa] & 1)) & M16)
         elif op == SHIFT_IN:
             self._sr_in(c)
         elif op == MEM_W:
             self.store(self.waddr, R[fa], c)
-            self.waddr = (self.waddr + 1) & M10
+            self.waddr = (self.waddr + 1) & M11
         elif op == LDH:
             R[fa] = (imm8 << 8) | (R[fa] & 0xFF)
         elif op == EXT:
@@ -397,9 +467,27 @@ class IsaModel:
         else:
             self._next_ready(t, c, redirect)
 
-    def _sr_out(self):
+    def _sr_out(self, t):
+        """The shift register's output bit onto OUT[po] (a pin write: it may be timed)."""
         bit = (self.sr & 1) if self.sr_lsb else (self.sr >> 15) & 1
-        self.out = (self.out & ~(1 << self.sr_po) | (bit << self.sr_po)) & 0xFF
+        self._pin(t, T_OUT, K_SET if bit else K_CLR, 1 << self.sr_po)
+
+    def _pin(self, t, tgt, opk, val):
+        """A pin write by thread t (isa.md section 6.8). Immediate unless t's slot is
+        armed; then refused (Z = 1, LATE), held for its time, or, if the time is now,
+        applied now."""
+        if t.armed:
+            was_bad = t.bad
+            t.armed = t.bad = False
+            behind = (self.cnt - t.at_time) & M16
+            if was_bad or 1 <= behind < 256:
+                t.z, t.late = 1, 1
+                return
+            t.z = 0
+            if behind != 0:
+                t.pend, t.p_tgt, t.p_opk, t.p_val = True, tgt, opk, val
+                return
+        self._writes.append((t.tid, tgt, opk, val))
 
     def _sr_in(self, c):
         b = (self.uio(c) >> self.sr_pi) & 1
@@ -415,24 +503,24 @@ class IsaModel:
         elif sub == X_SRRD:
             R[ra] = self.sr
         elif sub == X_XFER:
-            self._sr_out()
+            self._sr_out(t)
             self._sr_in(c)
         elif sub == X_SERCFG:
             v = R[rb]
             self.sr_po, self.sr_pi, self.sr_lsb = v & 7, (v >> 3) & 7, (v >> 6) & 1
         elif sub == X_OUTW:
-            self.uo = R[rb] & 0xFF
+            self._pin(t, T_UO, K_WR, R[rb] & 0xFF)
         elif sub == X_MEMA:
-            self.waddr = R[rb] & M10
+            self.waddr = R[rb] & M11
         elif sub == X_LD:
-            self._block(t, c, kind="ld", rd=ra, data=self.mem[R[rb] & M10])
+            self._block(t, c, kind="ld", rd=ra, data=self.mem[R[rb] & M11])
         elif sub == X_ST:
-            self.store(R[ra] & M10, R[rb], c)
+            self.store(R[ra] & M11, R[rb], c)
         elif sub == X_SWAP:
             v = R[rb]
             R[ra] = ((v & 0xFF) << 8) | (v >> 8)
         elif sub == X_JR:
-            nxt, redirect = R[rb] & M10, True
+            nxt, redirect = R[rb] & M11, True
         elif sub == X_TMO:
             t.tmo = R[rb]
         elif sub == X_STAT:
@@ -440,6 +528,24 @@ class IsaModel:
                 (int(self.running(2)) << 11) | \
                 (int(self.fcount() == self.fsize()) << 8) | (int(self.fcount() > 0) << 7) | \
                 ((t.tid & 1) << 6) | (int(self.running(1)) << 5) | (int(self.crc_busy()) << 4)
+        elif sub == X_PW and (t.esel >> 1) & 7:       # a port page other than 0
+            port, page = ra, (t.esel >> 1) & 7
+            if page == 1 and port == P_AT:              # AT rb: arm the slot (isa.md 6.8)
+                t.armed = True
+                if t.pend and not t.due:                # the slot is occupied: refuse the next write
+                    t.bad = True
+                else:
+                    t.bad, t.at_time = False, R[rb]
+        elif sub == X_PR and (t.esel >> 1) & 7:
+            port, page = rb, (t.esel >> 1) & 7
+            if page == 3:                               # identity and the 32-bit counter (isa.md 6.10)
+                R[ra] = {0: 0x4D53, 1: 0x0400, 2: 0x0BBF, 3: (c >> 16) & M16}.get(port, 0)
+            elif page == 1 and port == P_AT:            # TS ra
+                R[ra] = t.ts
+            elif page == 1 and port == P_ATSTAT:        # AT_STAT ra
+                R[ra] = int(t.armed) | int(t.pend) << 1 | int(t.bad) << 2
+            else:
+                R[ra] = 0
         elif sub == X_PW:
             port = ra                       # PW #port, rb
             if port == P_FIFO:
@@ -451,7 +557,8 @@ class IsaModel:
                     self.fdrop = (self.fdrop + 1) & 0x7F
                     t.z = 1
             elif port == P_FCFG:
-                self.fbase, self.fn = R[rb] & M10, (R[rb] >> 10) & 7
+                self.fbase = (R[rb] & 0x3FF) | (((R[rb] >> 13) & 1) << 10)   # base bit 10 is rb[13]
+                self.fn = (R[rb] >> 10) & 7
                 self.fwp = self.frp = self.fdrop = 0
             elif port == P_LATE:            # clear the LATE flag of each thread named,
                 if R[rb] & 0x8000:              # or (bit 15) load the late guard
@@ -506,10 +613,13 @@ class IsaModel:
         elif sub == X_TSTART:
             tt = (ra & 3) or 1              # ra field: the thread (0 = T1)
             th = self.th[tt]
-            target = R[rb] & M10
+            target = R[rb] & M11
             th.regs = [0] * 8
             th.z = th.n = 0
             th.late = 0
+            th.esel, th.ts = 0, 0           # the port page back to 0 (v4)
+            self._ts_new = [(k, v) for k, v in self._ts_new if k != tt]   # a TS capture of this cycle loses
+            th.armed = th.bad = th.pend = False
             th.blk = None
             th.tmo = t.tmo                  # the starter's TMO
             if self.running(tt):
@@ -522,6 +632,7 @@ class IsaModel:
         elif sub == X_TSTOP:
             tp = (ra & 3) or 1
             self.alive &= ~(1 << tp)
+            self.th[tp].armed = self.th[tp].bad = self.th[tp].pend = False   # a held event is cancelled
         elif sub == X_TID:
             R[ra] = t.tid
         return nxt, redirect

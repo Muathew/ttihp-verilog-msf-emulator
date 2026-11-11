@@ -37,7 +37,7 @@ def firmware_table():
     rows = []
     for path in sorted(glob.glob(os.path.join(ROOT, "firmware", "*.s"))):
         an, words, _ = msf_timing.analyse(path)
-        lows = [d["lo"] for d in an.deadlines.values()]
+        lows = [d["lo"] for pc, d in an.deadlines.items() if not an.on_purpose(pc)]   # not the `@late` ones
         with open(path, encoding="utf-8") as f:
             first = f.readline().lstrip("; ").strip()
         rows.append({"name": os.path.basename(path), "words": len(words), "threads": an.n,

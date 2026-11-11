@@ -267,3 +267,34 @@ async def test_assembler_refuses_threads_four_to_seven(dut):
         except AsmError:
             continue
         raise AssertionError(f"{bad!r} assembled")
+
+
+# ---------------------------------------------------------------------------- step 5
+@cocotb.test()
+async def test_chip_identity_and_the_32_bit_counter(dut):
+    """Port page 3 (isa.md 6.10): the chip ID, version and capabilities, and the high half of the
+    32-bit cycle counter, which moves when the low half wraps. A v3 chip (ESEL a no-op, port 0 of
+    page 0 a FIFO pop of an empty FIFO) would leave a cleared register at 0."""
+    await boot_asm(dut, """
+        ESEL   #6
+        LDR    R1, #0
+        CHIPID R1
+        CHIPVER R2
+        CHIPCAPS R3
+        CNT_H  R4                   ; 0: the counter has not wrapped
+        CNT_R  R5
+        LDI    R6, 65000
+        ADDS   R5, R5, R6
+        WAIT_CMP R5
+        CNT_R  R5
+        LDI    R6, 1000
+        ADDS   R5, R5, R6
+        WAIT_CMP R5                 ; past 65536 cycles
+        CNT_H  R7
+    h:  JMP    h
+    """)
+    await ClockCycles(dut.clk, 66300)
+    assert reg(dut, 1) == 0x4D53, hex(reg(dut, 1))
+    assert reg(dut, 2) == 0x0400 and reg(dut, 3) == 0x0BBF, (hex(reg(dut, 2)), hex(reg(dut, 3)))
+    assert reg(dut, 4) == 0, "CNT_H before the wrap"
+    assert reg(dut, 7) == 1, f"CNT_H after 66,000 cycles: {reg(dut, 7)}"

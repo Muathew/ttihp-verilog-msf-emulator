@@ -7,12 +7,17 @@ Boot protocol v2 (see docs/info.md "Loading firmware"):
     A5  cmd  addrL addrH  lenL lenH  w0L w0H ... w(len-1)L w(len-1)H  crc8
 
     cmd 'W' (0x57) : write `len` words starting at `addr` (any SRAM address;
-                     0-127 = data RAM, 128-1023 = code)
+                     0-127 = data RAM, 128-2047 = code)
     cmd 'G' (0x47) : jump to `addr` (len = 0)
     crc8           : CRC-8, poly 0x07, init 0, over cmd..last payload byte
 
 The chip answers every frame with ACK (0x06) or NAK (0x15) on UART TX
 (uio[0], 115200 8N1 at a 12 MHz clock) and mirrors the result on uo_out.
+
+Autobaud (v4, plan-v4 B6): with ui_in[3] high at reset the ROM measures the start bit of
+the first byte it sees, which must be 0xFF, and sets its bit time from it, so the loader
+works at any clock and any --baud. `--autobaud` sends that byte first. Wait for uo_out[0]
+(waiting for a frame) before sending it.
 
 Usage:
     python tools/msf_boot.py firmware.s --port COM5 [--addr 128] [--no-run]
@@ -49,8 +54,14 @@ def frame(cmd, addr, words=()):
     return [SYNC] + body + [crc8(body)]
 
 
-def boot_frame(words, addr=128, run=True, protocol=None):
-    """Byte stream that loads `words` at `addr` (and runs it if `run`)."""
+CALIBRATE = 0xFF       # autobaud: a start bit of exactly one bit time, then eight 1s
+
+
+def boot_frame(words, addr=128, run=True, protocol=None, autobaud=False):
+    """Byte stream that loads `words` at `addr` (and runs it if `run`); with `autobaud` it
+    starts with the calibration byte the ROM times its bit rate from."""
+    if autobaud:
+        return [CALIBRATE] + boot_frame(words, addr, run, protocol)
     protocol = protocol or ROM_PROTOCOL
     if protocol == 1:                         # v1: raw LE words + 0x0000 end
         out = []
@@ -71,6 +82,8 @@ def main():
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--no-run", action="store_true")
     ap.add_argument("--dump", action="store_true")
+    ap.add_argument("--autobaud", action="store_true",
+                    help="send the 0xFF calibration byte first (the chip's ui_in[3] must be high at reset)")
     ap.add_argument("--data-str", help="load these bytes (+0) into data RAM 0..")
     ap.add_argument("--data-hex", help="load hex words from this file into data RAM 0..")
     a = ap.parse_args()
@@ -91,11 +104,14 @@ def main():
     w_frame = frame(CMD_WRITE, a.addr, words)
     g_frame = [] if a.no_run else frame(CMD_GO, a.addr)
     if a.dump or not a.port:
-        print(" ".join(f"{b:02X}" for b in d_frame + w_frame + g_frame))
+        print(" ".join(f"{b:02X}" for b in ([CALIBRATE] if a.autobaud else []) + d_frame + w_frame + g_frame))
         return 0
 
     import serial  # pyserial, only needed for real hardware
     with serial.Serial(a.port, a.baud, timeout=2) as s:
+        if a.autobaud:
+            s.write(bytes([CALIBRATE]))
+            s.flush()
         for f, what in ((d_frame, "data"), (w_frame, "write"), (g_frame, "go")):
             if not f:
                 continue

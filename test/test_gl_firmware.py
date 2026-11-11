@@ -18,7 +18,7 @@ from cocotb.triggers import ClockCycles, RisingEdge
 from assembler import assemble_file
 from fw_tb import Bench, Recorder
 from msf_tb import start_clock, reset, uart_send, uart_decode
-from test_targets import SpiController, flash_ref, FSIZE
+from test_targets import SpiController, flash_ref, FSIZE, FLASH
 from tools_path import frame, CMD_WRITE, CMD_GO
 
 FW = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "firmware")
@@ -112,7 +112,7 @@ async def test_gl_spi_flash(dut):
     (test_targets flash tests)."""
     rng = random.Random(8)
     mem = [rng.randrange(256) for _ in range(FSIZE)]
-    await gl_boot(dut, "spi_flash.s", data=[(512, mem)], uio_idle=0x20)
+    await gl_boot(dut, "spi_flash.s", data=[(FLASH, mem)], uio_idle=0x20)
     transfers = [[0x9F, 0, 0, 0], [0x05, 0], [0x03, 0x00, 0x01, 0xFC] + [0] * 6,
                  [0x06], [0x05, 0], [0x02, 0x00, 0x00, 0x40, 0x0F, 0xF0],
                  [0x03, 0x00, 0x00, 0x40, 0, 0]]

@@ -44,6 +44,20 @@ for the whole program is conservative: code that runs in single-thread mode
 is never slower than that. Threads started with `TSTART` from a constant
 address are analysed too, from a cleared state.
 
+A program that misses a deadline on purpose (the late-guard demonstrations,
+firmware/mcu_v3_peer.s) says so on the `WAIT_CMP` line, `; @late`. The checker takes that
+only if it finds the target already passed on every path (d < 1 at its largest): a
+deadline that may be met, or is not reached, is an error, so the annotation cannot hide a
+real miss. Such a deadline reports "LATE ON PURPOSE" and does not fail `--all`.
+
+v4 timed pins (isa.md 6.8): the abstract state also carries `ESEL` (the thread's port page,
+which decides what `PW`/`PR` mean), the `TS` of the last wait (a time relative to "now",
+set the way the waited-on register of a `WAIT_CMP` is) and the time `AT` armed. A pin write
+issued with `AT` armed is a deadline like a `WAIT_CMP`: it needs its time to be 0 to 65,280
+cycles ahead when it issues (d >= 0; the report's slack is d), or the hardware refuses the
+write (Z = 1, LATE). That is easier to certify than an exact path length: it needs only
+"armed before its time".
+
 `--check-model N` runs the program on the ISA model (test/isa_model.py) for
 N cycles and checks that every WAIT_CMP issue it observes lies in the range
 the analysis computed. The model has no SERDES, so this covers few programs,
@@ -73,9 +87,15 @@ sys.path.insert(0, os.path.join(ROOT, "test"))
 import assembler as asm  # noqa: E402
 
 M16 = 0xFFFF
-M10 = 0x3FF
+M11 = 0x7FF                     # 11-bit PC and addresses (isa.md section 1)
 U = ("u",)
 INF = None
+NOARM = ("n",)         # the AT slot is not armed
+# the abstract state's registers: R0-R7, then TS (time relative to now), the armed AT time
+# (NOARM, a time-relative value, or U) and ESEL (a constant, or a range if paths disagree)
+TS_REG, AT_REG, ESEL_REG = 8, 9, 10
+NREGS = 11
+
 
 # opcodes (isa.md §3)
 (LDR, ADDS, SUBS, AND, OR, XOR, SHL, SHR, MOV, JMP, JZ, JNZ, JP, JN, NOP, EXT,
@@ -180,16 +200,19 @@ class State:
 
 # ---------------------------------------------------------------- source map
 RE_RANGE = re.compile(r";\s*@range\s+R(\d)\s+(\S+)\s+(\S+)", re.I)
+RE_LATE = re.compile(r";\s*@late\b", re.I)
 
 
 def source_map(text, base, defines, include_dirs):
     """address -> source line (pass 1 of the assembler, kept here), the symbols,
-    and address -> (register, lo, hi) for each @range annotation."""
+    address -> (register, lo, hi) for each @range annotation, and the set of addresses
+    marked `@late` (a deadline the program means to miss)."""
     text = asm._expand_includes(text, include_dirs + [asm.FIRMWARE_DIR])
     raw = text.splitlines()
     syms = dict(defines or {})
     out = {}
     ranges = {}
+    late = set()
     pc = base
     for ln, labels, mn, args in asm._parse_lines(text):
         for lab in labels:
@@ -211,10 +234,12 @@ def source_map(text, base, defines, include_dirs):
             m = RE_RANGE.search(raw[ln - 1])
             if m:
                 ranges[pc] = (int(m.group(1)), m.group(2), m.group(3))
+            if RE_LATE.search(raw[ln - 1]):
+                late.add(pc)
             pc += asm._size(mn)
     ranges = {pc: (r, asm._eval(lo, syms), asm._eval(hi, syms))
               for pc, (r, lo, hi) in ranges.items()}
-    return out, syms, ranges
+    return out, syms, ranges, late
 
 
 # ---------------------------------------------------------------- analysis
@@ -248,13 +273,13 @@ def uses_defs(w):
 def successors(w, pc):
     """Static successors; None if the target is computed (RET, JR)."""
     op = w >> 11
-    nxt = (pc + 1) & M10
+    nxt = (pc + 1) & M11
     if op in (JMP, CALL):
-        return [w & M10]
+        return [w & M11]
     if JZ <= op <= JN:
         rel = (w >> 2) & 0x1FF
         rel = rel - 512 if rel & 0x100 else rel
-        return [(pc + 1 + rel) & M10, nxt]
+        return [(pc + 1 + rel) & M11, nxt]
     if op == RET or (op == EXT and (w & 0x1F) == X_JR):
         return None
     return [nxt]
@@ -265,7 +290,7 @@ def liveness(mem):
     the instruction after some CALL; a JR may go anywhere. Getting this wrong could
     only make a value unknown, never wrong: a dropped register reads as unknown."""
     live = {pc: set() for pc in mem}
-    returns = [(pc + 1) & M10 for pc, w in mem.items() if w >> 11 == CALL]
+    returns = [(pc + 1) & M11 for pc, w in mem.items() if w >> 11 == CALL]
     changed = True
     while changed:
         changed = False
@@ -286,17 +311,36 @@ def liveness(mem):
 
 
 class Analysis:
-    def __init__(self, words, base, nthreads, srcmap, ranges=None):
+    def __init__(self, words, base, nthreads, srcmap, ranges=None, late_ok=None):
         self.ranges = ranges or {}
+        self.late_ok = set(late_ok or ())    # addresses marked `@late`
         self.mem = {base + i: w for i, w in enumerate(words)}
         self.live = liveness(self.mem)
-        self.returns = {(pc + 1) & M10 for pc, w in self.mem.items() if w >> 11 == CALL}
+        self.returns = {(pc + 1) & M11 for pc, w in self.mem.items() if w >> 11 == CALL}
         self.base = base
         self.n = nthreads
         self.src = srcmap
         self.deadlines = {}      # pc -> {"lo", "hi", "aligned", "unchecked", "late"}
         self.problems = []       # (pc, message)
         self.spawns = {}         # entry pc -> tmo
+        # TS is part of the state only for a program that reads it: one more register that
+        # differs between paths splits the states at every join, and a program that never
+        # looks at TS must not pay for it (onewire.s lost its proof that way)
+        self.uses_ts = any(w >> 11 == EXT and (w & 0x1F) == X_PR for w in self.mem.values())
+
+    def on_purpose(self, pc):
+        """An `@late` WAIT_CMP the analysis finds late on every path: the program means to miss
+        it (the late-guard demonstrations). The annotation holds only if the checker agrees."""
+        dl = self.deadlines.get(pc)
+        return (pc in self.late_ok and dl is not None and dl.get("kind", "cmp") == "cmp"
+                and dl["late"] and not dl["unchecked"] and dl["hi"] is not None and dl["hi"] < 1)
+
+    def ts_fixed(self, d, fixed=None):
+        """`fixed` (the registers a step sets) with TS = d, if the program ever reads TS."""
+        fixed = dict(fixed or {})
+        if self.uses_ts:
+            fixed[TS_REG] = d
+        return fixed or None
 
     def word(self, pc):
         if pc not in self.mem:
@@ -352,12 +396,20 @@ class Analysis:
                 self.problem(pc, f"@range R{r} {lo} {hi} does not hold: the program "
                                  f"gives R{r} = {shown} here")
         z, nf, tmo = s.z, s.n, s.tmo
-        nxt = (pc + 1) & M10
+        nxt = (pc + 1) & M11
         cost = self.plain()
         out = []
 
         def const(v):
             return v[1] if v[0] == "c" else None
+
+        sub = w & 0x1F
+        # a pin write (PIN_W, SETM/CLRM selectors 0-5, SHIFT_OUT, XFER, OUT_W): with AT armed it
+        # is a timed write and a deadline (isa.md 6.8)
+        is_pin_write = (op in (PIN_W, SHIFT_OUT) or (op in (SETM, CLRM) and fa <= 5)
+                        or (op == EXT and sub in (X_XFER, X_OUTW)))
+        if is_pin_write and R[AT_REG] != NOARM:
+            z = self.timed_write(pc, R, z)
 
         if op == LDR:
             R[fa] = ("c", imm8)
@@ -396,19 +448,21 @@ class Analysis:
                 else:
                     R[fa] = U
         elif op == JMP:
-            nxt, cost = w & M10, self.jump_cost()
+            nxt, cost = w & M11, self.jump_cost()
         elif JZ <= op <= JN:
             flag = z if op in (JZ, JNZ) else nf
             want = {JZ: 1, JNZ: 0, JP: 0, JN: 1}[op]
             rel = (w >> 2) & 0x1FF
             rel = rel - 512 if rel & 0x100 else rel
-            tgt = (pc + 1 + rel) & M10
+            tgt = (pc + 1 + rel) & M11
             regs = tuple(R)
             if flag is None or flag == want:
                 out.append((State(tgt, regs, z, nf, tmo), *self.jump_cost(), None))
             if flag is None or flag != want:
                 out.append((State(nxt, regs, z, nf, tmo), *self.plain(), None))
             return out
+        elif op == SETM and fa == 6:
+            R[ESEL_REG] = ("c", imm8 & 0xF)                   # ESEL
         elif op in (PIN_R, IN_RD):
             R[fa] = U
         elif op == CNT_R:
@@ -424,8 +478,8 @@ class Analysis:
                 R[fa] = ("t", add_iv(v[1], d), add_iv(v[2], d)) if v[0] == "t" else U
                 z = nf = None
         elif op == CALL:
-            R[7] = ("c", (pc + 1) & M10)
-            nxt, cost = w & M10, self.jump_cost()
+            R[7] = ("c", (pc + 1) & M11)
+            nxt, cost = w & M11, self.jump_cost()
         elif op == RET:
             t = const(R[7])
             if t is None:
@@ -435,10 +489,13 @@ class Analysis:
                 regs = tuple(R)
                 return [(State(r, regs, z, nf, tmo), *self.jump_cost(), None)
                         for r in sorted(self.returns)]
-            nxt, cost = t & M10, self.jump_cost()
+            nxt, cost = t & M11, self.jump_cost()
         elif op == WAIT_EDGE:
             cost = self.blocking(tmo, False)
             z = None
+            out.append((State(nxt, tuple(R), z, nf, tmo), *cost,
+                        self.ts_fixed(("t", -(2 * self.n - 1), -self.n))))   # TS: the event, just behind
+            return out
         elif op == WAIT_CMP:
             return self.wait_cmp(s, pc, fa, R, nf, tmo)
         elif op == LDH:
@@ -452,7 +509,7 @@ class Analysis:
                 if t is None:
                     self.problem(pc, "JR to an address the analysis cannot follow")
                     return []
-                nxt, cost = t & M10, self.jump_cost()
+                nxt, cost = t & M11, self.jump_cost()
             elif sub == X_TMO:
                 tmo = const(R[rb])
             elif sub == X_TSTART:
@@ -460,7 +517,7 @@ class Analysis:
                 if t is None:
                     self.problem(pc, "TSTART of an address the analysis cannot follow")
                 else:
-                    self.spawns.setdefault(t & M10, tmo)
+                    self.spawns.setdefault(t & M11, tmo)
                 if (ra & 3) == 0:   # restarting itself is not followed
                     pass
             elif sub == X_SWAP:
@@ -468,6 +525,16 @@ class Analysis:
                 R[ra] = ("c", ((v & 0xFF) << 8) | (v >> 8)) if v is not None else U
             elif sub == X_TID:
                 R[ra] = U
+            elif sub in (X_PW, X_PR) and self.page(pc, R) != 0:
+                # a port page other than 0 (isa.md 3.2): page 1 is the timed pins
+                page = self.page(pc, R)
+                if page == 1 and sub == X_PW and ra == 0:         # AT rb
+                    t = R[rb]
+                    R[AT_REG] = t if t[0] == "t" else U
+                elif page == 1 and sub == X_PR and rb == 0:       # TS ra
+                    R[ra] = R[TS_REG]
+                elif sub == X_PR:                                 # AT_STAT, unused ports
+                    R[ra] = U if page == 1 else ("c", 0)
             elif sub in (X_LD,) or (sub == X_PR and rb == 0):
                 cost = self.ld_cost()
                 R[ra] = U
@@ -489,6 +556,45 @@ class Analysis:
                 R[ra] = U
         out.append((State(nxt, tuple(R), z, nf, tmo), *cost, None))
         return out
+
+    def page(self, pc, R):
+        """The port page of the executing thread (ESEL bits 3:1), 0 if it cannot be followed
+        (and a problem is recorded: the cost of PW/PR depends on it)."""
+        e = R[ESEL_REG]
+        if e[0] == "c":
+            return (e[1] >> 1) & 7
+        self.problem(pc, "the port page (ESEL) is not known here: PW/PR cannot be costed")
+        return 0
+
+    def timed_write(self, pc, R, z):
+        """A pin write issued with AT armed: a deadline, d = time - now >= 0. Consumes the
+        arm; returns Z after it (0 if certainly accepted, else unknown)."""
+        v = R[AT_REG]
+        R[AT_REG] = NOARM
+        dl = self.deadlines.setdefault(pc, {"lo": None, "hi": None, "seen": False,
+                                            "aligned": True, "unchecked": False,
+                                            "late": False, "kind": "at"})
+        dl["kind"] = "at"
+        if v[0] != "t":
+            dl["unchecked"] = True
+            self.problem(pc, "AT time is not derived from CNT or TS: whether the write is "
+                             "refused is unknown")
+            return None
+        lo, hi = v[1], v[2]
+        if not dl["seen"]:
+            dl["lo"], dl["hi"], dl["seen"] = lo, hi, True
+        else:
+            dl["lo"] = None if lo is None or dl["lo"] is None else min(dl["lo"], lo)
+            dl["hi"] = None if hi is None or dl["hi"] is None else max(dl["hi"], hi)
+        if lo is None or lo < 0:
+            dl["late"] = True
+            self.problem(pc, "a timed pin write may find its AT time already passed: refused")
+            return None
+        if hi is None or hi > AHEAD_MAX:
+            dl["late"] = True
+            self.problem(pc, f"AT time may be more than {AHEAD_MAX} cycles ahead: refused")
+            return None
+        return 0
 
     def wait_cmp(self, s, pc, fa, R, nf, tmo):
         n = self.n
@@ -514,7 +620,7 @@ class Analysis:
             dl["late"] = True
             # the late release: 2 slots, Z = 1, the edge is late
             late = State(pc + 1, R, 1, nf, tmo)
-            out.append((late, 2 * n, 2 * n, None))
+            out.append((late, 2 * n, 2 * n, self.ts_fixed(("t", -n, -n))))   # no event: TS = release
         if hi is not None and hi < 1:
             return out
         dlo = max(lo, 1) if lo is not None else 1
@@ -531,13 +637,14 @@ class Analysis:
             fixed = {fa: ("t", rd, rd)}
         else:
             fixed = {fa: ("t", -(2 * n - 1), -n)}
+        fixed = self.ts_fixed(("t", -(2 * n - 1), -n), fixed)   # TS: the target, as the register's d
         st = State(pc + 1, R, 0, nf, tmo)
         out.append((st, alo, ahi, fixed))
         return out
 
     # exploration -----------------------------------------------------
     def run(self, entry, tmo):
-        start = State(entry, [("c", 0)] * 8, 0, 0, tmo)
+        start = State(entry, [("c", 0)] * 8 + [("c", 0), NOARM, ("c", 0)], 0, 0, tmo)
         seen = {}
         joined = {}
         joins = {}
@@ -549,7 +656,7 @@ class Analysis:
                 for r, v in (fixed or {}).items():
                     regs[r] = v
                 live = self.live.get(st.pc, ALL_REGS)
-                regs = tuple(x if i in live else U for i, x in enumerate(regs))
+                regs = tuple(x if (i >= 8 or i in live) else U for i, x in enumerate(regs))
                 ns = State(st.pc, regs, st.z, st.n, st.tmo)
                 # states are only joined within one calling context: the
                 # same program point and the same return addresses, in R7 or
@@ -595,13 +702,14 @@ def analyse(path, nthreads=None, defines=None, base=128):
     with open(path, encoding="utf-8") as f:
         text = f.read()
     words = asm.assemble_file(path, base_addr=base, defines=defines)
-    srcmap, syms, ranges = source_map(text, base, defines, [os.path.dirname(os.path.abspath(path))])
+    srcmap, syms, ranges, late_ok = source_map(text, base, defines,
+                                               [os.path.dirname(os.path.abspath(path))])
     # first pass with one thread finds the threads the program starts
-    a = Analysis(words, base, 1, srcmap, ranges)
+    a = Analysis(words, base, 1, srcmap, ranges, late_ok)
     a.run(base, 0xFFFF)
     entries = dict(a.spawns)
     n = nthreads or min(4, 1 + len(entries))
-    a = Analysis(words, base, n, srcmap, ranges)
+    a = Analysis(words, base, n, srcmap, ranges, late_ok)
     a.run(base, 0xFFFF)
     done = set()
     while True:
@@ -611,6 +719,11 @@ def analyse(path, nthreads=None, defines=None, base=128):
         for e in todo:
             done.add(e)
             a.run(e, a.spawns[e])
+    for pc in sorted(a.late_ok):          # an `@late` the checker does not confirm is an error
+        if pc not in a.deadlines:
+            a.problem(pc, "@late: the analysis reaches no WAIT_CMP here")
+        elif not a.on_purpose(pc):
+            a.problem(pc, "@late: this deadline may be met (the annotation promises it never is)")
     return a, words, syms
 
 
@@ -620,7 +733,8 @@ def fmt(v):
 
 def certified(a):
     """True if the analysis found no deadline it could not prove."""
-    if any(dl["late"] or dl["unchecked"] for dl in a.deadlines.values()):
+    if any((dl["late"] and not a.on_purpose(pc)) or dl["unchecked"]
+           for pc, dl in a.deadlines.items()):
         return False
     return not any("not derived from CNT" not in msg for _, msg in a.problems)
 
@@ -628,7 +742,9 @@ def certified(a):
 def report(path, a):
     name = os.path.relpath(path, ROOT)
     bad = False
-    print(f"{name}: {a.n} thread(s), {len(a.deadlines)} WAIT_CMP deadline(s)")
+    kinds = [dl.get("kind", "cmp") for dl in a.deadlines.values()]
+    print(f"{name}: {a.n} thread(s), {kinds.count('cmp')} WAIT_CMP deadline(s)"
+          + (f", {kinds.count('at')} timed pin write(s)" if "at" in kinds else ""))
     for pc in sorted(a.deadlines):
         dl = a.deadlines[pc]
         src = a.src.get(pc, "")
@@ -636,15 +752,20 @@ def report(path, a):
             print(f"  {pc:#05x}  {src:28s} target not from CNT: unchecked")
             bad = True
             continue
+        at = dl.get("kind") == "at"
         lo, hi = dl["lo"], dl["hi"]
         hi_s = "inf" if hi is None else str(hi)
-        if dl["late"]:
-            verdict = "MAY BE LATE"
+        if dl["late"] and a.on_purpose(pc):
+            verdict = "LATE ON PURPOSE (@late: the target has passed on every path)"
+        elif dl["late"]:
+            verdict = "MAY BE REFUSED" if at else "MAY BE LATE"
             bad = True
         else:
-            verdict = f"slack >= {lo - 1}"
+            verdict = f"slack >= {lo if at else lo - 1}"
         extra = ""
-        if a.n > 1:
+        if at:
+            extra = ", on its cycle whatever the other threads do"
+        elif a.n > 1:
             extra = ", release exact" if dl["aligned"] else ", release may lag up to n-1 cycles"
         if dl["unchecked"]:
             extra += "; also reached with a target not from CNT"

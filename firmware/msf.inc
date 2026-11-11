@@ -62,3 +62,32 @@
 
 ; ---- conventional done marker on uo_out used by the demos ----
 .equ DONE,       0x55
+
+; ---- v4 (docs/isa.md sections 3.2, 6.8, 6.9, 6.10) ----
+; ESEL #m: the thread's engine set (bit 0) and port page (bits 3:1). A thread that uses the page-0 ports
+; (FIFO, capture, filter, late guard) and the timed pins switches with one ESEL each way.
+.equ ESEL_SET0,   0x00       ; engine set 0, port page 0 (every thread starts here)
+.equ ESEL_SET1,   0x01       ; engine set 1: TX_*, RX_*, CRC_* and STAT bits 0-4 address the second set
+.equ ESEL_TIMED,  0x02       ; port page 1: AT, TS, AT_STAT
+.equ ESEL_OPT,    0x04       ; port page 2, engine options (+ ESEL_SET1 for set 1)
+.equ ESEL_ID,     0x06       ; port page 3: CHIPID, CHIPVER, CHIPCAPS, CNT_H
+; RX_CFG bit 3 selects the ui pin, TX_CFG bit 15 drives uo instead of uio
+.equ RX_UI,       0x0008
+.equ TX_UO,       0x8000
+; TX_OPT / RX_OPT: stuffing count n in bits 3:0, kind in bit 4 (0 after n ones a 0, 1 after n equal bits the
+; opposite), bit 5: TX stream (underrun is an error) / RX check the stop bit (character mode)
+.equ OPT_KIND1,   0x0010
+.equ OPT_STREAM,  0x0020
+.equ OPT_STOPCHK, 0x0020
+; TX_EXT / RX_EXT: clock pin | bank << 3 | falling << 4 | enable | pre << 6 | gate << 8 | gate bank << 11 |
+; gate active high << 12 | gate enable << 13
+.equ EXT_FALL,    0x0010
+.equ EXT_EN,      0x0020
+.equ EXT_PRE,     0x0040
+.equ EXT_GATE_HI, 0x1000
+.equ EXT_GATE,    0x2000     ; | gate pin << 8
+; ERR_STAT bits
+.equ ERR_FRAME,   0x0001
+.equ ERR_STUFF,   0x0002
+.equ ERR_UNDER,   0x0004
+.equ ST_ERR,      0x8000     ; STAT bit 15

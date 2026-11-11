@@ -3,8 +3,8 @@
 //
 //   rst_n --2FF release--> rst_s (every flop's reset)
 //   ui_in / uio_in --2FF sync--> ctrl (4 hardware threads) --> pio (pad flops) --> uo_out / uio_out / uio_oe
-//   IMEM fetch: boot ROM (0-127) or SRAM port A (128-1023), registered bank select
-//   SRAM port B: data (LD / ST / MEM_W / FIFO, all 1024 words)
+//   IMEM fetch: boot ROM (0-127) or SRAM port A (128-2047), registered bank select
+//   SRAM port B: data (LD / ST / MEM_W / FIFO, all 2048 words)
 //   peripheral bus: serdes (TX/RX engines), crc (CRC unit), cap (capture), filt (glitch filter)
 `default_nettype none
 
@@ -65,19 +65,19 @@ module tt_um_msf (
   wire [7:0] uo_fw, dbg_q;
   assign uo_out = dbg_mode ? dbg_q : uo_fw;
 
-  // ---- instruction memory: boot ROM (0-127) + SRAM (128-1023) ----
-  wire [9:0]  imem_raddr;
+  // ---- instruction memory: boot ROM (0-127) + SRAM (128-2047) ----
+  wire [10:0]  imem_raddr;
   wire [15:0] rom_rd, sram_rd;
   wire        b_en, b_we;               // the core's port B request
-  wire [9:0]  b_addr;
+  wire [10:0]  b_addr;
   wire [15:0] b_wd, b_rd;
   // capture engine: writes port B only in cycles the core leaves it free
   wire        cap_req;
-  wire [9:0]  cap_addr;
+  wire [10:0]  cap_addr;
   wire [15:0] cap_wd;
   wire        sb_en   = b_en | cap_req;
   wire        sb_we   = b_en ? b_we : 1'b1;
-  wire [9:0]  sb_addr = b_en ? b_addr : cap_addr;
+  wire [10:0]  sb_addr = b_en ? b_addr : cap_addr;
   wire [15:0] sb_wd   = b_en ? b_wd : cap_wd;
 
   tt_um_msf_bootrom u_rom (
@@ -97,7 +97,7 @@ module tt_um_msf (
   reg imem_sel_sram;
   always @(posedge clk or negedge rst_s)
     if (!rst_s) imem_sel_sram <= 1'b0;
-    else        imem_sel_sram <= (imem_raddr[9:7] != 3'b000);
+    else        imem_sel_sram <= (imem_raddr[10:7] != 4'b0000);
   wire [15:0] imem_rd = imem_sel_sram ? sram_rd : rom_rd;
 
   // ---- core ----
@@ -106,16 +106,35 @@ module tt_um_msf (
   wire        per_we, rx_pop;
   wire [4:0]  per_sub;
   wire [15:0] per_wd;
+  wire        per_set;             // the engine set the core's write / pop is for (ESEL bit 0)
+  wire        opt_we;                          // engine options, port page 2
+  wire [2:0]  opt_port, opt_rport;
+  wire [15:0] opt_wd, opt_rd0, opt_rd1;
+  wire        err0, err1;
+  // two engine sets (v4): set 0 and set 1 each have a TX engine, an RX engine and a CRC unit
   wire        tx_full, tx_busy, rx_avail, rx_overrun, crc_busy;
   wire [15:0] rx_word, crc_lo, crc_hi;
-  wire [7:0]  tx_mask, tx_val;
+  wire        tx_full1, tx_busy1, rx_avail1, rx_overrun1, crc_busy1;
+  wire [15:0] rx_word1, crc_lo1, crc_hi1;
+  wire [7:0]  tx_mask0, tx_val0, tx_mask1, tx_val1;       // each set's override of uio_out
+  wire [7:0]  tx_mask0_n, tx_val0_n, tx_mask1_n, tx_val1_n;
+  wire [7:0]  txu_mask0, txu_val0, txu_mask1, txu_val1;   // ... and of uo_out (TX_CFG bit 15)
+  wire [7:0]  txu_mask0_n, txu_val0_n, txu_mask1_n, txu_val1_n;
+  // where both sets drive a pin, set 1 wins (docs/isa.md section 3.2)
+  wire [7:0]  tx_mask   = tx_mask0 | tx_mask1;
+  wire [7:0]  tx_val    = (tx_val1 & tx_mask1) | (tx_val0 & tx_mask0 & ~tx_mask1);
+  wire [7:0]  tx_mask_n = tx_mask0_n | tx_mask1_n;
+  wire [7:0]  tx_val_n  = (tx_val1_n & tx_mask1_n) | (tx_val0_n & tx_mask0_n & ~tx_mask1_n);
+  wire [7:0]  txu_mask   = txu_mask0 | txu_mask1;
+  wire [7:0]  txu_val    = (txu_val1 & txu_mask1) | (txu_val0 & txu_mask0 & ~txu_mask1);
+  wire [7:0]  txu_mask_n = txu_mask0_n | txu_mask1_n;
+  wire [7:0]  txu_val_n  = (txu_val1_n & txu_mask1_n) | (txu_val0_n & txu_mask0_n & ~txu_mask1_n);
   wire        pw_we;
   wire [2:0]  pw_port;
   wire [15:0] pw_data, cap_stat;
-  wire [9:0]  cap_tpos;
+  wire [10:0]  cap_tpos;
   wire [7:0]  oe_off, oe_off_n;    // the late guard's pins, now and next cycle
-  wire [7:0]  tx_mask_n, tx_val_n; // the TX engine's override next cycle
-  wire [7:0]  uio_out_c, uio_oe_c; // the pads' old combinational definition (formal only)
+  wire [7:0]  uio_out_c, uio_oe_c, uo_out_c;   // the pads' old combinational definition (formal only)
 
   tt_um_msf_ctrl u_ctrl (
       .clk(clk), .rst_n(rst_s),
@@ -125,10 +144,15 @@ module tt_um_msf (
       .out_q(out_q), .oe_q(oe_q), .uo_q(uo_q),
       .out_we(out_we), .out_d(out_d), .oe_we(oe_we), .oe_d(oe_d),
       .uo_we(uo_we), .uo_d(uo_d),
-      .per_we(per_we), .per_sub(per_sub), .per_wd(per_wd), .rx_pop(rx_pop),
+      .per_we(per_we), .per_sub(per_sub), .per_wd(per_wd), .per_set(per_set), .rx_pop(rx_pop),
+      .opt_we(opt_we), .opt_port(opt_port), .opt_wd(opt_wd), .opt_rport(opt_rport),
+      .opt_rd(opt_rd0), .opt_rd1(opt_rd1), .err_any(err0), .err_any1(err1),
       .tx_full(tx_full), .tx_busy(tx_busy), .rx_avail(rx_avail),
       .rx_overrun(rx_overrun), .rx_word(rx_word),
       .crc_busy(crc_busy), .crc_lo(crc_lo), .crc_hi(crc_hi),
+      .tx_full1(tx_full1), .tx_busy1(tx_busy1), .rx_avail1(rx_avail1),
+      .rx_overrun1(rx_overrun1), .rx_word1(rx_word1),
+      .crc_busy1(crc_busy1), .crc_lo1(crc_lo1), .crc_hi1(crc_hi1),
       .pw_we(pw_we), .pw_port(pw_port), .pw_data(pw_data),
       .oe_off(oe_off), .oe_off_n(oe_off_n),
       .cap_stat(cap_stat), .cap_tpos(cap_tpos),
@@ -158,26 +182,54 @@ module tt_um_msf (
       .out_we(out_we), .out_d(out_d), .oe_we(oe_we), .oe_d(oe_d),
       .uo_we(uo_we), .uo_d(uo_d),
       .tx_mask(tx_mask), .tx_val(tx_val), .tx_mask_n(tx_mask_n), .tx_val_n(tx_val_n),
+      .txu_mask(txu_mask), .txu_val(txu_val), .txu_mask_n(txu_mask_n), .txu_val_n(txu_val_n),
       .oe_off(oe_off), .oe_off_n(oe_off_n),
       .out_q(out_q), .oe_q(oe_q), .uo_q(uo_q),
       .uio_out(uio_out), .uio_oe(uio_oe), .uo_out(uo_fw),
-      .uio_out_c(uio_out_c), .uio_oe_c(uio_oe_c)
+      .uio_out_c(uio_out_c), .uio_oe_c(uio_oe_c), .uo_out_c(uo_out_c)
   );
 
-  // ---- peripherals ----
+  // ---- peripherals: two engine sets (docs/isa.md section 3.2) ----
+  // The core's write or pop goes to the set its thread's ESEL bit 0 names; both sets
+  // see the same pins.
+  wire per_we0 = per_we && !per_set, per_we1 = per_we && per_set;
+  wire rx_pop0 = rx_pop && !per_set, rx_pop1 = rx_pop && per_set;
+  wire opt_we0 = opt_we && !per_set, opt_we1 = opt_we && per_set;
+
   tt_um_msf_serdes u_serdes (
       .clk(clk), .rst_n(rst_s),
-      .per_we(per_we), .per_sub(per_sub), .per_wd(per_wd), .rx_pop(rx_pop),
-      .uio_in(uio_f),
-      .tx_full(tx_full), .tx_busy(tx_busy), .tx_mask(tx_mask), .tx_val(tx_val),
-      .tx_mask_n(tx_mask_n), .tx_val_n(tx_val_n),
+      .per_we(per_we0), .per_sub(per_sub), .per_wd(per_wd), .rx_pop(rx_pop0),
+      .uio_in(uio_f), .ui_in(ui_sync),
+      .opt_we(opt_we0), .opt_port(opt_port), .opt_wd(opt_wd), .opt_rport(opt_rport),
+      .opt_rd(opt_rd0), .err_any(err0),
+      .tx_full(tx_full), .tx_busy(tx_busy), .tx_mask(tx_mask0), .tx_val(tx_val0),
+      .tx_mask_n(tx_mask0_n), .tx_val_n(tx_val0_n),
+      .txu_mask(txu_mask0), .txu_val(txu_val0), .txu_mask_n(txu_mask0_n), .txu_val_n(txu_val0_n),
       .rx_avail(rx_avail), .rx_overrun(rx_overrun), .rx_word(rx_word)
+  );
+
+  tt_um_msf_serdes u_serdes1 (
+      .clk(clk), .rst_n(rst_s),
+      .per_we(per_we1), .per_sub(per_sub), .per_wd(per_wd), .rx_pop(rx_pop1),
+      .uio_in(uio_f), .ui_in(ui_sync),
+      .opt_we(opt_we1), .opt_port(opt_port), .opt_wd(opt_wd), .opt_rport(opt_rport),
+      .opt_rd(opt_rd1), .err_any(err1),
+      .tx_full(tx_full1), .tx_busy(tx_busy1), .tx_mask(tx_mask1), .tx_val(tx_val1),
+      .tx_mask_n(tx_mask1_n), .tx_val_n(tx_val1_n),
+      .txu_mask(txu_mask1), .txu_val(txu_val1), .txu_mask_n(txu_mask1_n), .txu_val_n(txu_val1_n),
+      .rx_avail(rx_avail1), .rx_overrun(rx_overrun1), .rx_word(rx_word1)
   );
 
   tt_um_msf_crc u_crc (
       .clk(clk), .rst_n(rst_s),
-      .per_we(per_we), .per_sub(per_sub), .per_wd(per_wd),
+      .per_we(per_we0), .per_sub(per_sub), .per_wd(per_wd),
       .busy(crc_busy), .crc_lo(crc_lo), .crc_hi(crc_hi)
+  );
+
+  tt_um_msf_crc u_crc1 (
+      .clk(clk), .rst_n(rst_s),
+      .per_we(per_we1), .per_sub(per_sub), .per_wd(per_wd),
+      .busy(crc_busy1), .crc_lo(crc_lo1), .crc_hi(crc_hi1)
   );
 
   wire _unused = &{ena, 1'b0};
@@ -186,17 +238,17 @@ module tt_um_msf (
   // F7 (B3): the word delivered to the core comes from the bank (ROM or
   // SRAM) of the address it was fetched with in the previous cycle.
   reg f_init = 1'b1;
-  reg [9:0] f_faddr;
+  reg [10:0] f_faddr;
   always @(posedge clk) begin
     f_init  <= 1'b0;
     f_faddr <= imem_raddr;
   end
   always @(*) assume(rst_n == !f_init);
-  always @(*) if (!f_init) assert(imem_rd == ((f_faddr[9:7] != 3'b000) ? sram_rd : rom_rd));
+  always @(*) if (!f_init) assert(imem_rd == ((f_faddr[10:7] != 4'b0000) ? sram_rd : rom_rd));
   // F9: the capture engine never takes SRAM port B from the core
   always @(*) if (!f_init) assert(!(b_en && cap_req));
   // F18 (plan-v4 B4): the pad registers hold what the old combinational expressions
   // give, in every cycle: registering them moved no edge
-  always @(*) if (!f_init) assert(uio_out == uio_out_c && uio_oe == uio_oe_c);
+  always @(*) if (!f_init) assert(uio_out == uio_out_c && uio_oe == uio_oe_c && uo_fw == uo_out_c);
 `endif
 endmodule

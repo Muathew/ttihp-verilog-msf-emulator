@@ -3,7 +3,11 @@
 ;
 ; Reset with ui_in[0] = 1 : jump straight to firmware at 128 (same cycle as v1).
 ; Reset with ui_in[0] = 0 : boot loader; ui_in[1] picks the byte source
-;     ui_in[1] = 0 : UART on uio[1] (RX engine), 115200 8N1 at a 12 MHz clock
+;     ui_in[1] = 0 : UART on uio[1] (RX engine), 115200 8N1 at a 12 MHz clock, or, with
+;                    ui_in[3] = 1 (v4 autobaud, plan-v4 B6), at any clock: the host sends
+;                    0xFF first, whose start bit is one bit long; the ROM times it with CNT
+;                    and sets both dividers (bit time = cycles of the low pulse), then
+;                    the frames follow back to back. With ui_in[3] = 0: 104 cycles a bit.
 ;     ui_in[1] = 1 : parallel -- byte on ui_in[7:0], strobe on uio[1],
 ;                    two-phase level handshake: byte k is valid when the
 ;                    strobe level == k mod 2 (first byte: strobe high); the
@@ -52,8 +56,21 @@ loader:
         SUBS     R3, R3, R2         ; Z=1 iff ui_in[1] == 1
         JZ       frame
         LDR      R6, #uart_get
-        LDI      R2, RXCFG
-        RX_CFG   R2
+        LDR      R2, #8
+        AND      R2, R1, R2         ; ui_in[3]: autobaud
+        ADDS     R2, R2, R0         ; (AND leaves Z alone; R0 = 0): Z=1 iff the strap is low
+        JZ       noab
+        UO_SET   0x01               ; waiting: the host may send its 0xFF now
+        WAIT_EDGE 1, fall           ; start bit of 0xFF: one bit of low, then 8 ones and the stop bit
+        CNT_R    R2
+        WAIT_EDGE 1, rise
+        CNT_R    R5
+        SUBS     R5, R5, R2         ; the bit time in cycles (both edges see the same latency)
+        TX_DIV   R5
+        RX_DIV   R5
+noab:   LDI      R2, RXCFG
+        RX_CFG   R2                 ; the receiver starts at the next falling edge, so the
+                                    ; rest of the 0xFF byte (all ones) goes by unseen
 
 frame:
         UO_SET   0x01               ; waiting

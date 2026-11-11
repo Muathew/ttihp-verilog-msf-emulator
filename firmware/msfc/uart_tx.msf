@@ -1,0 +1,17 @@
+// 8N1 UART transmitter on pin 0, 104 cycles a bit (115200 baud at 12 MHz). The bit schedule is a
+// time variable, and every edge is a hardware-timed write: no drift, no cycle counting in the
+// program, and the compiler's checker has certified that each write arrives before its time.
+const BIT = 104;
+var byte = 0x55;
+time t = now() + 40;
+oe_set(0x01);
+set(0x01);                          // idle high
+at t clear(0x01);                   // the start bit
+repeat (8) {
+    t += BIT;
+    if (byte & 1) { at t set(0x01); } else { at t clear(0x01); }
+    byte >>= 1;
+}
+t += BIT;
+at t set(0x01);                     // the stop bit
+halt;

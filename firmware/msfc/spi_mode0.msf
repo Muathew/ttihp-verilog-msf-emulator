@@ -1,0 +1,22 @@
+// SPI master, mode 0, one byte MSB first, 32 cycles a clock (375 kHz at 12 MHz): SCK uio2,
+// MOSI uio3, CS uio5. Every edge is a hardware-timed write, so the clock is exact whatever the
+// loop between the edges costs; the compiler refuses the program if a half period is too short
+// for it (try HALF = 4).
+const HALF = 16;
+var tx = 0xA5;
+time t = now() + 40;
+oe_set(0x2C);                       // SCK, MOSI and CS are outputs
+set(0x20);                          // CS high
+at t clear(0x20);                   // CS low
+repeat (8) {
+    t += HALF;
+    if (tx & 0x80) { at t set(0x08); } else { at t clear(0x08); }     // MOSI changes ...
+    tx <<= 1;
+    t += HALF;
+    at t set(0x04);                 // ... half a period before SCK rises
+    t += HALF;
+    at t clear(0x04);               // SCK falls
+}
+t += HALF;
+at t set(0x20);                     // CS high
+halt;

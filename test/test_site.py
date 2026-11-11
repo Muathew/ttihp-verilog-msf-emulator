@@ -54,9 +54,35 @@ def test_a_jump_it_cannot_follow_is_not_passed_off():
 
 
 def test_too_long_does_not_assemble():
-    r = pg.check("    NOP\n" * 897)
+    """v4: 2,048 words, the program starting at 128."""
+    r = pg.check("    NOP\n" * 1921)
     assert r["verdict"] == "error" and "too long" in r["message"], r
-    assert pg.check("    NOP\n" * 895 + "h: JMP h\n")["verdict"] == "no deadlines"
+    assert pg.check("    NOP\n" * 1919 + "h: JMP h\n")["verdict"] == "no deadlines"
+
+
+def test_a_deadline_marked_late_on_purpose_is_certified_only_if_it_is_always_late():
+    """`; @late` on a WAIT_CMP (firmware/mcu_v3_peer.s shows the late guard by missing two):
+    the checker takes it only where the target has passed on every path."""
+    late = "start: CNT_R R5\n       WAIT_CMP R5    ; @late on purpose\nh:     JMP h\n"
+    r = pg.check(late)
+    assert r["verdict"] == "certified" and r["deadlines"][0]["on_purpose"], r
+    assert "LATE ON PURPOSE" in r["report"]
+    # the same program without the annotation is refused: the miss is real
+    assert pg.check(late.replace("; @late on purpose", ""))["verdict"] == "refused"
+    # an annotation on a deadline that is met is an error, not a pass
+    met = ("start: CNT_R R5\n       LDR R1, #50\n       ADDS R5, R5, R1\n"
+           "       WAIT_CMP R5    ; @late (wrong: this one is met)\nh:     JMP h\n")
+    r = pg.check(met)
+    assert r["verdict"] == "refused" and "@late: this deadline may be met" in r["report"], r
+    # and so is one on an instruction that is no deadline
+    r = pg.check("    NOP    ; @late\nh: JMP h\n")
+    assert r["verdict"] != "certified" and "@late" in r["report"], r
+
+
+def test_the_peer_firmware_that_misses_deadlines_on_purpose_says_so():
+    r = pg.check(firmware("mcu_v3_peer.s"))
+    assert r["verdict"] == "certified", r["report"]
+    assert sum(1 for d in r["deadlines"] if d["on_purpose"]) == 2 and r["report"].count("LATE ON PURPOSE") == 2
 
 
 def test_the_model_shows_the_uart_bits():

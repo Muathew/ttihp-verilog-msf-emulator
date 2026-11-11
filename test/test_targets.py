@@ -248,7 +248,8 @@ async def test_spi_target_cs_rules(dut):
 # ============================================================================
 # SPI flash: firmware/spi_flash.s
 # ============================================================================
-FLASH, FSIZE = 512, 512
+# the store is the top 512 words of the 2,048: a READ that runs off its end wraps for no cycle
+FLASH, FSIZE = 0x600, 512
 FLASH_ID = (0xEF, 0x40, 0x09)
 
 

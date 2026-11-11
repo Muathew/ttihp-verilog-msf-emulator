@@ -182,3 +182,21 @@ async def test_debug_view_page1(dut):
     assert (flags >> 4) & 3 == 0b10 and (flags >> 6) & 3 == 0b01, f"flags {flags:#04x}"
     h0 = self_jump(words)                            # T0 parks at h0, the first self-jump
     assert await view1(dut, 0x22) == h0 & 0xFF       # T0's fetch pointer
+
+
+@cocotb.test()
+async def test_debug_view_pc_above_1024(dut):
+    """v4: PC bit 10 is view 0x21 bit 7, and the four fetch pointers' bit 10 are page 1's
+    view 0x27 (T3 in bit 3 ... T0 in bit 0); code in bank 3 shows both."""
+    await boot_asm(dut, """
+        JMP    far
+    .org 1600
+    far: LDI   R1, 1                ; 1600, 1601
+    h:  JMP    h                    ; 1602
+    """, ui_in=STRAP | DIRECT)
+    await ClockCycles(dut.clk, 60)
+    h = 1602
+    assert await view(dut, 0x20) == h & 0xFF
+    assert await view(dut, 0x21) == ((h >> 8) & 3) | 0x80   # PC[9:8] and PC[10]; T0, single mode
+    assert await view1(dut, 0x27) == 0b0001                 # only T0's pointer is above 1023
+    assert await view1(dut, 0x26) & 3 == (h >> 8) & 3

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
-// msfcore SRAM: two IHP RM_IHPSG13_2P_512x16 two-port macros, one per bank
-// of 512 words (bank = address bit 9), 1024 x 16 in all.
+// msfcore SRAM: four IHP RM_IHPSG13_2P_512x16 two-port macros, one per bank of 512
+// words (bank = address bits 10:9), 2048 x 16 in all (v4: it was two macros, 1024
+// words; docs/plan-v4.md section 6.3).
 //   Port A: read-only, instruction fetch (fetch of words 0-127 is served by the
 //           boot ROM instead; tt_um_msf selects with a registered bank bit).
-//   Port B: data port for LD / ST / MEM_W / FIFO (all 1024 words; 0-127 = data RAM).
+//   Port B: data port for LD / ST / MEM_W / FIFO (all 2048 words; 0-127 = data RAM).
 // Both ports have a registered read (address at edge N, data during N+1) and,
 // like the real macro, DOUT holds its value while the port is not reading.
 // Each macro is enabled only when its bank is addressed; the read data comes
@@ -16,35 +17,41 @@ module tt_um_msf_sram (
     input  wire        clk,
     input  wire        rst_n,
     // port A: fetch
-    input  wire [9:0]  raddr,
+    input  wire [10:0] raddr,
     output wire [15:0] rd,
     // port B: data
     input  wire        b_en,
     input  wire        b_we,
-    input  wire [9:0]  b_addr,
+    input  wire [10:0] b_addr,
     input  wire [15:0] b_wd,
     output wire [15:0] b_rd
 );
 
 `ifdef SYNTHESIS
-  wire [15:0] rd0, rd1, b_rd0, b_rd1;
-  reg         a_bank, b_bank;         // bank of the last read on each port
+  wire [15:0] rd0, rd1, rd2, rd3, b_rd0, b_rd1, b_rd2, b_rd3;
+  reg  [1:0]  a_bank, b_bank;         // bank of the last read on each port
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      a_bank <= 1'b0; b_bank <= 1'b0;
+      a_bank <= 2'd0; b_bank <= 2'd0;
     end else begin
-      a_bank <= raddr[9];
-      if (b_en && !b_we) b_bank <= b_addr[9];
+      a_bank <= raddr[10:9];
+      if (b_en && !b_we) b_bank <= b_addr[10:9];
     end
   end
-  assign rd   = a_bank ? rd1 : rd0;
-  assign b_rd = b_bank ? b_rd1 : b_rd0;
+  assign rd   = (a_bank == 2'd0) ? rd0 : (a_bank == 2'd1) ? rd1 : (a_bank == 2'd2) ? rd2 : rd3;
+  assign b_rd = (b_bank == 2'd0) ? b_rd0 : (b_bank == 2'd1) ? b_rd1 : (b_bank == 2'd2) ? b_rd2 : b_rd3;
 
   // Port A of bank 0 reads only for fetch addresses 128 and up (plan-v4 B5): below that
   // the boot ROM supplies the word, so the read would be unused, and while the
   // loader runs it could meet a port-B write of the same word at one edge.
-  wire a_on0 = !raddr[9] && (raddr[8:7] != 2'b00), a_on1 = raddr[9];
-  wire b_on0 = b_en && !b_addr[9], b_on1 = b_en && b_addr[9];
+  wire a_on0 = (raddr[10:9] == 2'd0) && (raddr[8:7] != 2'b00);
+  wire a_on1 = (raddr[10:9] == 2'd1);
+  wire a_on2 = (raddr[10:9] == 2'd2);
+  wire a_on3 = (raddr[10:9] == 2'd3);
+  wire b_on0 = b_en && (b_addr[10:9] == 2'd0);
+  wire b_on1 = b_en && (b_addr[10:9] == 2'd1);
+  wire b_on2 = b_en && (b_addr[10:9] == 2'd2);
+  wire b_on3 = b_en && (b_addr[10:9] == 2'd3);
 
   RM_IHPSG13_2P_512x16_c2_bm_bist sram0 (
       .A_CLK      (clk),
@@ -121,13 +128,89 @@ module tt_um_msf_sram (
       .B_BIST_DIN (16'h0),
       .B_BIST_BM  (16'h0)
   );
+
+  RM_IHPSG13_2P_512x16_c2_bm_bist sram2 (
+      .A_CLK      (clk),
+      .A_MEN      (a_on2),
+      .A_WEN      (1'b0),
+      .A_REN      (a_on2),
+      .A_ADDR     (raddr[8:0]),
+      .A_DIN      (16'h0),
+      .A_DLY      (1'b1),          // must be tied high (IHP macro requirement)
+      .A_DOUT     (rd2),
+      .A_BM       (16'hFFFF),
+      .A_BIST_CLK (1'b0),
+      .A_BIST_EN  (1'b0),
+      .A_BIST_MEN (1'b0),
+      .A_BIST_WEN (1'b0),
+      .A_BIST_REN (1'b0),
+      .A_BIST_ADDR(9'h0),
+      .A_BIST_DIN (16'h0),
+      .A_BIST_BM  (16'h0),
+
+      .B_CLK      (clk),
+      .B_MEN      (b_on2),
+      .B_WEN      (b_on2 & b_we),
+      .B_REN      (b_on2 & ~b_we),
+      .B_ADDR     (b_addr[8:0]),
+      .B_DIN      (b_wd),
+      .B_DLY      (1'b1),          // must be tied high (IHP macro requirement)
+      .B_DOUT     (b_rd2),
+      .B_BM       (16'hFFFF),
+      .B_BIST_CLK (1'b0),
+      .B_BIST_EN  (1'b0),
+      .B_BIST_MEN (1'b0),
+      .B_BIST_WEN (1'b0),
+      .B_BIST_REN (1'b0),
+      .B_BIST_ADDR(9'h0),
+      .B_BIST_DIN (16'h0),
+      .B_BIST_BM  (16'h0)
+  );
+
+  RM_IHPSG13_2P_512x16_c2_bm_bist sram3 (
+      .A_CLK      (clk),
+      .A_MEN      (a_on3),
+      .A_WEN      (1'b0),
+      .A_REN      (a_on3),
+      .A_ADDR     (raddr[8:0]),
+      .A_DIN      (16'h0),
+      .A_DLY      (1'b1),          // must be tied high (IHP macro requirement)
+      .A_DOUT     (rd3),
+      .A_BM       (16'hFFFF),
+      .A_BIST_CLK (1'b0),
+      .A_BIST_EN  (1'b0),
+      .A_BIST_MEN (1'b0),
+      .A_BIST_WEN (1'b0),
+      .A_BIST_REN (1'b0),
+      .A_BIST_ADDR(9'h0),
+      .A_BIST_DIN (16'h0),
+      .A_BIST_BM  (16'h0),
+
+      .B_CLK      (clk),
+      .B_MEN      (b_on3),
+      .B_WEN      (b_on3 & b_we),
+      .B_REN      (b_on3 & ~b_we),
+      .B_ADDR     (b_addr[8:0]),
+      .B_DIN      (b_wd),
+      .B_DLY      (1'b1),          // must be tied high (IHP macro requirement)
+      .B_DOUT     (b_rd3),
+      .B_BM       (16'hFFFF),
+      .B_BIST_CLK (1'b0),
+      .B_BIST_EN  (1'b0),
+      .B_BIST_MEN (1'b0),
+      .B_BIST_WEN (1'b0),
+      .B_BIST_REN (1'b0),
+      .B_BIST_ADDR(9'h0),
+      .B_BIST_DIN (16'h0),
+      .B_BIST_BM  (16'h0)
+  );
 `else
-  reg [15:0] mem [0:1023];
+  reg [15:0] mem [0:2047];
   reg [15:0] rd_r, b_rd_r;
 
   integer i;
   initial begin
-    for (i = 0; i < 1024; i = i + 1) mem[i] = 16'h0;
+    for (i = 0; i < 2048; i = i + 1) mem[i] = 16'h0;
     rd_r   = 16'h0;
     b_rd_r = 16'h0;
   end
@@ -144,3 +227,5 @@ module tt_um_msf_sram (
   wire _unused = &{rst_n, 1'b0};
 `endif
 endmodule
+
+`default_nettype wire

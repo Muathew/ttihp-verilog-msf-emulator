@@ -17,7 +17,8 @@ For each target this script runs
 and a *mutation check*: the same properties are run against copies of the
 RTL with the review's bugs re-introduced (B1 pc not advanced on release,
 B2 WAIT kinds not separated, B3 combinational bank select), the v2.1 late
-`WAIT_CMP` behaviour (B4) and one bug for each of F8, F9, F12 and F13. Each
+`WAIT_CMP` behaviour (B4) and one bug for each of F8, F9, F12, F13, F14, F15,
+F17 (timed pins: three) and F18 (registered pads). Each
 mutant must FAIL -- this shows the properties actually detect those bugs.
 
 Engines (--engine):
@@ -51,7 +52,7 @@ TOP_FILES = ["project.v", "tt_um_msf_ctrl.v", "tt_um_msf_regfile.v", "tt_um_msf_
 # (name, file, old, new): re-introduce a review bug
 MUTANTS = [
     ("B1 pc not advanced on release", "tt_um_msf_ctrl.v",
-     "if (rel) pcs_n[9:0] = pc0 + 10'd1;", "if (rel) pcs_n[9:0] = pc0;"),
+     "if (rel) pcs_n[10:0] = pc0 + 11'd1;", "if (rel) pcs_n[10:0] = pc0;"),
     ("B2 WAIT kinds not separated", "tt_um_msf_ctrl.v",
      "(k == K_EDGE || k == K_CMP) ? (evt[t] || whit[t]) :",
      "(k == K_EDGE || k == K_CMP) ? (e || cmp || whit[t]) :"),
@@ -76,6 +77,19 @@ MUTANTS = [
     # v3: the decode stage
     ("F14: no forwarding into E", "tt_um_msf_ctrl.v",
      "wire        fwd_a = fw_en && fw_thr == cur && fw_a == dra;", "wire        fwd_a = 1'b0;"),
+    # v4: timed pins (F17) and the registered pads (F18)
+    ("F17: a held event is applied one cycle late", "tt_um_msf_ctrl.v",
+     "assign due[tk] = at_pend[tk] && (cnt == at_time[16*tk +: 16]);",
+     "assign due[tk] = at_pend[tk] && (cnt == at_time[16*tk +: 16] + 16'd1);"),
+    ("F17: a refused write still goes out", "tt_um_msf_ctrl.v",
+     "wire        imm_now  = pwr_do && (!armed_c || t_now);",
+     "wire        imm_now  = pwr_do && (!armed_c || t_now || t_refuse);"),
+    ("F17: a held write forgets its operation", "tt_um_msf_ctrl.v",
+     "p_tgt[2*cur +: 2] <= pwr_tgt; p_opk[2*cur +: 2] <= pwr_opk;",
+     "p_tgt[2*cur +: 2] <= pwr_tgt; p_opk[2*cur +: 2] <= PK_SET;"),
+    ("F18: the pad registers load the old values", "tt_um_msf_pio.v",
+     "pad_out <= (out_n & ~tx_mask_n) | (tx_val_n & tx_mask_n);",
+     "pad_out <= (out_r & ~tx_mask) | (tx_val & tx_mask);"),
 ]
 
 
@@ -191,7 +205,7 @@ def prepare(mutant=None):
     return d
 
 
-NI_THREAD = ("{{pcs[{p}+:10], zf[{t}], nf[{t}], st[{t}], sk[{k3}+:3], srd[{k3}+:3], sop[{w}+:16], "
+NI_THREAD = ("{{pcs[{p}+:11], zf[{t}], nf[{t}], st[{t}], sk[{k3}+:3], srd[{k3}+:3], sop[{w}+:16], "
              "wsel[{k4}+:4], wcond[{k3}+:3], wprev[{t}], whit[{t}], sto[{w}+:16], sto_en[{t}], "
              "ldh[{w}+:16], ldq[{t}], tmo[{w}+:16], fge[{t}], wlate[{t}], late[{t}], ni_rf{t}}}")
 NI_PORTS = """    output reg  [7:0]  dbg_q,
@@ -199,13 +213,13 @@ NI_PORTS = """    output reg  [7:0]  dbg_q,
     output wire [1:0]  ni_dthr,
     output wire [1:0]  ni_cur,
     output wire        ni_exec,
-    output wire [9:0]  ni_pc,
+    output wire [10:0] ni_pc,
     output wire [15:0] ni_ir,
     output wire [15:0] ni_qa,
     output wire [15:0] ni_qb,
     output wire [3:0]  ni_run,
-    output wire [224:0] ni_t0, ni_t1, ni_t2, ni_t3,
-    output wire [105:0] ni_sh,
+    output wire [225:0] ni_t0, ni_t1, ni_t2, ni_t3,
+    output wire [107:0] ni_sh,
     output wire        ni_bub,
     output wire [53:0] ni_dst,
     output wire [1:0]  ni_fwthr,
@@ -221,7 +235,7 @@ NI_ASSIGNS = """
   assign ni_qa = qa;
   assign ni_qb = qb;
   assign ni_run = run;
-""" + "".join(f"  assign ni_t{t} = " + NI_THREAD.format(t=t, p=10 * t, k3=3 * t, k4=4 * t, w=16 * t) + ";\n"
+""" + "".join(f"  assign ni_t{t} = " + NI_THREAD.format(t=t, p=11 * t, k3=3 * t, k4=4 * t, w=16 * t) + ";\n"
               for t in range(4)) + """  assign ni_sh = {run, own, bub, cnt, sr, sr_po, sr_pi, sr_lsb, waddr, fbase, fn, fwp, frp,
                   fdrop, lguard, gpins};
   assign ni_bub = bub;
@@ -284,7 +298,8 @@ def check(tools, d, top, files, depth, prove=False):
 # target ni (two copies of the core, formal/ni_miter.v) runs only when named: --top ni
 NI_MUTANTS = [
     ("F16: STAT shows any thread's LATE flag", "tt_um_msf_ctrl.v",
-     "wire [15:0] stat = {1'b0, late[cur], cur[1],", "wire [15:0] stat = {1'b0, |late, cur[1],"),
+     "wire [15:0] stat = {set_c ? err_any1 : err_any, late[cur], cur[1],",
+     "wire [15:0] stat = {set_c ? err_any1 : err_any, |late, cur[1],"),
 ]
 DEFAULT_TARGETS = ["ctrl", "cap", "top"]
 TARGETS = {"ctrl": ("tt_um_msf_ctrl", CTRL_FILES), "cap": ("tt_um_msf_cap", ["tt_um_msf_cap.v"]),

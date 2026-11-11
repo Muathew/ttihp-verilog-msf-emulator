@@ -56,9 +56,13 @@
   "//": "If you need a custom clock configuration, read the following documentation first:",
   "//": "https://tinytapeout.com/faq/#how-can-i-map-an-additional-external-clock-to-one-of-the-gpios",
   "CLOCK_PORT": "clk",
-  "//": "SRAM macro integration: two instances, one per 512-word bank, side by",
-  "//": "side along the bottom (each 402.6 x 219.8 um), MX so their Metal2 pins",
-  "//": "face up into the logic. The 43 tile pins are at the top left. On CMOS5L",
+  "//": "SRAM macro integration (v4, 8x4: a die of 1724.16 x 710.64 um): four instances, one",
+  "//": "per 512-word bank, side by side along the bottom (each 402.6 x 219.8 um), 8 um",
+  "//": "apart, MX so their Metal2 pins face up into the logic. The two code banks (0, 1)",
+  "//": "are in the middle, next to the fetch logic, the two upper banks outside them",
+  "//": "(docs/plan-v4.md section 7.2). Whether four fit and route is the floorplan trial",
+  "//": "of plan-v4 section 7.1, not yet run: if not, three macros or two (rung 3). The",
+  "//": "43 tile pins are at the top left (x 29-191 um). On CMOS5L",
   "//": "the stripes are Metal4, the layer of the macros' supply columns, which",
   "//": "only stay vertical in R0 or MX. Project.ExtendPowerStripes (see",
   "//": "librelane_plugin_msf_pdn.py) moves the stripes crossing each macro onto",
@@ -75,16 +79,30 @@
   "MACROS": {
     "RM_IHPSG13_2P_512x16_c2_bm_bist": {
       "instances": {
-        "u_sram.sram0": {
+        "u_sram.sram2": {
           "location": [
             42,
             37.8
           ],
           "orientation": "MX"
         },
+        "u_sram.sram0": {
+          "location": [
+            452.6,
+            37.8
+          ],
+          "orientation": "MX"
+        },
         "u_sram.sram1": {
           "location": [
-            490,
+            863.2,
+            37.8
+          ],
+          "orientation": "MX"
+        },
+        "u_sram.sram3": {
+          "location": [
+            1273.8,
             37.8
           ],
           "orientation": "MX"
@@ -119,7 +137,11 @@
     "u_sram.sram0 VPWR VGND VDD! VSS!",
     "u_sram.sram0 VPWR VGND VDDARRAY! VSS!",
     "u_sram.sram1 VPWR VGND VDD! VSS!",
-    "u_sram.sram1 VPWR VGND VDDARRAY! VSS!"
+    "u_sram.sram1 VPWR VGND VDDARRAY! VSS!",
+    "u_sram.sram2 VPWR VGND VDD! VSS!",
+    "u_sram.sram2 VPWR VGND VDDARRAY! VSS!",
+    "u_sram.sram3 VPWR VGND VDD! VSS!",
+    "u_sram.sram3 VPWR VGND VDDARRAY! VSS!"
   ],
   "//": "Custom PDN config: SRAM power pins are on Metal4, need Metal4↔TopMetal1 connection",
   "PDN_CFG": "dir::pdn_cfg.tcl",

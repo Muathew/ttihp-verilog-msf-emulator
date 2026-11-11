@@ -24,6 +24,11 @@ Pseudo-ops
     TSTART #t, rb / TSTOP #t name thread t (1-3); TSTART rb / TSTOP mean T1
     FIFO_PUT rb = PW #0, rb    FIFO_CFG rb  = PW #1, rb
     FIFO_GET ra = PR ra, #0    FIFO_STAT ra = PR ra, #1
+    ESEL #m     SETM selector 6: the thread's engine set (bit 0) and port page (bits 3:1)
+    AT rb = PW #0, rb    TS ra = PR ra, #0    AT_STAT ra = PR ra, #1   (port page 1: after ESEL #2)
+    TX_OPT / RX_OPT / ERR_CLR / TX_EXT / RX_EXT rb = PW #0..#4, rb;  ERR_STAT ra = PR ra, #2 and
+    TX_OPT_RD, RX_OPT_RD, TX_EXT_RD, RX_EXT_RD   (port page 2: after ESEL #4 or #5)
+    CHIPID / CHIPVER / CHIPCAPS / CNT_H ra = PR ra, #0..#3   (port page 3: after ESEL #6)
     CAP_BUF / CAP_DIV / CAP_TRIG / CAP_CTL rb = PW #2..#5, rb
     CAP_STAT ra = PR ra, #2    CAP_TPOS ra = PR ra, #3
     FILTER rb   = PW #6, rb
@@ -50,6 +55,7 @@ MASK_OPS = {
     "UO_SET": (0x12, 3), "UO_TGL": (0x12, 4), "OE_TGL": (0x12, 5),
     "OE_CLR": (0x13, 0), "PIN_CLR": (0x13, 1), "PIN_WI": (0x13, 2),
     "UO_CLR": (0x13, 3), "UO_WI": (0x13, 4), "OE_WI": (0x13, 5),
+    "ESEL": (0x12, 6),           # the thread's selector byte (isa.md section 3.2, v4)
 }
 MASK_NAME = {v: k for k, v in MASK_OPS.items()}
 
@@ -75,6 +81,19 @@ PORT_OPS = {"FIFO_PUT": (X_PW, 0), "FIFO_CFG": (X_PW, 1),
             "CAP_CTL": (X_PW, 5), "CAP_STAT": (X_PR, 2), "CAP_TPOS": (X_PR, 3),
             "FILTER": (X_PW, 6), "LATE_CLR": (X_PW, 7), "LATE_RD": (X_PR, 7)}
 PORT_NAME = {v: k for k, v in PORT_OPS.items()}
+# Port page 1, the timed pins (isa.md section 6.8): the same PW / PR encodings as ports 0 and 1,
+# so they mean this only after `ESEL #2`. The assembler cannot follow the page through a
+# program, but it refuses these names when the program selects page 1 nowhere.
+PAGE1_OPS = {"AT": (X_PW, 0), "TS": (X_PR, 0), "AT_STAT": (X_PR, 1)}
+# Port page 2, the engine options (isa.md section 6.9): the same, after `ESEL #4` (set 0) or `#5` (set 1)
+PAGE2_OPS = {"TX_OPT": (X_PW, 0), "RX_OPT": (X_PW, 1), "ERR_CLR": (X_PW, 2),
+             "TX_EXT": (X_PW, 3), "RX_EXT": (X_PW, 4),
+             "TX_OPT_RD": (X_PR, 0), "RX_OPT_RD": (X_PR, 1), "ERR_STAT": (X_PR, 2),
+             "TX_EXT_RD": (X_PR, 3), "RX_EXT_RD": (X_PR, 4)}
+# Port page 3, identity and the 32-bit counter (isa.md section 6.10), after `ESEL #6`; read only
+PAGE3_OPS = {"CHIPID": (X_PR, 0), "CHIPVER": (X_PR, 1), "CHIPCAPS": (X_PR, 2), "CNT_H": (X_PR, 3)}
+PAGE_OF = {**{k: 1 for k in PAGE1_OPS}, **{k: 2 for k in PAGE2_OPS}, **{k: 3 for k in PAGE3_OPS}}
+PAGED_OPS = {**PAGE1_OPS, **PAGE2_OPS, **PAGE3_OPS}
 
 WAIT_COND = {"any": 0, "rise": 1, "rising": 1, "fall": 2, "falling": 2,
              "low": 4, "high": 5}
@@ -208,9 +227,9 @@ def assemble_file(path, base_addr=128, defines=None, max_words=None):
 
 def assemble(text, max_words=None, base_addr=0, defines=None, include_dirs=None):
     """Assemble msfcore source into a list of 16-bit words starting at base_addr
-    (by default it must end within the 1024-word address space)."""
+    (by default it must end within the 2048-word address space)."""
     if max_words is None:
-        max_words = 1024 - base_addr
+        max_words = 2048 - base_addr
     text = _expand_includes(text, (include_dirs or []) + [FIRMWARE_DIR])
     defines = dict(defines or {})
     syms = dict(defines)
@@ -238,7 +257,16 @@ def assemble(text, max_words=None, base_addr=0, defines=None, include_dirs=None)
         else:
             pc += _size(mn)
 
-    # pass 2: encode
+    # pass 2: encode. AT / TS / AT_STAT are port-page-1 names: refuse them in a program that
+    # never selects page 1 (ESEL with bits 3:1 = 1), the usual slip, since the same
+    # encodings are the FIFO's ports on page 0
+    pages = set()
+    for _, _, mn, args in lines:
+        if mn == "ESEL":
+            try:
+                pages.add((_eval(args, syms) >> 1) & 7)
+            except (KeyError, AsmError):
+                pages |= {1, 2}
     words = []
     pc = base_addr
     for ln, labels, mn, args in lines:
@@ -258,6 +286,10 @@ def assemble(text, max_words=None, base_addr=0, defines=None, include_dirs=None)
                     words.append(v & 0xFFFF)
                     pc += 1
                 continue
+            if mn in PAGED_OPS and PAGE_OF[mn] not in pages:
+                raise AsmError(f"{mn} is a port-page-{PAGE_OF[mn]} instruction: the program never "
+                               f"selects page {PAGE_OF[mn]} (ESEL #{PAGE_OF[mn] * 2}), so it "
+                               "would be a FIFO or capture port")
             enc = _encode(mn, args, syms, pc)
         except KeyError as e:
             raise AsmError(f"line {ln}: undefined symbol {e.args[0]!r}")
@@ -286,7 +318,15 @@ def _encode(mn, args, syms, pc):
     if mn in MASK_OPS:
         need(1)
         op, sel = MASK_OPS[mn]
-        return [op << 11 | sel << 8 | _imm(a[0], syms, 8)]
+        v = _imm(a[0], syms, 8)
+        if mn == "ESEL" and v > 0x0F:
+            raise AsmError("ESEL: bits 7:4 are reserved (the selector byte is 4 bits)")
+        return [op << 11 | sel << 8 | v]
+    if mn in PAGED_OPS:
+        need(1)
+        sub, port = PAGED_OPS[mn]
+        r = _reg(a[0])
+        return [0x0F << 11 | (port << 8 | r << 5 if sub == X_PW else r << 8 | port << 5) | sub]
     if mn == "TSTART" and len(a) == 2:      # TSTART #thread, rb
         return [0x0F << 11 | _imm(a[0], syms, 2) << 8 | _reg(a[1]) << 5 | EXT[mn][0]]
     if mn == "TSTOP" and len(a) == 1:       # TSTOP #thread
@@ -374,7 +414,7 @@ def disassemble(w, addr=None):
     if op in (0x00, 0x1F):
         return f"{mn} R{a}, #{imm8:#04x}"
     if op in (0x09, 0x18):
-        return f"{mn} {w & 0x3FF}"
+        return f"{mn} {w & 0x7FF}"
     if 0x0A <= op <= 0x0D:
         rel = (w >> 2) & 0x1FF
         rel = rel - 512 if rel & 0x100 else rel

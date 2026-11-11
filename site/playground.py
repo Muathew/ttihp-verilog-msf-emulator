@@ -21,7 +21,7 @@ import msf_timing  # noqa: E402
 from isa_model import IsaModel  # noqa: E402
 
 WORK = tempfile.mkdtemp()
-FIRMWARE_WORDS = 896
+FIRMWARE_WORDS = 1920                 # v4: 2,048 words, less the 128 below the program
 MAX_RUN = 400_000
 MAX_EVENTS = 20_000
 EXAMPLE_DATA = [ord(c) for c in "Hi!"] + [0]     # what the examples that send a string read
@@ -55,7 +55,8 @@ def check(text, defines=""):
     with contextlib.redirect_stdout(report):
         msf_timing.report("program.s", an)
     rows = [{"pc": pc, "source": an.src.get(pc, ""), "lo": d["lo"], "hi": d["hi"],
-             "late": bool(d["late"]), "unchecked": bool(d["unchecked"])}
+             "late": bool(d["late"]), "unchecked": bool(d["unchecked"]),
+             "on_purpose": an.on_purpose(pc)}
             for pc, d in sorted(an.deadlines.items())]
     if msf_timing.certified(an):
         verdict = "certified" if rows else "no deadlines"

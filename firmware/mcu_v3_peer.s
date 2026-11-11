@@ -234,7 +234,7 @@ u_rep:  LDR      R1, #0
         CALL     send
         CALL     hold
         CNT_R    R3
-        WAIT_CMP R3                 ; late on purpose: UIO7 goes off the bus
+        WAIT_CMP R3                 ; @late on purpose: UIO7 goes off the bus
         LATE_RD  R5
         LDR      R1, #'B'
         CALL     send
@@ -256,7 +256,7 @@ u_rep:  LDR      R1, #0
         LDI      R1, (0x8000 | 0x0200 | (1 << GPIN))     ; guard T1 only, pin UIO7
         LATE_CLR R1
         CNT_R    R3
-        WAIT_CMP R3                 ; T0 late again, not named: UIO7 stays
+        WAIT_CMP R3                 ; @late again (T0, not named): UIO7 stays
         LATE_RD  R5
         LDR      R1, #'D'
         CALL     send

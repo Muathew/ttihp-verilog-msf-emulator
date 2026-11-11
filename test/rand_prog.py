@@ -4,7 +4,7 @@
 Programs are structured so they keep making progress: bounded DECR/JNZ loops,
 forward conditional skips, CALL/RET to leaf subroutines (R7 is reserved for
 CALL), JR through a computed address, WAITs bounded by a small TMO, data-RAM
-traffic confined to SRAM 0..127 and 960..1023 (never code, except the "patch":
+traffic confined to SRAM 0..127, 960..1023, 1344..1407 and 1984..2047 (never code, except the "patch":
 a store of a fresh instruction into the word exactly three or more instructions
 ahead, isa.md section 1), FIFO pushes /
 pops / status reads and re-configurations (block kept inside those regions),
@@ -32,15 +32,18 @@ class Gen:
         self.lab = 0
         self.lines = []
         self.subs = []          # leaf subroutine bodies
-        self.no_crc = False     # T1 code never touches the (shared) CRC unit
+        # the CRC unit this code's thread may use: 0 = set 0 (T0), 1 = set 1 (T1: ESEL #1
+        # around each burst), None = none (T2, T3), so no two threads share a unit
+        self.crc_set = 0
         self.in_patch = False
 
     def L(self, s):
         self.lines.append(s)
 
     def data_addr(self, n):
-        """Start of n data words: in 0..127 or 960..1023 (code never goes there)."""
-        return self.r.choice([0, 960]) + self.r.randrange(64 if n == 1 else 64 - n)
+        """Start of n data words: 64-word regions at 0, 960, 1344 and 1984 (code never
+        goes there; the last two are banks 2 and 3, v4)."""
+        return self.r.choice([0, 960, 1344, 1984]) + self.r.randrange(64 if n == 1 else 64 - n)
 
     def label(self, p="l"):
         self.lab += 1
@@ -75,11 +78,63 @@ class Gen:
         self.L(f"{lab}:")
         self.L("NOP")                           # the word that is replaced
 
+    def fill(self):
+        """One instruction that is neither a pin write nor a port access: it can sit between
+        AT and the write it times, and inside a window on port page 1."""
+        r = self.r
+        a, b, c = self.reg(), self.reg(), self.reg()
+        return r.choice([f"{r.choice(ALU3)} {a}, {b}, {c}", f"LDR {a}, #{r.randrange(256)}",
+                         f"MOV {a}, {b}", "NOP", f"INCR {a}", f"CNT_R {a}",
+                         f"SHL {a}, {b}, #{r.randrange(8)}"])
+
+    def pin_write(self):
+        r = self.r
+        return r.choice([f"PIN_W {self.reg()}", f"{r.choice(MASKS)} {r.randrange(256)}",
+                         f"{r.choice(MASKS)} {r.randrange(256)}", f"OUT_W {self.reg()}",
+                         f"SHIFT_OUT {self.reg()}", "XFER"])
+
+    def timed(self):
+        """A timed-pin window (isa.md section 6.8) on port page 1, balanced by ESEL #0:
+        either AT with a time near CNT (the write arrives early, exactly on time, or late,
+        and is held, applied or refused) or the reply idiom, WAIT_EDGE; TS; ADDS; AT; write.
+        Sometimes two windows share a slot, so that AT finds it occupied."""
+        r = self.r
+        self.L("ESEL #2")
+        for _ in range(r.choice([1, 1, 1, 2])):
+            ta, tb = self.reg(), self.reg()
+            while tb == ta:
+                tb = self.reg()
+            if r.random() < 0.3:                      # reply to an edge: time = TS + delta
+                self.L(f"WAIT_EDGE {r.randrange(8)}, {r.choice(CONDS)}, {r.choice(['uio', 'ui'])}")
+                self.L(f"TS {tb}")
+                self.L(f"LDR {ta}, #{r.choice([1, 2, 3, 5, 8, 12, 20, 40, 100, 250])}")
+                self.L(f"ADDS {ta}, {tb}, {ta}")
+            else:                                     # a time around now
+                d = r.choice([0, 0, 1, 2, 3, 4, 5, 6, 8, 11, 15, 25, 60, 200, 255, 256, 600,
+                              65000, 65300, 65535])
+                self.L(f"CNT_R {ta}")
+                if d < 256:
+                    self.L(f"LDR {tb}, #{d}")
+                else:
+                    self.L(f"LDI {tb}, {d}")
+                self.L(f"ADDS {ta}, {ta}, {tb}")
+            self.L(f"AT {ta}")
+            for _ in range(r.choice([0, 0, 1, 2, 3])):
+                self.L(self.fill())
+            self.L(self.pin_write())
+            for _ in range(r.choice([0, 0, 1, 2])):
+                self.L(self.fill())
+            if r.random() < 0.5:
+                self.L(f"{r.choice(['TS', 'AT_STAT'])} {self.reg()}")
+        self.L("ESEL #0")
+
     def simple(self, crc_ok=True):
         r = self.r
-        k = r.randrange(30)
+        k = r.randrange(32)
         a, b, c = self.reg(), self.reg(), self.reg()
-        if k == 25 and not self.in_patch:
+        if k in (30, 31) and not self.in_patch:
+            self.timed()
+        elif k == 25 and not self.in_patch:
             self.patch()
         elif k < 4:
             self.L(f"LDR {a}, #{r.randrange(256)}")
@@ -121,7 +176,7 @@ class Gen:
             self.L(f"{r.choice(['STAT', 'TID'])} {a}")
         elif k == 23:
             self.L("NOP")
-        elif k == 24 and crc_ok and not self.no_crc:
+        elif k == 24 and crc_ok and self.crc_set is not None:
             self.crc_burst()
         elif k in (26, 27):
             self.L(f"FIFO_PUT {a}")
@@ -132,13 +187,16 @@ class Gen:
                 self.L(f"FIFO_STAT {a}")
             else:                       # size 2..64, block inside a data region
                 base = self.data_addr(1)
-                self.L(f"LDI {a}, {base | r.randrange(6) << 10}")
+                # FIFO_CFG: base[9:0] | n << 10 | base[10] << 13 (isa.md section 6.5)
+                self.L(f"LDI {a}, {(base & 1023) | r.randrange(6) << 10 | (base >> 10) << 13}")
                 self.L(f"FIFO_CFG {a}")
         else:
             self.L(f"ADDS {a}, {b}, {c}")
 
     def crc_burst(self):
         r = self.r
+        if self.crc_set == 1:
+            self.L("ESEL #1")                         # engine set 1, port page 0
         a, b = self.reg(), self.reg()
         self.L(f"CRC_RDL {a}")                        # wait until idle
         self.L(f"LDR {a}, #{r.randrange(32)}")
@@ -151,9 +209,13 @@ class Gen:
         for _ in range(r.randrange(1, 4)):
             self.L(f"CRC_W {self.reg()}")
             if r.random() < 0.5:
+                self.in_patch = True                  # no patch or timed window inside a burst
                 self.simple(crc_ok=False)
+                self.in_patch = False
         self.L(f"CRC_RDL {b}")
         self.L(f"CRC_RDH {a}")
+        if self.crc_set == 1:
+            self.L("ESEL #0")
 
     def wait(self):
         r = self.r
@@ -237,7 +299,7 @@ class Gen:
         it may stop or restart itself."""
         r = self.r
         self.subs = []
-        self.no_crc = True
+        self.crc_set = 1 if k == 1 else None
         self.L(f".org {org}")
         self.L(f"t{k}_entry:")
         if r.random() < 0.5:        # its own timeout (else the starter's)
@@ -285,11 +347,11 @@ class Gen:
         self.L("JMP start")
         t0_subs = self.subs
         if self.threads == 4:
-            for k, org in ((1, 500), (2, 620), (3, 740)):
+            for k, org in ((1, 500), (2, 1020), (3, 1530)):   # across 511/512, 1023/1024, 1535/1536
                 self.thread_code(k, org)
         elif self.dual:
             self.subs = []
-            self.no_crc = True
+            self.crc_set = 1
             self.L(".org 500")
             self.L("t1_entry:")
             if r.random() < 0.5:        # T1's own timeout (else the one T0 had)
@@ -308,8 +370,8 @@ class Gen:
                 self.L(f"{s}:")
                 self.block(2, r.randrange(1, 3))
                 self.L("RET")
-        self.subs, self.no_crc = None, False
-        self.L(f".org {860 if self.threads == 4 else 700 if self.dual else 505}")
+        self.subs, self.crc_set = None, 0
+        self.L(f".org {1800 if self.threads == 4 else 700 if self.dual else 505}")
         for s in t0_subs:
             self.L(f"{s}:")
             self.block(2, r.randrange(1, 4))

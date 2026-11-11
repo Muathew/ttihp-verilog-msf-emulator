@@ -53,7 +53,7 @@ module tb ();
   reg        sa_evt = 1'b0;
   reg        sa_v1 = 1'b0, sa_v2 = 1'b0;
   reg [10:0] sa_a1 = 11'd0, sa_a2 = 11'd0;
-  wire [10:0] sa_pc = {1'b0, user_project.u_ctrl.dbg_pc};
+  wire [10:0] sa_pc = user_project.u_ctrl.dbg_pc;
   always @(negedge clk) begin
     if (user_project.u_ctrl.exec && sa_pc >= 11'd128 &&
         ((sa_v1 && sa_a1 == sa_pc) || (sa_v2 && sa_a2 == sa_pc)))
@@ -61,7 +61,7 @@ module tb ();
     sa_v2 <= sa_v1;
     sa_a2 <= sa_a1;
     sa_v1 <= user_project.u_ctrl.b_en && user_project.u_ctrl.b_we;
-    sa_a1 <= {1'b0, user_project.u_ctrl.b_addr};
+    sa_a1 <= user_project.u_ctrl.b_addr;
   end
 `endif
 

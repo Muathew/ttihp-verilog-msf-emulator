@@ -26,16 +26,16 @@ module tt_um_msf_cap (
     // SRAM port B: the core has priority
     input  wire        core_b,      // the core uses port B this cycle
     output wire        req,         // capture writes port B this cycle
-    output wire [9:0]  addr,
+    output wire [10:0] addr,
     output wire [15:0] wd,
     // status: PR #2 / #3
     output wire [15:0] stat,
-    output wire [9:0]  tpos
+    output wire [10:0] tpos
 );
   localparam [2:0] P_BUF = 3'd2, P_DIV = 3'd3, P_TRIG = 3'd4, P_CTL = 3'd5;
 
   // ---- configuration ----
-  reg [9:0]  base;
+  reg [10:0] base;                  // v4: 11 bits (2,048 words of SRAM)
   reg [3:0]  n;                     // buffer: 2 << n words, size-aligned
   reg [15:0] div;
   reg [7:0]  tmask, tval;
@@ -51,12 +51,12 @@ module tt_um_msf_cap (
   reg        thit;                  // sample mode: that sample met the trigger
   reg [7:0]  delta;                 // change mode: ticks since the last word
   reg        prev_c;                // trigger condition at the previous tick
-  reg [9:0]  wcnt;                  // words produced since arming
+  reg [10:0] wcnt;                  // words produced since arming
   reg [9:0]  left;                  // words still to produce after the trigger
-  reg [9:0]  tp;
+  reg [10:0] tp;
 
-  wire [9:0] mask  = (10'd2 << n) - 10'd1;    // n >= 9: all 1024 words
-  wire [9:0] waddr = (base & ~mask) | (wcnt & mask);
+  wire [10:0] mask  = (11'd2 << n) - 11'd1;   // n >= 10: all 2048 words
+  wire [10:0] waddr = (base & ~mask) | (wcnt & mask);
 
   wire [7:0] pins  = src_ui ? ui_in : uio_in;
   wire       now   = run && (tick == 16'd0);           // a sample this cycle
@@ -82,22 +82,22 @@ module tt_um_msf_cap (
   end
 
   // ---- two-word write queue ----
-  reg [25:0] q0, q1;                // {addr, data}
+  reg [26:0] q0, q1;                // {addr, data}
   reg [1:0]  qn;
   wire       pop   = (qn != 2'd0) && !core_b;
   wire       push  = prod && (qn != 2'd2 || pop);
   assign req  = pop;
-  assign addr = q0[25:16];
+  assign addr = q0[26:16];
   assign wd   = q0[15:0];
 
   always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
-      base <= 10'd512; n <= 4'd7; div <= 16'd1; tmask <= 8'h0; tval <= 8'h0;
+      base <= 11'd512; n <= 4'd7; div <= 16'd1; tmask <= 8'h0; tval <= 8'h0;
       post <= 10'd0; edge_t <= 1'b0; src_ui <= 1'b0; chg <= 1'b0;
       run <= 1'b0; trig <= 1'b0; done <= 1'b0; ovf <= 1'b0; first <= 1'b0;
       tick <= 16'd0; last <= 8'h0; half <= 1'b0; thit <= 1'b0; delta <= 8'd0;
-      prev_c <= 1'b0; wcnt <= 10'd0; left <= 10'd0; tp <= 10'd0;
-      q0 <= 26'd0; q1 <= 26'd0; qn <= 2'd0;
+      prev_c <= 1'b0; wcnt <= 11'd0; left <= 10'd0; tp <= 11'd0;
+      q0 <= 27'd0; q1 <= 27'd0; qn <= 2'd0;
     end else begin
       // queue
       if (pop && push) begin
@@ -127,7 +127,7 @@ module tt_um_msf_cap (
           end
         end
         if (prod) begin
-          wcnt <= wcnt + 10'd1;
+          wcnt <= wcnt + 11'd1;
           if (ptrig) begin
             trig <= 1'b1; tp <= waddr; left <= post;
             if (post == 10'd0) begin run <= 1'b0; done <= 1'b1; end
@@ -140,7 +140,7 @@ module tt_um_msf_cap (
 
       // configuration (wins over the above)
       if (pw_we) case (pw_port)
-        P_BUF:  begin base <= pw_data[9:0]; n <= pw_data[13:10]; end
+        P_BUF:  begin base <= {pw_data[14], pw_data[9:0]}; n <= pw_data[13:10]; end
         P_DIV:  div <= pw_data;
         P_TRIG: begin tmask <= pw_data[7:0]; tval <= pw_data[15:8]; end
         P_CTL:  begin
@@ -149,14 +149,14 @@ module tt_um_msf_cap (
           trig <= 1'b0; done <= 1'b0; ovf <= 1'b0; first <= 1'b1;
           tick <= 16'd0; half <= 1'b0; thit <= 1'b0; delta <= 8'd0;
           prev_c <= 1'b1;           // an edge needs the condition false first
-          wcnt <= 10'd0; left <= 10'd0;
+          wcnt <= 11'd0; left <= 10'd0;
         end
         default: ;
       endcase
     end
   end
 
-  assign stat = {run, trig, done, ovf, 2'd0, (base & ~mask) | (wcnt & mask)};
+  assign stat = {run, trig, done, ovf, 1'b0, (base & ~mask) | (wcnt & mask)};
   assign tpos = tp;
 
 `ifdef FORMAL

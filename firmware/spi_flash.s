@@ -4,8 +4,12 @@
 ; the shift register, level waits and exact instruction timing do it.
 ;   pins    : SCK uio[2], MOSI uio[3], CS uio[5] inputs (CS active low);
 ;             MISO uio[4], driven only while CS is low
-;   storage : 512 bytes, one byte a word in SRAM 512-1023, mirrored over the
-;             whole 24-bit address space (address bits 23..9 are ignored)
+;   storage : 512 bytes, one byte a word in SRAM 1536-2047 (the top of the
+;             2,048 words, so that a READ running off the end of the store
+;             runs off the end of the address space and wraps for no cycle),
+;             mirrored over the whole 24-bit address space (address bits
+;             23..9 are ignored). On a 1,024-word chip the same words appear
+;             at 512-1023 and the program works unchanged.
 ;   MODE    : SPI mode 0..3 (assembler define, default 0)
 ;   ID0-2   : the JEDEC ID (defines; default EF 40 09: the capacity code 09
 ;             says 2^9 bytes)
@@ -44,7 +48,7 @@
 .equ ERP,    65                    ; data RAM: the next word to erase, 0 = none
 .equ PPW,    66                    ; data RAM: nonzero once a page program wrote
 .equ ERQ,    67                    ; data RAM: an erase was asked for (WEL set)
-.equ FLASH,  0x200                 ; the store: SRAM 512..1023
+.equ FLASH,  0x600                 ; the store: SRAM 1536..2047 (the top: see above)
 .equ WEL,    0x02
 .equ WIP,    0x01
 .equ POLL,   24                    ; SCK idle this long -> look at CS. Longer than
@@ -165,7 +169,8 @@ c_3:    LDR      R2, #0x03
 rd_l:   SR_LD    R3                ; this byte: bit 7 out now
         SHIFT_OUT R4
         INCR     R5
-        OR       R5, R5, R0        ; the next address, wrapping at 512
+        OR       R5, R5, R0        ; the next address, wrapping at 512: past 0x7FF
+                                   ; the address is 0x800, which is 0 in 11 bits
         LD       R3, R5
         SWAP     R3, R3
         CALL     xbyte
@@ -286,9 +291,8 @@ ec_er:  LDR      R1, #ERQ
 erase:  LDR      R3, #0xFF
 er:     ST       R2, R3
         DECR     R2
-        AND      R1, R2, R0
-        ADDS     R1, R1, R1        ; Z: below the store, all done
-        JZ       er_done
+        SUBS     R1, R2, R0        ; N: below the store, all done
+        JN       er_done
         PIN_R    R1
         AND      R1, R1, R6
         ADDS     R1, R1, R1        ; Z: CS low, a command is coming

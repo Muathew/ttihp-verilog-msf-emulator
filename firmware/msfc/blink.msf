@@ -1,0 +1,6 @@
+// Toggle pin 0 every 50 cycles, exactly: the compiler places the WAIT_CMP,
+// and the checker certifies that the loop always gets back to it in time.
+oe_set(0x01);
+every 50 {
+    toggle(0x01);
+}

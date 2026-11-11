@@ -23,6 +23,8 @@ class Probe:
         self.rf = [[rf.rf[i] for i in range(8)] for rf in (c.u_rf, c.u_rf1, c.u_rf2, c.u_rf3)]
         self.zf, self.nf, self.sr, self.tmo, self.run = c.zf, c.nf, c.sr, c.tmo, c.run
         self.fifo = (c.fwp, c.frp, c.fdrop, c.fbase, c.fn)
+        self.esel, self.ts = c.esel, c.ts                           # v4: selector byte, TS
+        self.slot = (c.at_arm, c.at_bad, c.at_pend, c.at_time, c.p_tgt, c.p_opk, c.p_val)
         p = dut.user_project.u_pio
         self.out, self.oe, self.uo = p.out_r, p.oe_r, p.uo_r
         self.oe_pad = p.uio_oe          # OE at the pads: the late guard applied
@@ -34,10 +36,19 @@ class Probe:
                 "oe_pad": int(self.oe_pad.value),
                 "sr": int(self.sr.value), "run": int(self.run.value),
                 "fcount": (wp - rp) & 0x1FF, "fdrop": drop, "fcfg": (base, fn)}
+        esel, ts = int(self.esel.value), int(self.ts.value)
+        arm, bad, pend, atime, ptgt, popk, pval = (int(h.value) for h in self.slot)
         for k in range(4):
+            held = (pend >> k) & 1
             snap.update({f"regs{k}": [int(h.value) for h in self.rf[k]],
                          f"z{k}": (zf >> k) & 1, f"n{k}": (nf >> k) & 1,
-                         f"tmo{k}": (tmo >> (16 * k)) & 0xFFFF})
+                         f"tmo{k}": (tmo >> (16 * k)) & 0xFFFF,
+                         f"esel{k}": (esel >> (4 * k)) & 0xF, f"ts{k}": (ts >> (16 * k)) & 0xFFFF,
+                         # the slot as isa_model.IsaModel._slot gives it
+                         f"at{k}": ((arm >> k) & 1, (bad >> k) & 1, held,
+                                    (atime >> (16 * k)) & 0xFFFF if ((arm >> k) & 1 or held) else 0,
+                                    ((ptgt >> (2 * k)) & 3, (popk >> (2 * k)) & 3,
+                                     (pval >> (8 * k)) & 0xFF) if held else (0, 0, 0))})
         return snap
 
 
@@ -55,7 +66,7 @@ async def run_and_compare(dut, src, cycles, uio=None, ui=None, data=None, probe=
     probe = probe or Probe(dut)
 
     mem = {}
-    for a in range(1024):
+    for a in range(2048):
         mem[a] = data.get(a, 0) if a < 128 else (
             words[a - 128] if a - 128 < len(words) else 0x7000)
     for a, w in mem.items():
