@@ -328,6 +328,19 @@ for each command's reply before sending the next: the UART receive buffer
 holds one byte, and a read of n bytes takes n × 0.56 ms. `tools/msf_timing.py`
 certifies its 8 deadlines (worst slack 63 cycles).
 
+### 1-Wire presence responder (v4 timed pins) — `firmware/ow_presence.s` (`test_ow_presence.py`)
+
+The device side of 1-Wire's reset and presence, written to show v4's timed pins
+(`docs/isa.md` 6.8). DQ is `uio[3]`, open drain. It times each low with `TS`; a low of
+240 us or more is a reset, and the chip answers with a presence pulse that starts 30 us
+after the master lets go and lasts 120 us. Both edges are timed writes (`AT`), so the
+hardware makes them on their cycle whatever the program is doing. A shorter low (a slot)
+gets no answer. Tested against a master in Python: four resets of different lengths, and
+the pulse starts 363 cycles after every release (30 us at 12 MHz plus 3 cycles of
+synchroniser and pad) and lasts exactly 1,440 cycles. `tools/msf_timing.py` certifies its 4
+deadlines (two timed writes, two `WAIT_CMP`), each with one exact value, and the test sees
+the same values on the RTL. It answers presence only: no ROM commands.
+
 ### CAN 2.0A node — `firmware/can.s` (`test_buses.py`, 3 tests)
 
 A classic CAN node (11-bit identifiers) behind a transceiver: TXD on
