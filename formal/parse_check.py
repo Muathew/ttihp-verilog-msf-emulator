@@ -11,6 +11,7 @@ Usage:  python formal/parse_check.py [--yosys PATH] [ctrl cap top ni]
 """
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -31,16 +32,25 @@ def main():
         d = rf.prepare()
         reads = "; ".join(f"read_verilog -formal -sv -DFORMAL -DSYNTHESIS -I. {f}" for f in files)
         p = subprocess.run(a.yosys.split() + ["-q", "-l", "log.txt", "-p",
-                                              f"{reads}; prep -top {top}; stat -width"],
+                                              f"{reads}; prep -top {top}; stat -width; "
+                                              f"flatten; check"],
                            cwd=d, capture_output=True, text=True)
         log = os.path.join(d, "log.txt")
         text = p.stdout + p.stderr + (open(log, errors="replace").read() if os.path.exists(log) else "")
         asserts = sum(1 for l in text.splitlines() if "$assert" in l and "_EN" in l)
         errors = [l for l in text.splitlines() if "ERROR" in l]
-        print(f"{t:5s} {'ok' if p.returncode == 0 else 'FAILED'}  ({asserts} assertion cells)")
-        for l in errors[:5]:
+        # An input nobody drives becomes a free value in the solver's flow. That is meant for
+        # the SRAM stub's read data (formal/sram_stub.v) and nothing else: on 12 Nov the two-copy miter
+        # had left v4's new controller inputs open, so each copy would have had its own.
+        # A port connected at the wrong width is the same kind of slip.
+        loose = sorted({l.strip() for l in text.splitlines()
+                        if ("has no driver" in l and not re.search(r"[ab]_free|[AB]_DOUT", l))
+                        or "Resizing cell port" in l})
+        ok = p.returncode == 0 and not loose
+        print(f"{t:5s} {'ok' if ok else 'FAILED'}  ({asserts} assertion cells)")
+        for l in errors[:5] + loose[:8]:
             print("     ", l.strip()[:200])
-        bad += p.returncode != 0
+        bad += not ok
         shutil.rmtree(d, ignore_errors=True)
     return 1 if bad else 0
 

@@ -18,7 +18,8 @@ and a *mutation check*: the same properties are run against copies of the
 RTL with the review's bugs re-introduced (B1 pc not advanced on release,
 B2 WAIT kinds not separated, B3 combinational bank select), the v2.1 late
 `WAIT_CMP` behaviour (B4) and one bug for each of F8, F9, F12, F13, F14, F15,
-F17 (timed pins: three) and F18 (registered pads). Each
+F17 (timed pins: three), F18 (registered pads), F19 (engine binding: two), F20 (TS) and
+F21 (the cost table). Each
 mutant must FAIL -- this shows the properties actually detect those bugs.
 
 Engines (--engine):
@@ -90,6 +91,19 @@ MUTANTS = [
     ("F18: the pad registers load the old values", "tt_um_msf_pio.v",
      "pad_out <= (out_n & ~tx_mask_n) | (tx_val_n & tx_mask_n);",
      "pad_out <= (out_r & ~tx_mask) | (tx_val & tx_mask);"),
+    # v4: engine binding (F19)
+    ("F19: an engine write goes to set 0 whatever the thread chose", "tt_um_msf_ctrl.v",
+     "assign per_set = set_c;", "assign per_set = 1'b0;"),
+    ("F19: a stalled pop is released by the other set's word", "tt_um_msf_ctrl.v",
+     "(k == K_RXPOP)  ? (es ? rx_avail1 : rx_avail) :",
+     "(k == K_RXPOP)  ? (es ? rx_avail : rx_avail1) :"),
+    # v4: TS (F20)
+    ("F20: a later event of the same wait overwrites TS", "tt_um_msf_ctrl.v",
+     "if (run[ak] && st[ak] && evt[ak] && !whit[ak]) ts[16*ak +: 16] <= cnt;",
+     "if (run[ak] && st[ak] && evt[ak]) ts[16*ak +: 16] <= cnt;"),
+    # v4: the cost table (F21)
+    ("F21: a load is not released in its first stall slot", "tt_um_msf_ctrl.v",
+     "(k == K_LD)     ? 1'b1 :", "(k == K_LD)     ? tmo_now[t] :"),
 ]
 
 
@@ -207,7 +221,10 @@ def prepare(mutant=None):
 
 NI_THREAD = ("{{pcs[{p}+:11], zf[{t}], nf[{t}], st[{t}], sk[{k3}+:3], srd[{k3}+:3], sop[{w}+:16], "
              "wsel[{k4}+:4], wcond[{k3}+:3], wprev[{t}], whit[{t}], sto[{w}+:16], sto_en[{t}], "
-             "ldh[{w}+:16], ldq[{t}], tmo[{w}+:16], fge[{t}], wlate[{t}], late[{t}], ni_rf{t}}}")
+             "ldh[{w}+:16], ldq[{t}], tmo[{w}+:16], fge[{t}], wlate[{t}], late[{t}], "
+             # v4: the selector byte, the timed-pin slot and TS
+             "esel[{k4}+:4], at_arm[{t}], at_bad[{t}], at_pend[{t}], at_time[{w}+:16], "
+             "p_tgt[{k2}+:2], p_opk[{k2}+:2], p_val[{k8}+:8], ts[{w}+:16], ni_rf{t}}}")
 NI_PORTS = """    output reg  [7:0]  dbg_q,
     // formal/ni_miter.v: the issue stage and all the state, on ports
     output wire [1:0]  ni_dthr,
@@ -218,8 +235,8 @@ NI_PORTS = """    output reg  [7:0]  dbg_q,
     output wire [15:0] ni_qa,
     output wire [15:0] ni_qb,
     output wire [3:0]  ni_run,
-    output wire [225:0] ni_t0, ni_t1, ni_t2, ni_t3,
-    output wire [107:0] ni_sh,
+    output wire [276:0] ni_t0, ni_t1, ni_t2, ni_t3,
+    output wire [123:0] ni_sh,
     output wire        ni_bub,
     output wire [53:0] ni_dst,
     output wire [1:0]  ni_fwthr,
@@ -235,9 +252,10 @@ NI_ASSIGNS = """
   assign ni_qa = qa;
   assign ni_qb = qb;
   assign ni_run = run;
-""" + "".join(f"  assign ni_t{t} = " + NI_THREAD.format(t=t, p=11 * t, k3=3 * t, k4=4 * t, w=16 * t) + ";\n"
-              for t in range(4)) + """  assign ni_sh = {run, own, bub, cnt, sr, sr_po, sr_pi, sr_lsb, waddr, fbase, fn, fwp, frp,
-                  fdrop, lguard, gpins};
+""" + "".join(f"  assign ni_t{t} = " + NI_THREAD.format(t=t, p=11 * t, k2=2 * t, k3=3 * t, k4=4 * t,
+                                                         k8=8 * t, w=16 * t) + ";\n"
+              for t in range(4)) + """  assign ni_sh = {run, own, bub, cnt, cnt_hi, sr, sr_po, sr_pi, sr_lsb, waddr, fbase, fn, fwp,
+                  frp, fdrop, lguard, gpins};
   assign ni_bub = bub;
   assign ni_dst = {dir, dqa, dqb, dra, drb};
   assign ni_fwthr = fw_thr;
@@ -308,9 +326,18 @@ TARGETS = {"ctrl": ("tt_um_msf_ctrl", CTRL_FILES), "cap": ("tt_um_msf_cap", ["tt
                                "tt_um_msf_alu.v"])}
 
 
+# the files a target reads that are made from another (ni_copy)
+MADE_FROM = {"tt_um_msf_ctrl_ni.v": "tt_um_msf_ctrl.v", "tt_um_msf_regfile_ni.v": "tt_um_msf_regfile.v"}
+
+
 def bmc(tools, depth, mutant=None, prove=False):
     results = []
     for top, files in (TARGETS[t] for t in tools.get("targets", DEFAULT_TARGETS)):
+        # A target that does not read the mutated file is the unmutated design, which the
+        # BMC above has just checked: running it again cannot catch the mutant, and for the
+        # controller it costs as long as the whole BMC (27 minutes on the development PC).
+        if mutant and mutant[1] not in {MADE_FROM.get(f, f) for f in files}:
+            continue
         d = prepare(mutant)
         verdict, out = check(tools, d, top, files, depth, prove)
         fail_at = re.findall(r"Assert failed in \S+: (.*)", out)
@@ -325,10 +352,38 @@ def bmc(tools, depth, mutant=None, prove=False):
 
 def mutant_verdict(res):
     """caught: a target fails with a counterexample (the later ones are then
-    skipped) and none checked before it errored."""
+    skipped) and none checked before it errored. A mutant no target reads is
+    not caught."""
     if any(v == "error" for _, v, _, _ in res):
         return "ERROR"
     return "caught" if any(v == "fail" for _, v, _, _ in res) else "NOT CAUGHT"
+
+
+def caught_by(res):
+    """Which property stopped a caught mutant: the nearest `// F<n>` comment above the
+    assertion the solver names (the mutations replace text within a line, so the line
+    numbers are the source's), with the target and the step."""
+    for top, verdict, out, fails in res:
+        if verdict != "fail" or not fails:
+            continue
+        m = re.match(r"(\S+\.v):([0-9]+)", fails[0])
+        if not m:
+            return ""
+        fname, line = m.group(1), int(m.group(2))
+        path = os.path.join(SRC, fname)
+        if not os.path.exists(path):
+            path = os.path.join(HERE, fname)
+        label = ""
+        if os.path.exists(path):
+            lines = open(path, encoding="utf-8").read().splitlines()
+            for i in range(min(line, len(lines)) - 1, -1, -1):
+                c = re.search(r"//\s*(F[0-9]+)", lines[i])
+                if c:
+                    label = c.group(1) + ", "
+                    break
+        step = re.findall(r"at \S+ step ([0-9]+)", out)
+        return f"by {label}{fname}:{line}" + (f", step {step[-1]}" if step else "") + f" ({top})"
+    return ""
 
 
 def covers(tools, depth):
@@ -380,8 +435,8 @@ def main():
     if a.only_mutant is not None:
         m = mutants[a.only_mutant]
         res = bmc(tools, a.depth, m)
-        print(f"  {m[0]:34s} {mutant_verdict(res)}")
-        return 0
+        print(f"  {m[0]:34s} {mutant_verdict(res)} {caught_by(res)}", flush=True)
+        return 0 if mutant_verdict(res) == "caught" else 1
     print(f"== BMC depth {a.depth} (all inputs free, engine {a.engine}) ==")
     for top, verdict, out, fails in bmc(tools, a.depth):
         print(f"  {top:16s} {verdict.upper()}")
@@ -412,8 +467,9 @@ def main():
     if not a.no_mutants:
         print("== mutation check (each must FAIL) ==")
         for m in mutants:
-            v = mutant_verdict(bmc(tools, a.depth, m))
-            print(f"  {m[0]:34s} {v}")
+            res = bmc(tools, a.depth, m)
+            v = mutant_verdict(res)
+            print(f"  {m[0]:34s} {v} {caught_by(res)}", flush=True)
             if v != "caught":
                 status = 1
     return status

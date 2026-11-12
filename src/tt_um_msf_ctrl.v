@@ -1000,7 +1000,7 @@ module tt_um_msf_ctrl (
   //      of isa.md section 5, not shared with the design's own logic) ----
   wire [3:0]  f_seen_w, f_evt_w, f_single_w, f_late_w;
   wire [67:0] f_cnt_w;       // 17 bits per thread
-  wire [63:0] f_tmo_w;
+  wire [63:0] f_tmo_w, f_ts_w, f_tgt_w;
   generate
     for (t = 0; t < 4; t = t + 1) begin : g_fv
       reg [15:0] tgt, tm;
@@ -1034,6 +1034,21 @@ module tt_um_msf_ctrl (
           if (ev) seen <= 1'b1;
         end
       end
+      // F20 (v4): the ghost's TS (isa.md 6.8), from this block's own event witness: CNT in
+      // the cycle of the wait's first event, or, when a wait is released with none
+      // (timeout, late target), CNT in the release cycle; TSTART clears it
+      reg [15:0] gts;
+      wire       wk = (kind == K_EDGE || kind == K_CMP);
+      always @(posedge clk) begin
+        if (f_init) gts <= 16'd0;
+        else begin
+          if (st[t] && wk && ev && !seen)               gts <= cnt;
+          if (cur == t && rel && wk && !(seen || ev))   gts <= cnt;
+          if (do_tstart && tt == t)                     gts <= 16'd0;
+        end
+      end
+      assign f_ts_w[16*t +: 16] = gts;
+      assign f_tgt_w[16*t +: 16] = tgt;
       assign f_seen_w[t]        = seen;
       assign f_single_w[t]      = single;
       assign f_late_w[t]        = glate;
@@ -1153,8 +1168,9 @@ module tt_um_msf_ctrl (
       end
     end
 
-  // F6 flags change only through the owning thread's flag ops / blocking ops
-  wire f_flagev = exec && flag_op || blk_now || rel || exec && x_put;
+  // F6 flags change only through the owning thread's flag ops / blocking ops, or (v4) its
+  //    timed pin write, whose Z says whether the write was refused (isa.md 6.8)
+  wire f_flagev = exec && flag_op || blk_now || rel || exec && x_put || pwr_do && armed_c;
   generate
     for (t = 0; t < 4; t = t + 1) begin : g_f6
       always @(posedge clk)
@@ -1248,8 +1264,94 @@ module tt_um_msf_ctrl (
       if ($past(pwr_do && armed_c && !t_refuse)) assert(!zf[$past(cur)] || $past(do_tstart && tt == cur));
     end
 
+  // F19 (v4) engine binding, for every program (isa.md 3.2): an engine instruction reaches
+  //     the set its thread's last ESEL named and no other, completes on that set's status
+  //     alone, and reads back that set's data. The ghost keeps each thread's selector from
+  //     the ESEL words it issued (and TSTART), not from the design's register or decode.
+  reg [3:0] g_sel [0:3];
+  integer gs;
+  always @(posedge clk) begin
+    if (f_init) begin
+      for (gs = 0; gs < 4; gs = gs + 1) g_sel[gs] <= 4'd0;
+    end else begin
+      if (exec && ir[15:8] == 8'b10010_110) g_sel[cur] <= ir[3:0];   // SETM selector 6
+      if (do_tstart) g_sel[tt] <= 4'd0;
+    end
+  end
+  wire       g_set  = g_sel[cur][0];
+  wire [4:0] g_st   = g_set ? {crc_busy1, rx_overrun1, rx_avail1, tx_busy1, tx_full1}
+                            : {crc_busy,  rx_overrun,  rx_avail,  tx_busy,  tx_full};
+  always @(*)
+    if (!f_init) begin
+      // a write to an engine, a pop or an option write is for the owner's set
+      if (per_we || rx_pop || opt_we) assert(per_set == g_set);
+      // a blocking engine instruction completes on its own set's status
+      if (per_we && per_sub == X_TXPUSH) assert(!g_st[0]);
+      if (per_we && per_sub == X_CRCW)   assert(!g_st[4]);
+      if (rx_pop) assert(g_st[2]);
+      // and what the thread gets back is its own set's
+      if (rx_pop) assert(wb_en && wb_d == (g_set ? rx_word1 : rx_word));
+      if (exec && x_stat)
+        assert(wb_d[4:0] == g_st && wb_d[15] == (g_set ? err_any1 : err_any));
+      if (exec && x_crcrh) assert(wb_d == (g_set ? crc_hi1 : crc_hi));
+      if (exec && x_pr && g_sel[cur][3:1] == 3'd2)
+        assert(wb_d == (g_set ? opt_rd1 : opt_rd));
+    end
+
+  // F20 (v4) TS, for every program (isa.md 6.8): a running thread's TS is the time of the
+  //     event that ended its last WAIT_EDGE / WAIT_CMP, not of its release, whatever the
+  //     other threads did in between; with no event it is the release cycle. `TS ra` on
+  //     page 1 reads it. (A stopped thread's TS is not defined: TSTART clears it.)
+  generate
+    for (t = 0; t < 4; t = t + 1) begin : g_f20
+      always @(*)
+        if (!f_init && run[t]) assert(ts[16*t +: 16] == f_ts_w[16*t +: 16]);
+    end
+  endgenerate
+  always @(*)
+    if (!f_init && exec && x_pr && g_sel[cur][3:1] == 3'd1 && ir[7:5] == 3'd0)
+      assert(wb_en && wb_d == f_ts_w[16*cur +: 16]);
+
+  // F21 (v4) the cost table, for every program (isa.md section 5): how many cycles an
+  //     instruction takes until its thread issues the next one. The deadline checker
+  //     (tools/msf_timing.py) adds these numbers up, so its certificates rest on them.
+  //     Which word issues next is F2; this is when.
+  always @(posedge clk)
+    if (!f_init && !$past(f_init)) begin
+      if (!$past(multi) && !multi) begin              // single-thread mode in both cycles
+        // 1 cycle: an instruction that neither redirects nor stalls is followed at once
+        if ($past(exec) && !$past(redirect) && !$past(enter)) assert(exec);
+        // 2 cycles: a taken branch, JMP, CALL, RET or JR is followed by one empty cycle ...
+        if ($past(redirect)) assert(!exec && !st[0]);
+        // 1 + k: an op that stalled k cycles is followed the cycle after its release,
+        // and an op that stalls is stalled from the cycle after its issue
+        if ($past(rel))   assert(exec);
+        if ($past(enter)) assert(st[0]);
+      end
+      // ... and only one
+      if (!$past(f_init, 2) && !$past(multi, 2) && !$past(multi) && !multi && $past(redirect, 2))
+        assert(exec);
+      // T0 starts a thread in single mode: T0 issues again in the next cycle (isa.md 7)
+      if (!$past(multi) && $past(do_tstart)) assert(exec && cur == 2'd0);
+      // multi-thread mode, the running set unchanged: every instruction costs one slot of
+      // its thread, a branch too: the owner of a slot issues unless it is stalled
+      if ($past(multi) && multi && !$past(do_tstart) && !$past(do_tstop)) assert(exec || st_c);
+    end
+  always @(*)
+    if (!f_init) begin
+      // LD and FIFO_GET: released in the thread's first own stall slot (2 cycles, 2 slots)
+      if (st_c && sk_c == K_LD) assert(rel);
+      // WAIT_CMP on time, issued in single-thread mode: released in the cycle CNT equals
+      // the target, so the next instruction issues when CNT is the target plus one
+      if (rel && rel_ok && sk_c == K_CMP && f_single_w[cur] && !f_late_c)
+        assert(cnt == f_tgt_w[16*cur +: 16]);
+    end
+
   // reachability (the properties above are not vacuous)
   always @(*) if (!f_init) begin
+    cover(per_we && g_set && cur != 2'd0);
+    cover(rx_pop && g_set && rel);
+    cover(exec && x_pr && g_sel[cur][3:1] == 3'd1 && ir[7:5] == 3'd0 && wb_d != 16'd0 && cur != 2'd0);
     cover(rel && sk_c == K_EDGE && rel_ok);
     cover(rel && sk_c == K_CMP && rel_ok);
     cover(rel && f_late_c);

@@ -15,6 +15,9 @@
 // state that makes it inductive is asserted equal: the shared state, all of T0's
 // and k's (registers included), the decode stage when it holds their word and
 // the forwarding registers when they hold their write.
+// v4: a thread's selector byte (ESEL), its timed-pin slot and its TS are part of its
+// state, and CNT's high half of the shared state. The other threads cannot write a pin
+// (SETM and CLRM are not quiet), so they can neither change their page nor arm a slot.
 `default_nettype none
 
 module ni_miter (
@@ -33,6 +36,20 @@ module ni_miter (
     input wire        crc_busy,
     input wire [15:0] crc_lo,
     input wire [15:0] crc_hi,
+    // v4: the second engine set's status and both sets' option ports and error flags,
+    // the same for both copies like the first set's
+    input wire        tx_full1,
+    input wire        tx_busy1,
+    input wire        rx_avail1,
+    input wire        rx_overrun1,
+    input wire [15:0] rx_word1,
+    input wire        crc_busy1,
+    input wire [15:0] crc_lo1,
+    input wire [15:0] crc_hi1,
+    input wire [15:0] opt_rd,
+    input wire [15:0] opt_rd1,
+    input wire        err_any,
+    input wire        err_any1,
     input wire [15:0] cap_stat,
     input wire [10:0] cap_tpos,
     input wire [6:0]  dbg_sel
@@ -63,8 +80,8 @@ module ni_miter (
   wire [10:0] pc_a, pc_b;
   wire [15:0] ir_a, ir_b, qa_a, qa_b, qb_a, qb_b;
   wire [3:0]  run_a, run_b;
-  wire [225:0] t0_a, t1_a, t2_a, t3_a, t0_b, t1_b, t2_b, t3_b;
-  wire [107:0] sh_a, sh_b;
+  wire [276:0] t0_a, t1_a, t2_a, t3_a, t0_b, t1_b, t2_b, t3_b;
+  wire [123:0] sh_a, sh_b;
   wire        bub_a, bub_b;
   wire [53:0] dst_a, dst_b;
   wire [1:0]  fwthr_a, fwthr_b;
@@ -77,9 +94,13 @@ module ni_miter (
       .out_q(out_a), .oe_q(oe_a), .uo_q(uo_a),
       .out_we(out_we_a), .out_d(out_d_a), .oe_we(oe_we_a), .oe_d(oe_d_a),
       .uo_we(uo_we_a), .uo_d(uo_d_a),
-      .per_we(), .per_sub(), .per_wd(), .rx_pop(),
+      .per_we(), .per_sub(), .per_wd(), .per_set(), .rx_pop(),
+      .opt_we(), .opt_port(), .opt_wd(), .opt_rport(),
+      .opt_rd(opt_rd), .opt_rd1(opt_rd1), .err_any(err_any), .err_any1(err_any1),
       .tx_full(tx_full), .tx_busy(tx_busy), .rx_avail(rx_avail), .rx_overrun(rx_overrun),
       .rx_word(rx_word), .crc_busy(crc_busy), .crc_lo(crc_lo), .crc_hi(crc_hi),
+      .tx_full1(tx_full1), .tx_busy1(tx_busy1), .rx_avail1(rx_avail1), .rx_overrun1(rx_overrun1),
+      .rx_word1(rx_word1), .crc_busy1(crc_busy1), .crc_lo1(crc_lo1), .crc_hi1(crc_hi1),
       .pw_we(), .pw_port(), .pw_data(), .oe_off(), .oe_off_n(), .cap_stat(cap_stat), .cap_tpos(cap_tpos),
       .dbg_sel(dbg_sel), .dbg_q(),
       .ni_dthr(fth_a), .ni_cur(cur_a), .ni_exec(exec_a), .ni_pc(pc_a), .ni_ir(ir_a),
@@ -94,9 +115,13 @@ module ni_miter (
       .out_q(out_b), .oe_q(oe_b), .uo_q(uo_b),
       .out_we(out_we_b), .out_d(out_d_b), .oe_we(oe_we_b), .oe_d(oe_d_b),
       .uo_we(uo_we_b), .uo_d(uo_d_b),
-      .per_we(), .per_sub(), .per_wd(), .rx_pop(),
+      .per_we(), .per_sub(), .per_wd(), .per_set(), .rx_pop(),
+      .opt_we(), .opt_port(), .opt_wd(), .opt_rport(),
+      .opt_rd(opt_rd), .opt_rd1(opt_rd1), .err_any(err_any), .err_any1(err_any1),
       .tx_full(tx_full), .tx_busy(tx_busy), .rx_avail(rx_avail), .rx_overrun(rx_overrun),
       .rx_word(rx_word), .crc_busy(crc_busy), .crc_lo(crc_lo), .crc_hi(crc_hi),
+      .tx_full1(tx_full1), .tx_busy1(tx_busy1), .rx_avail1(rx_avail1), .rx_overrun1(rx_overrun1),
+      .rx_word1(rx_word1), .crc_busy1(crc_busy1), .crc_lo1(crc_lo1), .crc_hi1(crc_hi1),
       .pw_we(), .pw_port(), .pw_data(), .oe_off(), .oe_off_n(), .cap_stat(cap_stat), .cap_tpos(cap_tpos),
       .dbg_sel(dbg_sel), .dbg_q(),
       .ni_dthr(fth_b), .ni_cur(cur_b), .ni_exec(exec_b), .ni_pc(pc_b), .ni_ir(ir_b),
@@ -145,8 +170,8 @@ module ni_miter (
   always @(*) assume(rst_n == !f_init);
 
   wire in_e = cur_a == 2'd0 || cur_a == k;
-  wire [225:0] tk_a = k == 2'd1 ? t1_a : k == 2'd2 ? t2_a : k == 2'd3 ? t3_a : t0_a;
-  wire [225:0] tk_b = k == 2'd1 ? t1_b : k == 2'd2 ? t2_b : k == 2'd3 ? t3_b : t0_b;
+  wire [276:0] tk_a = k == 2'd1 ? t1_a : k == 2'd2 ? t2_a : k == 2'd3 ? t3_a : t0_a;
+  wire [276:0] tk_b = k == 2'd1 ? t1_b : k == 2'd2 ? t2_b : k == 2'd3 ? t3_b : t0_b;
   always @(*)
     if (!f_init) begin
       // the property
