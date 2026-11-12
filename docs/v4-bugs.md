@@ -265,6 +265,33 @@ below means a local run unless it says CI.
 * **Check:** the ISA model has its own table for these reads (`test/isa_model.py` near line
   542); the constants are now in three places (RTL, model, checker).
 
+### T5. The checker certified a timed write that the hardware refuses (the slot was full)
+* **Where:** `tools/msf_timing.py`, the `AT rb` case of `X_PW` on page 1 and `timed_write()`.
+* **Found by:** reading `isa.md` 6.8 while planning the timed-pin device (12 Nov, evening).
+  Reproduced: `WAIT_EDGE; TS R1; AT R1+100; PIN_SET; AT R1+200; PIN_CLR`. The second `AT`
+  issues about 8 cycles after the first write, while its event is still held; 6.8 says
+  that `AT` sets refuse-next and the write is refused (Z = 1, LATE). The checker reported
+  both writes "slack >= 94 / >= 189", exit 0.
+* **Cause:** the abstract state tracked the armed time but not the held event: "a slot
+  holds one event" was not modelled at all.
+* **Fix:** two more abstract registers. `HELD_REG` is the time of the held event (set by an
+  accepted write whose time is ahead, shifted with time like `TS`, and emptied by
+  `settle_held()` once its time has certainly passed, so loops still join). `RN_REG` is
+  refuse-next, set by an `AT` that may find the slot full; the next pin write is then
+  reported refused. The program above is now refused (exit 1); with a `WAIT_CMP` on the first
+  time before the second `AT` it is certified.
+* **Status:** fixed, verified by `test_site.py::test_a_second_timed_write_while_the_slot_is_full_is_refused`
+  and the four checker tests near it. No shipped program uses `AT`, so no published
+  certificate changes; `msf_timing.py --all` was not re-run here (CI runs it).
+* **Check:** (1) the d = 0 edge: the checker treats an event due in the cycle the next `AT`
+  issues as still held (refuse-next); confirm against the RTL's refuse-next condition in
+  `src/tt_um_msf_ctrl.v` (`at_pend`, near line 836). If the RTL sees the slot as empty in
+  that cycle, the checker is one cycle pessimistic, which is safe. (2) `TSTART` of a thread
+  by itself clears its slot (6.8); the checker keeps `HELD_REG`, which is safe. (3) A loop
+  back to an unbounded `WAIT_EDGE` keeps a held event possibly pending, so the next `AT`
+  is flagged unless the program states its input spacing (`@range`): correct, but the
+  timed-pin device below must state it.
+
 ### I5. CI's deadline cross-check failed on two programs (inherited from v3)
 * **Where:** `.github/workflows/test.yaml` step "Deadlines against the RTL"; `test/test_nes_pad.py`;
   `test/test_mcu_v3_peer.py` line 178; `test/fw_tb.py` `DeadlineWatch`; `tools/msf_timing.py`

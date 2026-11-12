@@ -105,7 +105,29 @@ are not errors: they are claims this machine cannot test.
   table in `docs/envelope.md` is made by hand from the tests), the second public draw and the
   newcomers' protocols (plan section 9), `msfc` threads and functions, the cold read.
 * The deadline checker's cross-check against the RTL for `AT` writes (a `DeadlineWatch` for
-  timed writes in `test/fw_tb.py`); only `WAIT_CMP` is cross-checked on the RTL.
+  timed writes in `test/fw_tb.py`); only `WAIT_CMP` is cross-checked on the RTL. **Designed
+  12 Nov, not built** (the session ran out of time):
+  1. `test/tb.v`: a second event register beside `wcmp_evt`, toggled at `negedge clk` when
+     `user_project.u_ctrl.pwr_do && user_project.u_ctrl.armed_c` (a timed write arrives).
+  2. `test/fw_tb.py` `DeadlineWatch._run`: a second loop on it, d = `at_time_c - cnt`
+     (through `msf_timing.model_d`), pc = `dbg_pc`, thread = `cur`. The floor for a timed
+     write is d >= 0 (0 is "now"), not the `WAIT_CMP` floor of 1, so the default in
+     `_issue` (`self.ranges.get(pc, (1, None))`) needs the deadline's kind. `fw_boot` starts
+     the watch only for files containing `WAIT_CMP` (line ~192): add files with `AT`.
+  3. `tools/msf_timing.py`: `check_rtl_log` already reads every deadline kind;
+     `_uses_wait_cmp` (which picks the files for `--rtl-log`) must also pick `AT` users.
+  4. A shipped program that uses it: a 1-Wire **presence responder** (device side), the
+     reply idiom of `test_timed_pins.py::test_reply_idiom_has_no_jitter` as firmware:
+     `WAIT_EDGE fall` (master's reset), `WAIT_EDGE rise`, check the low lasted over 240 us,
+     `TS`; `AT TS+30us; OE_SET DQ` (pull low); `WAIT_CMP` that time (the slot must be empty
+     before the next `AT`, bug T5); `AT +120us; OE_CLR DQ`. Its edges need an `@range` so a
+     new edge cannot come while an event is held (T5's check 3). The peer: the master side
+     of `test_buses.py`'s 1-Wire code, or a small Python master in the new test that checks
+     the presence pulse lands exactly 30 us after its release.
+* The second reader of `src/tt_um_msf_serdes.v` (two engine sets, RX mode 3, the external
+  clock) that the 12 Nov hand-over asked to finish: not done on 12 Nov. The 12 Nov first
+  reading (`v4-bugs.md`, "What the second reading checked") found no difference from
+  `isa.md` 6.9, but it was by the session that wrote both.
 * F16 for v4: the `ni` miter now carries the new per-thread state (the slot, `ESEL`, `TS`)
   and the second engine set's inputs (12 Nov, `v4-bugs.md` V3), but F16 is still a bounded
   check and its planted bug is still not shown (v3's state).
