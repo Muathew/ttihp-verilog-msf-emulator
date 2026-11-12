@@ -68,12 +68,26 @@ jobs:
           paths: "test/results.xml"
         if: always()
 
-      - name: upload waveform and test results
+      # The results always (small); the waveform only when something failed: it is 90 to
+      # 170 MB a run, and on 11 Nov the account's artifact store was full, which failed
+      # this job after every test had passed. A full store must not fail the tests, and
+      # a week is long enough to fetch a waveform.
+      - name: upload test results
         if: success() || failure()
+        continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
           name: test-results
+          retention-days: 7
           path: |
-            test/tb.fst
             test/results.xml
             test/output/*
+
+      - name: upload waveform of a failed run
+        if: failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-waveform
+          retention-days: 7
+          path: test/tb.fst
