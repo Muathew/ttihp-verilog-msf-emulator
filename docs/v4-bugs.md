@@ -370,11 +370,25 @@ below means a local run unless it says CI.
 * **BMC, controller, depth 16:** passed with the F6 fix before F19-F21 were added (27 min).
   With F19-F21 it reached step 11 of 16 with no failure when the session ended
   (`%TEMP%\msf_formal_wrjkj90w`). Top level and `ni`: not run to the end on this tree.
+* **CI formal, e92524b (run 43275921661): green.** BMC depth 16 PASS on `tt_um_msf_ctrl`,
+  `tt_um_msf_cap`, `tt_um_msf`; 18 of 18 cover points reached; 18 of 18 mutants caught, 16
+  by their own property, the F12 and F13 mutants by F1 (`ctrl.v:1068`, steps 4 and 6),
+  which a reviewer may want to look at: F12/F13 have no assertion that catches them first.
+  The `ni` target (F16) is not in CI's default run (`--top ni` only) and has not run on v4.
 * **Simulation:** CI ran 319 of 319 cocotb tests at 46ae2d6. After the 12 Nov edits, run here:
   `test_nes_pad` and `test_mcu_v3_peer` (3 of 3), the four new `test_site.py` tests, and
   `msf_timing.py nes_pad.s mcu_v3_peer.s --rtl-log` (5 of 5, 2 of 2). The full suite, the
   pure-Python set and the full formal run were left to CI's run on the 12 Nov push
   (`v4-open-problems.md` A3).
+* **Timed writes cross-checked on the RTL (12 Nov, evening):** `test/tb.v` `at_evt` and
+  `DeadlineWatch._watch_timed` (`test/fw_tb.py`) check every timed pin write a firmware test
+  issues against the checker's range (floor d >= 0). First program: `firmware/ow_presence.s`,
+  a 1-Wire presence responder; `test_ow_presence` passes (1 of 1, 23 s), and
+  `msf_timing.py firmware/ow_presence.s --rtl-log` gives 4 of 4 (d = 349 and 1435 for the two
+  timed writes, 348 and 1434 for the `WAIT_CMP`s, each the checker's single value).
+  **Check:** `DeadlineWatch` reads `at_time_c` and `cnt` at the negedge after the write
+  issues, as it reads `qa` for `WAIT_CMP`. A reviewer should confirm that `at_time_c` is
+  still the armed time in that half cycle (the slot register changes at the posedge).
 
 ## Where correlated mistakes are most likely
 

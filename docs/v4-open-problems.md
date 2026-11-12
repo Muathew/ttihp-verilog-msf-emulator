@@ -41,7 +41,7 @@ are not errors: they are claims this machine cannot test.
   comparison. If a property is too strong, the F17 ghost is in `tt_um_msf_ctrl.v` under
   `// F17 (v4)`.
 
-### A2. The account's artifact store is full (6.9 GB), so the `docs` workflow fails
+### A2. The account's artifact store was full (6.9 GB; cleaned to 713 MB on 12 Nov)
 * **What:** CI's `docs` workflow (Tiny Tapeout's `tt-gds-action/docs`, which uploads the
   PDF) fails with `Failed to CreateArtifact: Artifact storage quota has been hit` whatever
   the repository holds. The `test` workflow's uploads now cannot fail the job
@@ -52,25 +52,27 @@ are not errors: they are claims this machine cannot test.
   sram-diversion 70); `test-results` about 1,730 MB (plan7 508, v3 427, fixes 278, mcu 225,
   main 161, rtl-changes 90, ...); `tt_submission` and `gds_render` the rest. v4 has none: its
   uploads failed.
-* **Not done:** nothing was deleted. The 12 Nov hand-over suggested deleting the plan7 and v4
-  test-results (about 91 MB were thought to be there); that is 508 MB and would leave
-  6.4 GB, still far over any plan's limit, so it would lose the records and fix nothing.
-  Getting under the limit means deleting old `GDS_logs` from branches that are finished,
-  or lowering the repository's artifact retention (Settings, Actions, General). Both are
-  the account owner's decision (Muath's, with Sam). GitHub recalculates usage every 6 to
-  12 hours after a deletion.
-* **To delete one kind** (example, after deciding): `gh api --paginate
-  "repos/Muathew/ttihp-verilog-msf-emulator/actions/artifacts?per_page=100" --jq
-  '.artifacts[] | select(.name=="GDS_logs" and .workflow_run.head_branch=="rtl-changes") | .id'`
-  then `gh api -X DELETE repos/Muathew/ttihp-verilog-msf-emulator/actions/artifacts/<id>`
-  for each id.
+* **Cleaned 12 Nov, on Sam's choice:** 308 artifacts (6,209 MB) deleted, none failed. Kept:
+  the newest artifact of each kind on `main`, `plan7` and `v3`, 16 items, 713 MB: the
+  newest hardening run of `main` (3 Nov) and of `plan7` (7 Nov) with its `GDS_logs`,
+  `tt_submission`, `gds_render`, `precheck_reports`, `gatelevel_test_results`; the newest
+  `test-results` of `main`, `plan7`, `v3`; the three PDFs. Deleted: every older run on those
+  branches and every artifact of rtl-changes (63), FPGA (42), optional (40), fixes (38),
+  steal (21), mcu (14), ethernet (14), sram-diversion (7). Code and CI text logs are not
+  artifacts and are untouched.
+* **Still open:** whether uploads work again. GitHub says it recalculates usage every 6 to
+  12 hours; if the quota is counted over the billing month (GB-hours), uploads may stay
+  blocked until Muath's month resets. 713 MB is under a Pro or Education plan's 2 GB but
+  over GitHub Free's 500 MB. Muath can see which on his billing page; the `docs` workflow
+  of the next push says whether it worked. Each hardening run adds about 230 MB, so the
+  repository's artifact retention (Settings, Actions, General) is worth lowering to a week
+  or two.
 
 ### A3. Long runs left for later (12 Nov: the session had an hour, Sam asked for no long runs)
-* **Formal to depth 16, locally:** not run to the end on the final tree. What exists: the
-  controller BMC with the F6 fix passed depth 16 before F19-F21 were added (V1), and a run
-  with F19-F21 reached step 11 of 16 with no failure before the session ended
-  (`%TEMP%\msf_formal_wrjkj90w\run\logfile.txt`, 07:18). CI's `formal` workflow on the 12 Nov
-  push is the full run (all targets, covers, mutants); read it with `gh run list --branch v4`.
+* **Formal to depth 16:** done by CI instead, green at e92524b (`v4-bugs.md`, "State on
+  12 Nov"), so a local rerun is not needed. Still not run anywhere on v4: the `ni` target
+  (F16, `formal/run_formal.py --engine abc --depth 16 --top ni`, hours) and the unbounded
+  proof of the controller (`--prove --prove-timeout 3600 --top ctrl --no-mutants`).
 * **The full cocotb suite (319) and the pure-Python tests** after the 12 Nov edits: not run
   locally. What ran: the modules each edit touches (`test_nes_pad`, `test_mcu_v3_peer`, the
   new `test_site.py` tests). CI's `test` workflow on the push runs all of it, plus the
@@ -104,26 +106,13 @@ are not errors: they are claims this machine cannot test.
 * The demo-board driver and the bring-up kit (plan section 10), the envelope sweep script (the
   table in `docs/envelope.md` is made by hand from the tests), the second public draw and the
   newcomers' protocols (plan section 9), `msfc` threads and functions, the cold read.
-* The deadline checker's cross-check against the RTL for `AT` writes (a `DeadlineWatch` for
-  timed writes in `test/fw_tb.py`); only `WAIT_CMP` is cross-checked on the RTL. **Designed
-  12 Nov, not built** (the session ran out of time):
-  1. `test/tb.v`: a second event register beside `wcmp_evt`, toggled at `negedge clk` when
-     `user_project.u_ctrl.pwr_do && user_project.u_ctrl.armed_c` (a timed write arrives).
-  2. `test/fw_tb.py` `DeadlineWatch._run`: a second loop on it, d = `at_time_c - cnt`
-     (through `msf_timing.model_d`), pc = `dbg_pc`, thread = `cur`. The floor for a timed
-     write is d >= 0 (0 is "now"), not the `WAIT_CMP` floor of 1, so the default in
-     `_issue` (`self.ranges.get(pc, (1, None))`) needs the deadline's kind. `fw_boot` starts
-     the watch only for files containing `WAIT_CMP` (line ~192): add files with `AT`.
-  3. `tools/msf_timing.py`: `check_rtl_log` already reads every deadline kind;
-     `_uses_wait_cmp` (which picks the files for `--rtl-log`) must also pick `AT` users.
-  4. A shipped program that uses it: a 1-Wire **presence responder** (device side), the
-     reply idiom of `test_timed_pins.py::test_reply_idiom_has_no_jitter` as firmware:
-     `WAIT_EDGE fall` (master's reset), `WAIT_EDGE rise`, check the low lasted over 240 us,
-     `TS`; `AT TS+30us; OE_SET DQ` (pull low); `WAIT_CMP` that time (the slot must be empty
-     before the next `AT`, bug T5); `AT +120us; OE_CLR DQ`. Its edges need an `@range` so a
-     new edge cannot come while an event is held (T5's check 3). The peer: the master side
-     of `test_buses.py`'s 1-Wire code, or a small Python master in the new test that checks
-     the presence pulse lands exactly 30 us after its release.
+* ~~The deadline checker's cross-check against the RTL for `AT` writes.~~ **Built 12 Nov:**
+  `test/tb.v` `at_evt`, `DeadlineWatch._watch_timed` in `test/fw_tb.py` (floor d >= 0),
+  `msf_timing.uses_deadlines()` (programs with `AT` are analysed by `--all` and cross-checked
+  by `--rtl-log`), and the first shipped program with timed writes, `firmware/ow_presence.s`
+  (a 1-Wire presence responder) with `test/test_ow_presence.py`: 4 of 4 deadlines reached on
+  the RTL at the checker's exact values. Still not covered: timed writes with several
+  threads in a shipped program (`test_timed_pins.py` covers them with inline programs).
 * The second reader of `src/tt_um_msf_serdes.v` (two engine sets, RX mode 3, the external
   clock) that the 12 Nov hand-over asked to finish: not done on 12 Nov. The 12 Nov first
   reading (`v4-bugs.md`, "What the second reading checked") found no difference from
