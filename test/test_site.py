@@ -85,6 +85,62 @@ def test_the_peer_firmware_that_misses_deadlines_on_purpose_says_so():
     assert sum(1 for d in r["deadlines"] if d["on_purpose"]) == 2 and r["report"].count("LATE ON PURPOSE") == 2
 
 
+PAGE_READ = """.include "msf.inc"
+start:  ESEL     #{page}
+        {read}   R1
+        ESEL     #0
+        CNT_R    R5
+        LDR      R2, #20
+        ADDS     R5, R5, R2         ; the deadline: 20 cycles from here
+        {test}
+        JZ       ok
+        LDR      R3, #20            ; the other path burns 40 cycles
+h1:     DECR     R3
+        JNZ      h1
+ok:     WAIT_CMP R5
+        PIN_SET  1
+halt:   JMP      halt
+"""
+
+
+def test_a_path_taken_on_an_engine_error_is_analysed():
+    """Found 12 Nov: the checker took every read outside port page 1 as 0, so a program
+    that misses its deadline only when ERR_STAT (page 2) is not zero was certified. The
+    engine's flags, the option words and CNT_H are unknown to it; the identity words are
+    constants it can follow."""
+    plain = "ADDS     R1, R1, R1"
+    for page, read in ((4, "ERR_STAT"), (5, "ERR_STAT"), (4, "TX_OPT_RD"), (4, "RX_EXT_RD"),
+                       (6, "CNT_H")):
+        r = pg.check(PAGE_READ.format(page=page, read=read, test=plain))
+        assert r["verdict"] == "refused", (page, read, r["report"])
+        assert any(d["late"] for d in r["deadlines"]), (page, read, r["report"])
+    # CHIPID is 0x4D53 on this chip: a program that tests for it takes one path, on time
+    is_ms = "LDI      R2, 0x4D53\n        SUBS     R1, R1, R2"
+    r = pg.check(PAGE_READ.format(page=6, read="CHIPID", test=is_ms))
+    assert r["verdict"] == "certified", r["report"]
+    # ... and one that takes it for 0 is on the slow path every time
+    r = pg.check(PAGE_READ.format(page=6, read="CHIPID", test=plain))
+    assert r["verdict"] == "refused", r["report"]
+
+
+def test_ts_is_tracked_only_by_a_program_that_can_read_it():
+    """TS is one more register in the checker's state, and a register that differs between
+    paths splits the states at every join. A program reads TS only through port 0 of page 1:
+    FIFO_GET is the same instruction on page 0 and must not count (ps2_device.s, which uses
+    the FIFO, lost three exact releases to it between step 1 and 12 Nov)."""
+    import assembler
+    import msf_timing
+    fifo = assembler.assemble("FIFO_GET R1\nh: JMP h\n", base_addr=128)
+    assert not msf_timing.reads_ts(fifo)
+    ts = assembler.assemble("ESEL #2\nWAIT_EDGE #0\nTS R1\nESEL #0\nh: JMP h\n", base_addr=128)
+    assert msf_timing.reads_ts(ts)
+    page2 = assembler.assemble("ESEL #4\nTX_OPT_RD R1\nESEL #0\nh: JMP h\n", base_addr=128)
+    assert not msf_timing.reads_ts(page2)
+    r = pg.check(firmware("ps2_device.s"))
+    assert r["verdict"] == "certified" and "release exact" in r["report"], r["report"]
+    assert r["report"].count("release exact") == 4, r["report"]
+
+
 def test_the_model_shows_the_uart_bits():
     r = pg.run(firmware("uart_tx.s"), 8000)
     assert r["verdict"] == "ran" and r["stopped"] is None

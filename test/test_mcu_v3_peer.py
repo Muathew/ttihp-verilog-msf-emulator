@@ -175,7 +175,9 @@ class Mcu:
 
 async def one_pass(dut, clock_error, seed):
     lib = lines()
-    await fw_boot(dut, "mcu_v3_peer.s", late_ok=True)
+    # no late_ok: the two deadlines this program misses are marked `@late`, so the watch
+    # checks that the RTL misses exactly those, and they count in the RTL cross-check
+    await fw_boot(dut, "mcu_v3_peer.s")
     mcu = Mcu(dut, clock_error, seed)
     await mcu.wait_for("S")
     n = lib.v3_cal_words(mcu.words)

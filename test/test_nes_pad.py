@@ -56,15 +56,17 @@ class Pad:
 
 @cocotb.test()
 async def test_nes_pad_three_polls(dut):
-    """Three polls, a frame apart: A+Start+Up, nothing, B+Left+Right."""
-    await fw_boot(dut, "nes_pad.s", defines={"FRAME_P": 1})
+    """Three polls, a frame (16.7 ms) apart: A+Start+Up, nothing, B+Left+Right. The program
+    as shipped: with a shortened frame the wait between frames (its fifth deadline) is
+    never issued, and the RTL cross-check of the deadlines then misses it."""
+    await fw_boot(dut, "nes_pad.s")
     pad = Pad(dut)
     for _ in range(200):
         await RisingEdge(dut.clk)
     while int(dut.uo_out.value) != 0x55:
         for _ in range(500):
             await RisingEdge(dut.clk)
-        assert pad.t < 200_000, "not done"
+        assert pad.t < 450_000, "not done"
     mem = dut.user_project.u_sram.mem
     got = [int(mem[64 + i].value) for i in range(3)]
     assert got == [byte(p) for p in PRESSES], [hex(g) for g in got]

@@ -60,18 +60,20 @@ def _define_key(defines):
 
 
 def _deadline_ranges(path, defines):
-    """(threads, {pc: (lo, hi)}, certified) from the static checker, cached. A firmware
+    """(threads, {pc: (lo, hi)}, certified, the `@late` deadlines the checker confirms are
+    always missed) from the static checker, cached. A firmware
     marked `; @slow-analysis` takes minutes per set of defines, so its tests check only
     that nothing is late (d >= 1, LATE flag); CI still certifies it (msf_timing.py --all)."""
     key = (path, _define_key(defines))
     if key not in _ranges:
         with open(path, encoding="utf-8") as f:
             if "@slow-analysis" in f.read():
-                _ranges[key] = (0, {}, None)
+                _ranges[key] = (0, {}, None, set())
                 return _ranges[key]
         a, _, _ = msf_timing.analyse(path, None, defines)
         _ranges[key] = (a.n, {pc: (dl["lo"], dl["hi"]) for pc, dl in a.deadlines.items()
-                              if dl["seen"]}, msf_timing.certified(a))
+                              if dl["seen"]}, msf_timing.certified(a),
+                        {pc for pc in a.deadlines if a.on_purpose(pc)})
     return _ranges[key]
 
 
@@ -81,6 +83,9 @@ class DeadlineWatch:
     minus CNT at issue) must not be below the checker's bound, and no thread's
     LATE flag may rise. The upper bound holds in single-thread programs only: a
     program with threads is analysed as if they ran from the start.
+    A WAIT_CMP the program marks `; @late` (and the checker confirms is missed on every
+    path) is the other way round: the RTL must miss it every time (d < 1), and the LATE
+    flag its thread raises just after is expected, once.
     late_ok: the test is late on purpose. record: tools/fw_mutants.py's run,
     which writes what it saw instead of failing: every boot of the run, by set of
     defines, with the checker's verdict for each (a test may set its own defines,
@@ -88,7 +93,8 @@ class DeadlineWatch:
 
     def __init__(self, dut, name, path, defines, late_ok=False, record=None):
         self.dut, self.name, self.late_ok, self.record = dut, name, late_ok, record
-        self.n, self.ranges, cert = _deadline_ranges(path, defines)
+        self.n, self.ranges, cert, self.purpose = _deadline_ranges(path, defines)
+        self.excused = set()          # threads whose next LATE rise is an `@late` deadline's
         self.key = _define_key(defines)
         # A mutant's run writes to its own file, and only what it saw there. A run that is
         # late on purpose breaks the firmware's stated assumptions (replay.s fed a table
@@ -110,8 +116,14 @@ class DeadlineWatch:
         if not self.late_ok and self.record is None:
             raise AssertionError(f"{self.name} [{self.key}]: {msg}")
 
-    def _issue(self, pc, d):
+    def _issue(self, pc, d, thread):
         d = msf_timing.model_d(d)
+        if pc in self.purpose:
+            self.excused.add(thread)
+            if d >= 1:
+                self._fail(f"WAIT_CMP at {pc:#05x} is marked @late, but d = {d}: it was met")
+        else:
+            self.excused.discard(thread)
         old = self.log.get(str(pc))
         new = [d, d] if old is None else [min(old[0], d), max(old[1], d)]
         if new != old:
@@ -139,12 +151,19 @@ class DeadlineWatch:
         spawn(self._watch_flag(c))
         while True:
             await self.dut.wcmp_evt.value_change     # tb.v: a WAIT_CMP issued
-            self._issue(int(c.dbg_pc.value), int(c.qa.value) - int(c.cnt.value))
+            self._issue(int(c.dbg_pc.value), int(c.qa.value) - int(c.cnt.value),
+                        int(c.cur.value))
 
     async def _watch_flag(self, c):
+        was = 0
         while True:
             await c.late.value_change
-            if int(c.late.value) and not self.flag_seen:
+            now = int(c.late.value)
+            rose, was = now & ~was, now
+            mine = {t for t in range(4) if rose >> t & 1}
+            unexpected = mine - self.excused      # not the miss an `@late` promised
+            self.excused -= mine
+            if unexpected and not self.flag_seen:
                 self.flag_seen = True
                 _record["flag"] = _record["flag"] or self.record is not None
                 self._flush()

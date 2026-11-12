@@ -107,6 +107,21 @@ NREGS = 11
  X_TID, X_PW, X_PR) = range(32)
 WRITES_RA = {X_SRRD, X_LD, X_SWAP, X_STAT, X_RXPOP, X_CRCRDL, X_CRCRDH, X_TID, X_PR}
 
+
+
+def reads_ts(words):
+    """Can this program read TS? Only through `PR ra,#0` on port page 1 (isa.md 6.8), so it
+    must hold an ESEL that selects page 1 and a read of port 0. A PR alone is not enough:
+    FIFO_GET is `PR ra,#0` on page 0, and counting it put TS into the state of every program
+    with a FIFO (ps2_device.s lost three exact releases that way, 12 Nov). A data word that
+    happens to look like either instruction only costs precision, never soundness."""
+    words = list(words)
+    page1 = any(w >> 11 == SETM and (w >> 8) & 7 == 6 and (w >> 1) & 7 == 1 for w in words)
+    port0 = any(w >> 11 == EXT and (w & 0x1F) == X_PR and (w >> 5) & 7 == 0 for w in words)
+    return page1 and port0
+
+
+PAGE3_ID = {0: 0x4D53, 1: 0x0400, 2: 0x0BBF}     # CHIPID, CHIPVER, CHIPCAPS (isa.md 6.10)
 MAX_STATES = 256      # distinct states kept per program point before joining
 WIDEN_AFTER = 8       # joins at a point before growing bounds are widened
 
@@ -326,7 +341,7 @@ class Analysis:
         # TS is part of the state only for a program that reads it: one more register that
         # differs between paths splits the states at every join, and a program that never
         # looks at TS must not pay for it (onewire.s lost its proof that way)
-        self.uses_ts = any(w >> 11 == EXT and (w & 0x1F) == X_PR for w in self.mem.values())
+        self.uses_ts = reads_ts(self.mem.values())
 
     def on_purpose(self, pc):
         """An `@late` WAIT_CMP the analysis finds late on every path: the program means to miss
@@ -533,8 +548,15 @@ class Analysis:
                     R[AT_REG] = t if t[0] == "t" else U
                 elif page == 1 and sub == X_PR and rb == 0:       # TS ra
                     R[ra] = R[TS_REG]
-                elif sub == X_PR:                                 # AT_STAT, unused ports
-                    R[ra] = U if page == 1 else ("c", 0)
+                elif sub == X_PR:
+                    # What a read of another page gives (isa.md 6.5, 6.8-6.10): the identity
+                    # words are constants and an unused port reads 0; AT_STAT, the engine
+                    # options and error flags (page 2) and CNT_H are not followed. Until
+                    # 12 Nov everything outside page 1 was taken as 0, so a path chosen on
+                    # an engine error was never analysed.
+                    live = (page == 1 and rb == 1) or (page == 2 and rb <= 4) or (page == 3 and rb == 3)
+                    R[ra] = (("c", PAGE3_ID[rb]) if page == 3 and rb in PAGE3_ID
+                             else U if live else ("c", 0))
             elif sub in (X_LD,) or (sub == X_PR and rb == 0):
                 cost = self.ld_cost()
                 R[ra] = U
@@ -833,6 +855,10 @@ def check_rtl_log(path, files):
                     continue
                 if dl["lo"] is not None and lo < dl["lo"]:
                     print(f"  {name} [{key}]: {pc:#05x} d = {lo} on the RTL, bound {dl['lo']}")
+                    bad = True
+                if a.on_purpose(pc) and _hi >= 1:      # `@late` promises a miss every time
+                    print(f"  {name} [{key}]: {pc:#05x} is marked @late, but the RTL met it "
+                          f"(d = {_hi})")
                     bad = True
                 if pc in sites:
                     got.add(pc)
