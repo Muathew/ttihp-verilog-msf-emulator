@@ -92,9 +92,16 @@ U = ("u",)
 INF = None
 NOARM = ("n",)         # the AT slot is not armed
 # the abstract state's registers: R0-R7, then TS (time relative to now), the armed AT time
-# (NOARM, a time-relative value, or U) and ESEL (a constant, or a range if paths disagree)
-TS_REG, AT_REG, ESEL_REG = 8, 9, 10
-NREGS = 11
+# (NOARM, a time-relative value, or U) and ESEL (a constant, or a range if paths disagree),
+# the time of the event the slot holds (NOARM: empty; isa.md 6.8 "a slot holds one event")
+# and refuse-next (("c", 0) clear; anything else: the next pin write may be refused)
+TS_REG, AT_REG, ESEL_REG, HELD_REG, RN_REG = 8, 9, 10, 11, 12
+NREGS = 13
+
+
+def settle_held(v):
+    """A held event whose time has certainly come has been applied: the slot is empty."""
+    return NOARM if v[0] == "t" and v[2] is not None and v[2] < 0 else v
 
 
 # opcodes (isa.md §3)
@@ -546,6 +553,9 @@ class Analysis:
                 if page == 1 and sub == X_PW and ra == 0:         # AT rb
                     t = R[rb]
                     R[AT_REG] = t if t[0] == "t" else U
+                    # isa.md 6.8: an AT that finds the slot holding an event whose time has
+                    # not come sets refuse-next, and its pin write is refused
+                    R[RN_REG] = ("c", 0) if settle_held(R[HELD_REG]) == NOARM else ("c", 1)
                 elif page == 1 and sub == X_PR and rb == 0:       # TS ra
                     R[ra] = R[TS_REG]
                 elif sub == X_PR:
@@ -592,11 +602,18 @@ class Analysis:
         """A pin write issued with AT armed: a deadline, d = time - now >= 0. Consumes the
         arm; returns Z after it (0 if certainly accepted, else unknown)."""
         v = R[AT_REG]
+        rn = R[RN_REG]
         R[AT_REG] = NOARM
+        R[RN_REG] = ("c", 0)
         dl = self.deadlines.setdefault(pc, {"lo": None, "hi": None, "seen": False,
                                             "aligned": True, "unchecked": False,
                                             "late": False, "kind": "at"})
         dl["kind"] = "at"
+        if rn != ("c", 0):
+            dl["late"] = True
+            self.problem(pc, "a timed pin write whose AT found the slot still holding an "
+                             "earlier event (refuse-next, isa.md 6.8): refused")
+            return None
         if v[0] != "t":
             dl["unchecked"] = True
             self.problem(pc, "AT time is not derived from CNT or TS: whether the write is "
@@ -616,6 +633,8 @@ class Analysis:
             dl["late"] = True
             self.problem(pc, f"AT time may be more than {AHEAD_MAX} cycles ahead: refused")
             return None
+        if hi >= 1:                   # held (lo = hi = 0 is applied now): the slot is full
+            R[HELD_REG] = v
         return 0
 
     def wait_cmp(self, s, pc, fa, R, nf, tmo):
@@ -666,7 +685,8 @@ class Analysis:
 
     # exploration -----------------------------------------------------
     def run(self, entry, tmo):
-        start = State(entry, [("c", 0)] * 8 + [("c", 0), NOARM, ("c", 0)], 0, 0, tmo)
+        start = State(entry, [("c", 0)] * 8 + [("c", 0), NOARM, ("c", 0), NOARM, ("c", 0)],
+                      0, 0, tmo)
         seen = {}
         joined = {}
         joins = {}
@@ -675,6 +695,7 @@ class Analysis:
             s = work.pop()
             for st, clo, chi, fixed in self.step(s):
                 regs = [shift(x, clo, chi) for x in st.regs]
+                regs[HELD_REG] = settle_held(regs[HELD_REG])
                 for r, v in (fixed or {}).items():
                     regs[r] = v
                 live = self.live.get(st.pc, ALL_REGS)

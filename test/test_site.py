@@ -141,6 +141,39 @@ def test_ts_is_tracked_only_by_a_program_that_can_read_it():
     assert r["report"].count("release exact") == 4, r["report"]
 
 
+TWO_TIMED = """
+        LDR      R1, #0
+        TMO      R1
+        ESEL     #2
+        OE_SET   0x80
+        WAIT_EDGE 0, rise
+        TS       R1
+        LDI      R2, 100
+        ADDS     R3, R1, R2
+        AT       R3
+        PIN_SET  0x80
+        {between}
+        LDI      R2, 200
+        ADDS     R3, R1, R2
+        AT       R3
+        PIN_CLR  0x80
+h:      JMP      h
+"""
+
+
+def test_a_second_timed_write_while_the_slot_is_full_is_refused():
+    """Found 12 Nov: the checker did not know that a thread's slot holds one event
+    (isa.md 6.8): an AT that finds the slot holding an event whose time has not come sets
+    refuse-next, and the hardware refuses its write. Two timed writes 100 cycles apart,
+    the second armed 8 cycles after the first, were both certified on time."""
+    r = pg.check(TWO_TIMED.format(between=""))
+    assert r["verdict"] == "refused", r["report"]
+    assert "refuse-next" in r["report"], r["report"]
+    # kept apart: wait for the first event's time, then arm the second
+    r = pg.check(TWO_TIMED.format(between="WAIT_CMP R3"))
+    assert r["verdict"] == "certified", r["report"]
+
+
 def test_the_model_shows_the_uart_bits():
     r = pg.run(firmware("uart_tx.s"), 8000)
     assert r["verdict"] == "ran" and r["stopped"] is None
