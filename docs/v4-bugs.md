@@ -180,6 +180,175 @@ pure-Python tests: `python -m pytest test/test_learn_tool.py test/test_site.py t
   and masking `0xF7` (line 198). Verified (4 of 4). **Check:** other tests that read RAM they
   did not preload.
 
+## Found on 12 Nov: CI's first run of v4, and a second reading
+
+CI ran the two pushed commits overnight and all three workflows failed. This section is what
+they showed, what a second reading of v4's RTL, checker and formal harness found, and what was
+done. From 12 Nov formal runs on the development PC (`v4-open-problems.md` A1), so "verified"
+below means a local run unless it says CI.
+
+### V1. F6 did not know that a timed pin write sets Z (the formal failure)
+* **Where:** `src/tt_um_msf_ctrl.v`, `wire f_flagev` (F6, near line 1173).
+* **Found by:** CI `formal`, run 43099145276: `Assert failed in tt_um_msf_ctrl:
+  tt_um_msf_ctrl.v:1163` at step 6, and the same assertion at step 13 on the top level.
+  Reproduced locally in 34 s.
+* **Cause:** the property, not the RTL. `isa.md` 6.8 gives a timed write Z = 1 (refused) or 0
+  (accepted); the flag logic does that (`else if (pwr_do && armed_c) zf[cur] <= t_refuse`), and
+  F6 still listed only v3's flag events.
+* **Fix:** `|| pwr_do && armed_c` in `f_flagev`.
+* **Status:** fixed, verified: the controller passes the BMC to depth 16 (27 min here), the top
+  level too.
+* **Check:** the three other properties the first session edited for v4 (F5, F11) and F17, F18
+  passed the same run; nothing else in the property list predates a v4 change to what it
+  describes, as far as I can see.
+
+### V2. CI's mutation result for v4 was empty
+* **Where:** the `== mutation check ==` block of the same CI log: 14 of 14 "caught".
+* **Cause:** the unmutated design already failed F6 at step 6, so every mutant "failed" there
+  too. `run_formal.py` did not say which assertion stopped a mutant.
+* **Fix:** `formal/run_formal.py` `caught_by()` prints the property, line and step for each
+  mutant, so a mutant caught by the wrong property shows. Also `bmc()` now skips a target that
+  does not read the mutated file (a planted bug in `project.v` used to re-run the whole
+  controller BMC first, which cannot fail and takes as long as the BMC itself).
+* **Status:** fixed; results in "State on 12 Nov" below.
+
+### V3. The two-copy miter (F16, target `ni`) left v4's new controller inputs open
+* **Where:** `formal/ni_miter.v` (the two instances of `tt_um_msf_ctrl_ni`); `formal/run_formal.py`
+  `NI_THREAD`, `NI_PORTS`, `ni_sh`.
+* **Found by:** reading the miter against the controller's v4 port list; confirmed with Yosys
+  `check`: `Wire ni_miter.\b.rx_overrun1 is used but has no driver` (174 such wires).
+* **Cause:** steps 3 and 4 added inputs (`tx_full1` ... `crc_hi1`, `opt_rd`, `opt_rd1`,
+  `err_any`, `err_any1`) and per-thread state (`esel`, the slot, `TS`) and shared state
+  (`cnt_hi`). The miter connected none of the inputs, so `setundef -undriven -expose` would
+  have given each copy its own free values (a thread on set 1 would have "seen" different
+  status in the two copies: a false counterexample), and its inductive state lacked the new
+  registers. `parse_check.py` passed it because an open input is legal Verilog.
+* **Fix:** the inputs are miter inputs shared by both copies; the per-thread vector is 277
+  bits (was 226), the shared one 124 (was 108). `formal/parse_check.py` now runs `flatten;
+  check` and fails on any undriven wire outside the SRAM stub and on any port connected at
+  the wrong width.
+* **Status:** fixed, verified by `parse_check.py` (four targets "ok"); the `ni` BMC result is
+  in "State on 12 Nov".
+* **Check:** F16 is still bounded and its planted bug still not shown (v3's state).
+
+### T3. A FIFO pop made the checker track TS, and `ps2_device.s` lost three exact releases
+* **Where:** `tools/msf_timing.py`, `Analysis.__init__` (`self.uses_ts`), now `reads_ts()`.
+* **Found by:** T1's "Check": `msf_timing.py --all` on the step-1 tree (`git archive 0f11429`)
+  against CI's output for the head. One difference outside `@late`: `firmware/ps2_device.s`
+  0x13e, 0x142, 0x145 went from `208..226`, `472..472`, `234..234`, "release exact" to
+  `207..226`, `471..472`, `233..234`, "release may lag up to n-1 cycles". The program had not
+  changed.
+* **Cause:** T1's fix tracked TS "only if the program contains a `PR`". `FIFO_GET` is
+  `PR ra,#0` on page 0, so every program with a FIFO still paid for TS.
+* **Fix:** TS is tracked only if the program holds an `ESEL` that selects page 1 and a read of
+  port 0. The ranges are the step-1 tree's again.
+* **Status:** fixed, verified (`test_site.py::test_ts_is_tracked_only_by_a_program_that_can_read_it`).
+  The lost precision was on the safe side (a lower bound one lower), never a wrong certificate.
+* **Check:** every other program's ranges are identical between the two trees (229 lines
+  compared), so T1's worry about `AT_REG` and `ESEL_REG` splitting states does not show in any
+  shipped program; none of them uses `AT` or `ESEL` yet.
+
+### T4. The checker took every read outside port page 1 as 0 (a wrong certificate)
+* **Where:** `tools/msf_timing.py`, the `X_PR` case for pages other than 0 (near line 551; was
+  `R[ra] = U if page == 1 else ("c", 0)`).
+* **Found by:** reading the checker's v4 changes. Reproduced: a program that reads `ERR_STAT`
+  (page 2), then takes a 40-cycle path if it is not zero before a deadline 20 cycles away, was
+  reported `d at issue 14..14: slack >= 13`, exit 0.
+* **Cause:** the line was written in step 3, when page 1 was the only other page. Steps 4 and 5
+  added page 2 (option words, error flags) and page 3 (identity, `CNT_H`); their reads became
+  the constant 0, so a path taken on an engine error was never analysed.
+* **Fix:** the option words, the error flags, `AT_STAT` and `CNT_H` are unknown; `CHIPID`,
+  `CHIPVER`, `CHIPCAPS` are their constants; an unused port reads 0. The program above is now
+  `-45..14: MAY BE LATE`, exit 1.
+* **Status:** fixed, verified (`test_site.py::test_a_path_taken_on_an_engine_error_is_analysed`,
+  seven cases). No shipped program reads those pages, so no published certificate changes.
+* **Check:** the ISA model has its own table for these reads (`test/isa_model.py` near line
+  542); the constants are now in three places (RTL, model, checker).
+
+### I5. CI's deadline cross-check failed on two programs (inherited from v3)
+* **Where:** `.github/workflows/test.yaml` step "Deadlines against the RTL"; `test/test_nes_pad.py`;
+  `test/test_mcu_v3_peer.py` line 178; `test/fw_tb.py` `DeadlineWatch`; `tools/msf_timing.py`
+  `check_rtl_log`.
+* **Found by:** CI `test`, run 43099145368: all 319 cocotb tests passed, then `nes_pad.s: 4 of
+  5 deadlines reached ... not reached: 0x0aa` and `mcu_v3_peer.s: 0 of 2 ... 0x13b, 0x152`,
+  exit 1. v3's CI runs failed the same way (it was never green there).
+* **Cause:** (a) the NES test shortened the frame to one piece (`FRAME_P=1`), and the wait
+  between frames is then never issued. (b) The peer program's two deadlines are late on
+  purpose, its test booted with `late_ok=True`, and such runs are kept out of the log.
+* **Fix:** (a) the test runs the program as shipped (a real 16.7 ms frame, 400,000 cycles).
+  (b) `DeadlineWatch` knows the `@late` deadlines from the checker: the RTL must miss each of
+  them every time (d < 1), and the LATE flag its thread raises just after is expected, once;
+  any other LATE rise still fails the test. The peer test boots without `late_ok`.
+  `check_rtl_log` fails if an `@late` deadline was met on the RTL.
+* **Status:** fixed, verified: both tests pass (3 of 3), and `msf_timing.py nes_pad.s
+  mcu_v3_peer.s --rtl-log` gives 5 of 5 and 2 of 2. The other 174 deadlines were reached in
+  CI's run.
+* **Check:** `late_ok=True` is still used by other tests (search `late_ok`); each is a run that
+  breaks its program's stated assumptions on purpose, which is what the flag is for.
+
+### I6. Three CI steps have never run on v4, and the artifact store is full
+* **Where:** `.github/workflows/test.yaml`: "Planted timing bugs", "sigrok decoders", "Learning
+  a protocol" come after the step that failed (I5). The `docs` workflow and the test job's
+  upload failed with `Failed to CreateArtifact: Artifact storage quota has been hit`.
+* **What was done:** the third step's tests were run here (`pytest test/test_learn_tool.py
+  test/test_site.py test/test_msfc.py`: 201 passed before today's changes). The upload step is
+  split: results always (small), the waveform only on failure, both kept 7 days and neither
+  able to fail the job. The first two steps are still unrun on v4 (`fw_mutants.py` is slow
+  here; sigrok-cli is not installed on this PC).
+* **Status:** the quota itself is open, and it is the account owner's to clear: all 324 live
+  artifacts total 6.9 GB (measured later on 12 Nov; the first count above saw only the first
+  100), about 4.6 GB of it the `GDS_logs` of earlier hardening runs and 1.7 GB `test-results`
+  with the suite's waveform. Breakdown and the delete commands in `v4-open-problems.md` A2.
+  Nothing was deleted. Until space is freed the `docs` workflow (Tiny Tapeout's own action, which uploads
+  the PDF) stays red whatever the repository holds.
+
+### D1. `isa.md` named the page-2 reads wrongly
+* **Where:** `docs/isa.md` 6.9, the port table: `TX_OPT ra`, `RX_OPT ra`, `ERR ra`, `TX_EXT ra`,
+  `RX_EXT ra`.
+* **Cause:** the assembler's names are `TX_OPT_RD`, `RX_OPT_RD`, `ERR_STAT`, `TX_EXT_RD`,
+  `RX_EXT_RD` (`test/assembler.py` `PAGE2_OPS`); `ERR R1` does not assemble.
+* **Status:** fixed in the table.
+
+### What the second reading checked and found sound
+* **R1's check** (a jump on a flag an `AND`/`OR`/`XOR` did not set): a scan of all 80 programs
+  and the boot ROM for a conditional jump right after a logic or shift instruction found one
+  site in code, `am2302.s` 0x0ae (`ADDS R6,R6,R6` / `SHR R6,R6,#1` / `JNZ`), which is the
+  idiom: the flags are the `ADDS`'s. The other three hits are data words.
+* **F1's check** (reliance on 10-bit addresses): `la_stream.s` line 54, `logic_analyzer.s` 75,
+  `pinfind.s` 800 and `flight.inc` 89 mask `CAP_STAT` / `CAP_TPOS` with `0x3FF`. Their buffers
+  are below 1,024, where bit 10 is 0, so they are right as shipped; a copy with its buffer
+  above 1,023 would need `0x7FF`. Left as it is, noted here.
+* **Timed pins against `isa.md` 6.8** (`src/tt_um_msf_ctrl.v`, "Pin writes" and "the slot"):
+  arrival (now / refused / held), refuse-next and its use, application order, `TSTOP` and
+  `TSTART`, Z and LATE: the RTL does what the text says, case by case. `TS` had no property at
+  all; it has one now (F20).
+* **The engines against 6.9** (`src/tt_um_msf_serdes.v`): both stuffing kinds on both sides, the
+  three error flags and what clears them, the external clock's gate, edge, `pre` and release:
+  read against the text, no difference found. Not a proof: the engines have no formal
+  properties, only the directed tests.
+
+### State on 12 Nov (what has run on the tree that was pushed)
+* **New properties** (`src/tt_um_msf_ctrl.v`, near lines 1267, 1301, 1315): F19 (engine
+  binding: a thread's engine writes, pops and option writes go to the set its `ESEL` words
+  chose, a blocking engine instruction completes on that set's status, and what it reads
+  back is that set's; two asserts), F20 (a running thread's `TS` is the time of the event
+  that ended its last `WAIT_EDGE` / `WAIT_CMP`, or its release cycle if none, whatever the
+  other threads did), F21 (the cost table of `isa.md` section 5: how many cycles after an
+  instruction its thread issues the next one; the deadline checker's certificates add these
+  numbers up). With the F6 fix the controller has 77 assertion cells; `top` 67, `ni` 86, `cap` 0
+  (`formal/parse_check.py`, native Yosys, all four "ok", no undriven wires).
+* **Mutants** (`formal/run_formal.py`, run one at a time, each caught by its own property):
+  F19 x2 (`ctrl.v` 1287, 1291, step 3), F20 (1308, step 6), F21 (1343, step 3), and the two
+  F17 mutants (1243 step 6, 1255 step 4). The whole mutant list has not been run on this tree.
+* **BMC, controller, depth 16:** passed with the F6 fix before F19-F21 were added (27 min).
+  With F19-F21 it reached step 11 of 16 with no failure when the session ended
+  (`%TEMP%\msf_formal_wrjkj90w`). Top level and `ni`: not run to the end on this tree.
+* **Simulation:** CI ran 319 of 319 cocotb tests at 46ae2d6. After the 12 Nov edits, run here:
+  `test_nes_pad` and `test_mcu_v3_peer` (3 of 3), the four new `test_site.py` tests, and
+  `msf_timing.py nes_pad.s mcu_v3_peer.s --rtl-log` (5 of 5, 2 of 2). The full suite, the
+  pure-Python set and the full formal run were left to CI's run on the 12 Nov push
+  (`v4-open-problems.md` A3).
+
 ## Where correlated mistakes are most likely
 
 The plan's method is a model written from the specification and compared with the RTL. In

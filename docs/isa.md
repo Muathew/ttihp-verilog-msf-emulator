@@ -452,11 +452,11 @@ behave as in v3.
 
 | Port | `PW` | `PR` |
 |---|---|---|
-| 0 | `TX_OPT rb` | `TX_OPT ra` |
-| 1 | `RX_OPT rb` | `RX_OPT ra` |
-| 2 | `ERR_CLR rb`: clear the error flags that are 1 in rb[2:0] | `ERR ra`: ra ← {E_UNDER, E_STUFF, E_FRAME} in bits 2:0 |
-| 3 | `TX_EXT rb` | `TX_EXT ra` |
-| 4 | `RX_EXT rb` | `RX_EXT ra` |
+| 0 | `TX_OPT rb` | `TX_OPT_RD ra` |
+| 1 | `RX_OPT rb` | `RX_OPT_RD ra` |
+| 2 | `ERR_CLR rb`: clear the error flags that are 1 in rb[2:0] | `ERR_STAT ra`: ra ← {E_UNDER, E_STUFF, E_FRAME} in bits 2:0 |
+| 3 | `TX_EXT rb` | `TX_EXT_RD ra` |
+| 4 | `RX_EXT rb` | `RX_EXT_RD ra` |
 
 **General stuffing** (`TX_OPT` / `RX_OPT` bits 4:0, for NRZ and NRZI): *n* = bits 3:0 (1–15; 0
 means the classic rule if `TX_CFG` / `RX_CFG` bit 6 is set, else no stuffing), *kind* = bit 4.

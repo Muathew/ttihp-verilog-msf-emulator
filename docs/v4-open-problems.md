@@ -8,8 +8,17 @@ are not errors: they are claims this machine cannot test.
 
 ## A. Errors skipped
 
-### A1. Formal verification cannot run on this machine
-* **What:** neither engine of `formal/run_formal.py` runs here.
+### A1. Formal verification could not run on this machine (resolved 12 Nov)
+* **Resolved 12 Nov:** a native OSS CAD Suite (build 2026-10-01, the version CI uses) is
+  installed at `C:\Year3_projects\oss-cad-suite`, and `--engine abc` runs with it. Run
+  `bin\environment.bat` first, or put its `bin` on `PATH` and set
+  `SSL_CERT_FILE=etc\cacert.pem` and `PYTHON_EXECUTABLE=lib\python3.exe`; then
+  `.venv\Scripts\python.exe formal/run_formal.py --engine abc --depth 16 --top ctrl --no-mutants --no-cover`
+  (then `--top top`, then the full run with covers and mutants). The controller's BMC to
+  depth 16 takes about 27 minutes here; the full run with mutants takes hours, so it is
+  left to CI or a quiet evening. The YoWASP failure below still stands but no longer matters.
+  What has run locally is in `v4-bugs.md`, "State on 12 Nov".
+* **What (11 Nov):** neither engine of `formal/run_formal.py` ran here.
   * `--engine sat` (YoWASP's Yosys 0.70): the `sat` pass aborts with
     `wasm trap ... yosys.wasm!ezSAT::vec_or ... Yosys::SatGen::importCell`, an assertion
     inside Yosys that two vectors have the same width. It does the same on the untouched
@@ -32,6 +41,41 @@ are not errors: they are claims this machine cannot test.
   comparison. If a property is too strong, the F17 ghost is in `tt_um_msf_ctrl.v` under
   `// F17 (v4)`.
 
+### A2. The account's artifact store is full (6.9 GB), so the `docs` workflow fails
+* **What:** CI's `docs` workflow (Tiny Tapeout's `tt-gds-action/docs`, which uploads the
+  PDF) fails with `Failed to CreateArtifact: Artifact storage quota has been hit` whatever
+  the repository holds. The `test` workflow's uploads now cannot fail the job
+  (`v4-bugs.md` I6), but the `docs` action's upload is not ours to change.
+* **Measured 12 Nov** (`gh api repos/Muathew/ttihp-verilog-msf-emulator/actions/artifacts`):
+  324 live artifacts, 6,922 MB. By kind: `GDS_logs` about 4,650 MB (rtl-changes 1,497,
+  FPGA 750, fixes 702, main 455, optional 426, steal 375, ethernet 196, plan7 179,
+  sram-diversion 70); `test-results` about 1,730 MB (plan7 508, v3 427, fixes 278, mcu 225,
+  main 161, rtl-changes 90, ...); `tt_submission` and `gds_render` the rest. v4 has none: its
+  uploads failed.
+* **Not done:** nothing was deleted. The 12 Nov hand-over suggested deleting the plan7 and v4
+  test-results (about 91 MB were thought to be there); that is 508 MB and would leave
+  6.4 GB, still far over any plan's limit, so it would lose the records and fix nothing.
+  Getting under the limit means deleting old `GDS_logs` from branches that are finished,
+  or lowering the repository's artifact retention (Settings, Actions, General). Both are
+  the account owner's decision (Muath's, with Sam). GitHub recalculates usage every 6 to
+  12 hours after a deletion.
+* **To delete one kind** (example, after deciding): `gh api --paginate
+  "repos/Muathew/ttihp-verilog-msf-emulator/actions/artifacts?per_page=100" --jq
+  '.artifacts[] | select(.name=="GDS_logs" and .workflow_run.head_branch=="rtl-changes") | .id'`
+  then `gh api -X DELETE repos/Muathew/ttihp-verilog-msf-emulator/actions/artifacts/<id>`
+  for each id.
+
+### A3. Long runs left for later (12 Nov: the session had an hour, Sam asked for no long runs)
+* **Formal to depth 16, locally:** not run to the end on the final tree. What exists: the
+  controller BMC with the F6 fix passed depth 16 before F19-F21 were added (V1), and a run
+  with F19-F21 reached step 11 of 16 with no failure before the session ended
+  (`%TEMP%\msf_formal_wrjkj90w\run\logfile.txt`, 07:18). CI's `formal` workflow on the 12 Nov
+  push is the full run (all targets, covers, mutants); read it with `gh run list --branch v4`.
+* **The full cocotb suite (319) and the pure-Python tests** after the 12 Nov edits: not run
+  locally. What ran: the modules each edit touches (`test_nes_pad`, `test_mcu_v3_peer`, the
+  new `test_site.py` tests). CI's `test` workflow on the push runs all of it, plus the
+  deadline cross-check.
+
 (more entries are added below as they come up)
 
 ## B. Not checked here (needs the other machine, CI, a board or a person)
@@ -49,9 +93,8 @@ are not errors: they are claims this machine cannot test.
   (needs CI's netlist; it now preloads at `FLASH` from `test_targets.py`), and the FPGA's C test
   (`fpga/ps/hil/msf_tests.c` line 811, which loads the store at SRAM 512). On the v3 FPGA's
   1,024-word memory 1536 should alias 512, so the C test should still pass; not run.
-* The CI workflows (`test.yaml`, `formal.yaml`) have not run on v4 at the time of writing; they
-  are the first run of the formal properties, of the Makefile's module list and of
-  `msf_timing.py --all --check-model 20000` on a clean machine.
+* The CI workflows first ran on v4 overnight 11-12 Nov; all three failed, for the reasons in
+  `v4-bugs.md` V1, I5 and I6. The fixes were pushed on 12 Nov.
 
 ## C. Planned and not built (not errors: left out on purpose, in the plan's cut order)
 
@@ -63,4 +106,6 @@ are not errors: they are claims this machine cannot test.
   newcomers' protocols (plan section 9), `msfc` threads and functions, the cold read.
 * The deadline checker's cross-check against the RTL for `AT` writes (a `DeadlineWatch` for
   timed writes in `test/fw_tb.py`); only `WAIT_CMP` is cross-checked on the RTL.
-* F16 and the `ni` miter for v4's new per-thread state (the slot, `ESEL`, `TS`).
+* F16 for v4: the `ni` miter now carries the new per-thread state (the slot, `ESEL`, `TS`)
+  and the second engine set's inputs (12 Nov, `v4-bugs.md` V3), but F16 is still a bounded
+  check and its planted bug is still not shown (v3's state).
