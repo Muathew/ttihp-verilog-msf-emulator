@@ -94,7 +94,11 @@ are not errors: they are claims this machine cannot test.
   use it could not be run here: the gate-level `test/test_gl_firmware.py::test_gl_spi_flash`
   (needs CI's netlist; it now preloads at `FLASH` from `test_targets.py`), and the FPGA's C test
   (`fpga/ps/hil/msf_tests.c` line 811, which loads the store at SRAM 512). On the v3 FPGA's
-  1,024-word memory 1536 should alias 512, so the C test should still pass; not run.
+  1,024-word memory 1536 aliases 512, so the C test passes there. **On a v4 bitstream it
+  will fail:** `fpga/rtl`'s SRAM is now 2,048 words, so the load in `msf_tests.c` (lines
+  811-823) must move to 1536 first. Not changed yet (12 Nov: untestable here; a few-line
+  edit), and listed in the message to Muath with the other v4 bitstream prerequisites
+  (paste v4's boot ROM into `fpga/rtl/tt_um_msf_bootrom.v`; keep `ui_in[3]` low at boot).
 * The CI workflows first ran on v4 overnight 11-12 Nov; all three failed, for the reasons in
   `v4-bugs.md` V1, I5 and I6. The fixes were pushed on 12 Nov.
 
