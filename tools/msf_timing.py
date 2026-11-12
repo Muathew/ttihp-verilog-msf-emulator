@@ -871,7 +871,7 @@ def check_rtl_log(path, files):
                 pc = int(pc)
                 dl = a.deadlines.get(pc)
                 if dl is None:
-                    print(f"  {name}: the log has a WAIT_CMP at {pc:#05x}, the analysis does not")
+                    print(f"  {name}: the log has a deadline at {pc:#05x}, the analysis does not")
                     bad = True
                     continue
                 if dl["lo"] is not None and lo < dl["lo"]:
@@ -895,9 +895,15 @@ def check_rtl_log(path, files):
     return bad
 
 
-def _uses_wait_cmp(path):
+RE_AT = re.compile(r"^\s*(?:\w+:)?\s*AT\s", re.M | re.I)
+
+
+def uses_deadlines(path):
+    """The program has deadlines: a WAIT_CMP, or an AT (its next pin write is timed)."""
     with open(path, encoding="utf-8") as f:
-        return "WAIT_CMP" in f.read()
+        text = f.read()
+    code = "\n".join(line.split(";")[0] for line in text.splitlines())
+    return "WAIT_CMP" in text or bool(RE_AT.search(code))
 
 
 def main():
@@ -916,7 +922,7 @@ def main():
     files = a.files
     if a.all:
         files = sorted(f for f in glob.glob(os.path.join(ROOT, "firmware", "*.s"))
-                       if _uses_wait_cmp(f))
+                       if uses_deadlines(f))
     if not files:
         ap.error("no input files")
     bad = False

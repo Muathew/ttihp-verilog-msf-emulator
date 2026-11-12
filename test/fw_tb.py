@@ -2,7 +2,8 @@
 """Helpers for the firmware-level tests (firmware/*.s checked at the pins).
 
 fw_boot   assemble a firmware file, preload it, reset the chip; if it uses
-          WAIT_CMP, DeadlineWatch checks each issue against tools/msf_timing.py
+          WAIT_CMP or AT, DeadlineWatch checks each WAIT_CMP and each timed pin
+          write against tools/msf_timing.py
 Recorder  per-cycle samples of uio_out / uio_oe / uo_out
 Bench     steps the chip one clock at a time against Python device models
           (the same lock-step idea as the FPGA C harness): each cycle it
@@ -61,19 +62,20 @@ def _define_key(defines):
 
 def _deadline_ranges(path, defines):
     """(threads, {pc: (lo, hi)}, certified, the `@late` deadlines the checker confirms are
-    always missed) from the static checker, cached. A firmware
+    always missed, the timed pin writes) from the static checker, cached. A firmware
     marked `; @slow-analysis` takes minutes per set of defines, so its tests check only
     that nothing is late (d >= 1, LATE flag); CI still certifies it (msf_timing.py --all)."""
     key = (path, _define_key(defines))
     if key not in _ranges:
         with open(path, encoding="utf-8") as f:
             if "@slow-analysis" in f.read():
-                _ranges[key] = (0, {}, None, set())
+                _ranges[key] = (0, {}, None, set(), set())
                 return _ranges[key]
         a, _, _ = msf_timing.analyse(path, None, defines)
         _ranges[key] = (a.n, {pc: (dl["lo"], dl["hi"]) for pc, dl in a.deadlines.items()
                               if dl["seen"]}, msf_timing.certified(a),
-                        {pc for pc in a.deadlines if a.on_purpose(pc)})
+                        {pc for pc in a.deadlines if a.on_purpose(pc)},
+                        {pc for pc, dl in a.deadlines.items() if dl.get("kind") == "at"})
     return _ranges[key]
 
 
@@ -86,6 +88,8 @@ class DeadlineWatch:
     A WAIT_CMP the program marks `; @late` (and the checker confirms is missed on every
     path) is the other way round: the RTL must miss it every time (d < 1), and the LATE
     flag its thread raises just after is expected, once.
+    A pin write issued with AT armed (a timed write, isa.md 6.8) is checked the same way,
+    with d = its AT time minus CNT at issue; its floor is 0 (the time is now), not 1.
     late_ok: the test is late on purpose. record: tools/fw_mutants.py's run,
     which writes what it saw instead of failing: every boot of the run, by set of
     defines, with the checker's verdict for each (a test may set its own defines,
@@ -93,7 +97,7 @@ class DeadlineWatch:
 
     def __init__(self, dut, name, path, defines, late_ok=False, record=None):
         self.dut, self.name, self.late_ok, self.record = dut, name, late_ok, record
-        self.n, self.ranges, cert, self.purpose = _deadline_ranges(path, defines)
+        self.n, self.ranges, cert, self.purpose, self.timed = _deadline_ranges(path, defines)
         self.excused = set()          # threads whose next LATE rise is an `@late` deadline's
         self.key = _define_key(defines)
         # A mutant's run writes to its own file, and only what it saw there. A run that is
@@ -116,8 +120,9 @@ class DeadlineWatch:
         if not self.late_ok and self.record is None:
             raise AssertionError(f"{self.name} [{self.key}]: {msg}")
 
-    def _issue(self, pc, d, thread):
+    def _issue(self, pc, d, thread, timed=False):
         d = msf_timing.model_d(d)
+        what = "timed write" if timed else "WAIT_CMP"
         if pc in self.purpose:
             self.excused.add(thread)
             if d >= 1:
@@ -129,13 +134,15 @@ class DeadlineWatch:
         if new != old:
             self.log[str(pc)] = new
             self._flush()
-        lo, hi = self.ranges.get(pc, (1, None))
+        lo, hi = self.ranges.get(pc, (0 if timed else 1, None))
+        if timed and pc not in self.timed and self.ranges:
+            self._fail(f"a timed write at {pc:#05x} that the checker does not know")
         if lo is not None and d < lo:
             self.below.append([pc, d, lo])
             self._flush()
-            self._fail(f"WAIT_CMP at {pc:#05x}: d = {d}, the checker's bound is {lo}")
+            self._fail(f"{what} at {pc:#05x}: d = {d}, the checker's bound is {lo}")
         if hi is not None and self.n == 1 and d > hi and self.record is None:
-            self._fail(f"WAIT_CMP at {pc:#05x}: d = {d}, above the checker's {hi}")
+            self._fail(f"{what} at {pc:#05x}: d = {d}, above the checker's {hi}")
 
     def _flush(self):
         if self.record is not None:
@@ -149,10 +156,17 @@ class DeadlineWatch:
         c = self.dut.user_project.u_ctrl
         self._flush()
         spawn(self._watch_flag(c))
+        spawn(self._watch_timed(c))
         while True:
             await self.dut.wcmp_evt.value_change     # tb.v: a WAIT_CMP issued
             self._issue(int(c.dbg_pc.value), int(c.qa.value) - int(c.cnt.value),
                         int(c.cur.value))
+
+    async def _watch_timed(self, c):
+        while True:
+            await self.dut.at_evt.value_change       # tb.v: a timed pin write issued
+            self._issue(int(c.dbg_pc.value), int(c.at_time_c.value) - int(c.cnt.value),
+                        int(c.cur.value), timed=True)
 
     async def _watch_flag(self, c):
         was = 0
@@ -188,9 +202,8 @@ async def fw_boot(dut, name, data=None, defines=None, uio_in=0, late_ok=False):
     for a, w in (data or {}).items():
         load_words(dut, [w], a)
     await reset(dut, ui_in=1, uio_in=uio_in)
-    with open(path, encoding="utf-8") as f:
-        if "WAIT_CMP" in f.read():
-            DeadlineWatch(dut, name, path, defines, late_ok, record)
+    if msf_timing.uses_deadlines(path):
+        DeadlineWatch(dut, name, path, defines, late_ok, record)
     return words
 
 

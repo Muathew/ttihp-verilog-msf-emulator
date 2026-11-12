@@ -45,6 +45,13 @@ module tb ();
     if (user_project.u_ctrl.exec && user_project.u_ctrl.op == 5'h1B)
       wcmp_evt <= !wcmp_evt;
 
+  // Toggles when a pin write issues with AT armed (a timed write, isa.md 6.8): the
+  // other kind of deadline DeadlineWatch checks.
+  reg at_evt = 1'b0;
+  always @(negedge clk)
+    if (user_project.u_ctrl.pwr_do && user_project.u_ctrl.armed_c)
+      at_evt <= !at_evt;
+
   // Store-ahead detector (docs/isa.md section 1, plan-v4 B1): toggles when a word
   // issues one or two cycles after a store (ST, MEM_W, FIFO_PUT) wrote it, the rule the
   // ISA model refuses (StoreAheadError). The word then runs its old content on this
