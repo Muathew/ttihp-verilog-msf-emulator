@@ -129,5 +129,6 @@ are not errors: they are claims this machine cannot test.
   `isa.md` 6.1, 6.2, 6.9 in anything a shipped program does; four gaps in the text (E1-E4),
   none changed. By reading only; the engines still have no formal properties.
 * F16 for v4: the `ni` miter now carries the new per-thread state (the slot, `ESEL`, `TS`)
-  and the second engine set's inputs (12 Nov, `v4-bugs.md` V3), but F16 is still a bounded
-  check and its planted bug is still not shown (v3's state).
+  and the second engine set's inputs (12 Nov, `v4-bugs.md` V3), and its planted bug is shown
+  (13 Nov: the STAT-LATE mutant is caught at step 8, 11 minutes, `--top ni --only-mutant 0`), but F16 is still
+  a bounded check, and the unmutated `ni` run to depth 16 has not been done.

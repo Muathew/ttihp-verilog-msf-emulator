@@ -123,7 +123,7 @@ and each must make the proof fail:
 | a refused timed write still goes out (v4) | F17. Not shown, as above |
 | a held timed write forgets its operation (v4) | F17. Not shown, as above |
 | the pad registers load the old values instead of the next ones (v4; `--top top`) | F18. Not shown, as above |
-| `STAT` shows any thread's LATE flag, not the reader's (v3; `--top ni`) | F16 is meant to: no single-copy property sees it. **Not shown yet**: at depth 5 F16 passes with this mutant in (9 Nov). Reaching it takes about 15 cycles from reset: two `TSTART`s, a third thread late, then *k*'s `STAT` and an instruction that reads its result |
+| `STAT` shows any thread's LATE flag, not the reader's (v3; `--top ni`) | F16 is meant to: no single-copy property sees it. **Shown on v4 (13 Nov):** `run_formal.py --engine abc --depth 16 --top ni --only-mutant 0` catches it, F16 at `ni_miter.v:186`, step 8, in 11 minutes (at depth 5 it passes, 9 Nov). The 15 cycles this row used to give as the reach was an overestimate. This shows F16 can fail; the unmutated `ni` run to depth 16 has still not been done |
 
 A mutant stops at its first counterexample, so the cheap targets go first
 (controller, capture module, top level).
