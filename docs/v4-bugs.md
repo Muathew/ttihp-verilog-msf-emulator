@@ -354,6 +354,45 @@ below means a local run unless it says CI.
   read against the text, no difference found. Not a proof: the engines have no formal
   properties, only the directed tests.
 
+### The second reading of the engines (13 Nov): `src/tt_um_msf_serdes.v` against `isa.md` 6.1, 6.2, 6.9
+Read in full by a session that did not write the RTL or the text, doc first and RTL second,
+before the 12 Nov notes above were consulted. **By reading only: no test, no simulation, no
+RTL or text changed.** No place where the RTL contradicts the text in a case a shipped program
+uses. Four gaps where the text is silent or ambiguous, all low:
+
+* **E1. `n = 0` with kind 1** (`serdes.v` 98-103 TX, 295-299 RX). The text says `n = 0` means
+  "the classic rule" (after six 1s a 0). The RTL takes the kind bit as it is, so `TX_CFG`
+  bit 6 with `TX_OPT` = 0x10 stuffs by kind 1 with n = 6 (six equal bits, then the opposite).
+  Both sides do the same, so a link between two sets is consistent. `test_engine_options.py`
+  covers the classic rule only with kind 0. Decide: say in 6.9 that the kind bit applies, or
+  force kind 0 when n = 0.
+* **E2. Stuffing and the external clock.** The TX stuffs whenever `TX_CFG` bit 6 or `n` is set,
+  in Manchester too (`tx_stf`, line 101, no mode test) and with the external clock (`emit_ext`
+  goes through `tx_stuff`). The RX never de-stuffs in Manchester (`!rx_man`, line 306) and its
+  external-clock branch (377-392) has no de-stuffing at all. So a TX set to stuff and an RX
+  with the external clock do not mirror each other. 6.9 says stuffing is for NRZ and NRZI and
+  that the external clock is NRZ, so a program that mixes them is outside the text. Say so in
+  6.9, or gate `tx_stf` the same way.
+* **E3. A `RX_EXT` write mid-frame** (368-371) clears only `rx_cnt`. `rx_run`, `rx_mw`,
+  `rx_tmr`, `rx_stop` and the stuffing run stay as they were, so switching the external
+  clock off later resumes a half-finished divider-mode frame. An `RX_CFG` write resets all of
+  it (the text says so for `RX_CFG`, not for `RX_EXT`). Say "write `RX_CFG` after `RX_EXT`", or
+  clear the state on an `RX_EXT` write.
+* **E4. `E_UNDER` with the external clock** (line 232) is set on every active edge that finds
+  nothing to send, with `stream` set: before the first word and after the last as well. In
+  divider mode it is set once, when a word ends with nothing behind it. The text ("with no
+  word to present the line keeps its level (E_UNDER with *stream*)") fits both; the practical
+  rule is the one already given: clear `stream` with the last push, or a master that clocks
+  past the last bit sets the flag.
+* **Matches the text, noted:** mode 3's lock (seven centres, half way to 0.5, then a sixteenth),
+  its window (phase 0.25-0.75) and the dropped carry on a centre's cycle (the documented
+  limit B10, `RX_DIV` below 16,384); mode 2's blanking and window; the stop-bit check
+  delivering one bit later; `ERR_STAT` / `ERR_CLR` bit order; errors cleared by their own
+  engine's `*_CFG` write; options surviving a `*_CFG` write; `uo` and `diff` wrapping
+  modulo 8; release owning the pin while the gate is active. A push can only collide with the
+  buffer being taken in the same cycle when `TX_PUSH` does not wait on `tx_full`, which the
+  controller guarantees (F19 binds the pushes to the set).
+
 ### State on 12 Nov (what has run on the tree that was pushed)
 * **New properties** (`src/tt_um_msf_ctrl.v`, near lines 1267, 1301, 1315): F19 (engine
   binding: a thread's engine writes, pops and option writes go to the set its `ESEL` words

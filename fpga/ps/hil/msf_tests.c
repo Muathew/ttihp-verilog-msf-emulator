@@ -808,7 +808,7 @@ static int test_spi_target_regs(void)
     return 0;
 }
 
-/* fw_boot with a 512-byte flash store loaded at SRAM 512 */
+/* fw_boot with a 512-byte flash store loaded at SRAM 1536 (the top of the 2,048 words, as spi_flash.s: .equ FLASH 0x600) */
 static int flash_boot(const msf_image *img, const uint8_t *store, uint8_t uio)
 {
     static const uint16_t zeros[128];
@@ -820,7 +820,7 @@ static int flash_boot(const msf_image *img, const uint8_t *store, uint8_t uio)
     for (j = 0; j < 4U; ++j) {
         for (i = 0; i < 128U; ++i)
             w[i] = store[128U * j + i];
-        TRY(msf_boot_write((uint16_t)(512U + 128U * j), w, 128));
+        TRY(msf_boot_write((uint16_t)(1536U + 128U * j), w, 128));
     }
     TRY(msf_boot_write(img->addr, img->words, img->count));
     TRY(msf_reset(MSF_BOOT_DIRECT, uio, 1));

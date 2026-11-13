@@ -295,7 +295,7 @@ int msf_boot_enter(int step)
 
 int msf_boot_write(uint16_t addr, const uint16_t *words, uint16_t count)
 {
-    if ((uint32_t)addr + count > 1024U)
+    if ((uint32_t)addr + count > MSF_SRAM_WORDS)
         return MSF_ERR_ARG;
     return send_frame(MSF_CMD_WRITE, addr, words, count);
 }

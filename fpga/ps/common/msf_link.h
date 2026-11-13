@@ -27,6 +27,11 @@ typedef struct {
 #define MSF_CMD_WRITE      0x57U  /* 'W' */
 #define MSF_CMD_GO         0x47U  /* 'G' */
 
+/* words of SRAM the boot ROM can write (v4: 2,048; a v3 bitstream has 1,024) */
+#ifndef MSF_SRAM_WORDS
+#define MSF_SRAM_WORDS     2048U
+#endif
+
 enum { MSF_OK = 0, MSF_ERR_TIMEOUT = -1, MSF_ERR_NAK = -2, MSF_ERR_ARG = -3 };
 
 int      msf_link_init(void);

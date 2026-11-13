@@ -96,9 +96,16 @@ are not errors: they are claims this machine cannot test.
   (`fpga/ps/hil/msf_tests.c` line 811, which loads the store at SRAM 512). On the v3 FPGA's
   1,024-word memory 1536 aliases 512, so the C test passes there. **On a v4 bitstream it
   will fail:** `fpga/rtl`'s SRAM is now 2,048 words, so the load in `msf_tests.c` (lines
-  811-823) must move to 1536 first. Not changed yet (12 Nov: untestable here; a few-line
-  edit), and listed in the message to Muath with the other v4 bitstream prerequisites
-  (paste v4's boot ROM into `fpga/rtl/tt_um_msf_bootrom.v`; keep `ui_in[3]` low at boot).
+  811-823) must move to 1536 first. **Changed 13 Nov:** `msf_tests.c` loads at 1536, and
+  `msf_boot_write` (`fpga/ps/common/msf_link.c`) no longer refuses addresses above 1023 (it
+  checked a hard-coded 1024; now `MSF_SRAM_WORDS`, default 2048, in `msf_link.h`, so a v3
+  bitstream builds with `-DMSF_SRAM_WORDS=1024U`). Without that second edit the test would
+  have failed with `MSF_ERR_ARG` before reaching the chip. Run in simulation on `fpga/rtl`
+  (`python fpga/tests/run_ps_hil.py -t spi_flash`, 113 s): PASS, digest 2a95671e. Not run on
+  the board. Not touched: `fpga/ps/loader/src/main.c` line 13 still checks 1,024 words (a
+  firmware image above that is not loaded by it; no shipped image is). Prerequisites for the
+  v4 bitstream otherwise as in the message to Muath (paste v4's boot ROM into
+  `fpga/rtl/tt_um_msf_bootrom.v`; keep `ui_in[3]` low at boot).
 * The CI workflows first ran on v4 overnight 11-12 Nov; all three failed, for the reasons in
   `v4-bugs.md` V1, I5 and I6. The fixes were pushed on 12 Nov.
 
@@ -117,10 +124,10 @@ are not errors: they are claims this machine cannot test.
   (a 1-Wire presence responder) with `test/test_ow_presence.py`: 4 of 4 deadlines reached on
   the RTL at the checker's exact values. Still not covered: timed writes with several
   threads in a shipped program (`test_timed_pins.py` covers them with inline programs).
-* The second reader of `src/tt_um_msf_serdes.v` (two engine sets, RX mode 3, the external
-  clock) that the 12 Nov hand-over asked to finish: not done on 12 Nov. The 12 Nov first
-  reading (`v4-bugs.md`, "What the second reading checked") found no difference from
-  `isa.md` 6.9, but it was by the session that wrote both.
+* ~~The second reader of `src/tt_um_msf_serdes.v`~~ **Done 13 Nov** by a session that did not
+  write it (`v4-bugs.md`, "The second reading of the engines"): no contradiction with
+  `isa.md` 6.1, 6.2, 6.9 in anything a shipped program does; four gaps in the text (E1-E4),
+  none changed. By reading only; the engines still have no formal properties.
 * F16 for v4: the `ni` miter now carries the new per-thread state (the slot, `ESEL`, `TS`)
   and the second engine set's inputs (12 Nov, `v4-bugs.md` V3), but F16 is still a bounded
   check and its planted bug is still not shown (v3's state).
