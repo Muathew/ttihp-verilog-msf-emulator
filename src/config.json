@@ -58,7 +58,11 @@
   "CLOCK_PORT": "clk",
   "//": "SRAM macro integration (v4, 8x4: a die of 1724.16 x 710.64 um): four instances, one",
   "//": "per 512-word bank, side by side along the bottom (each 402.6 x 219.8 um), 8 um",
-  "//": "apart, MX so their Metal2 pins face up into the logic. The two code banks (0, 1)",
+  "//": "apart, MX so their Metal2 pins face up into the logic. They sit on the core's",
+  "//": "bottom edge (y = 3.78, as in kdp1965's PRISM): at y = 37.8 the 10 um halo left a",
+  "//": "24 um row strip under them, placement put 1,201 cells there, and their nets were",
+  "//": "forced across the SRAMs' Metal4 supply columns: 4,487 routing shorts and VPWR",
+  "//": "shorted to VGND in LVS (15 Nov 2026, docs/sram-power-integration.md). The two code banks (0, 1)",
   "//": "are in the middle, next to the fetch logic, the two upper banks outside them",
   "//": "(docs/plan-v4.md section 7.2). Whether four fit and route is the floorplan trial",
   "//": "of plan-v4 section 7.1, not yet run: if not, three macros or two (rung 3). The",
@@ -82,28 +86,28 @@
         "u_sram.sram2": {
           "location": [
             42,
-            37.8
+            3.78
           ],
           "orientation": "MX"
         },
         "u_sram.sram0": {
           "location": [
             452.6,
-            37.8
+            3.78
           ],
           "orientation": "MX"
         },
         "u_sram.sram1": {
           "location": [
             863.2,
-            37.8
+            3.78
           ],
           "orientation": "MX"
         },
         "u_sram.sram3": {
           "location": [
             1273.8,
-            37.8
+            3.78
           ],
           "orientation": "MX"
         }
@@ -133,6 +137,22 @@
       ]
     }
   },
+  "//": "Router keep-out over the SRAMs (kdp1965's PRISM does the same on Metal2-4). The",
+  "//": "LEF OBS leaves sub-track slivers between the Metal4 supply columns; a congested",
+  "//": "router used them and crossed VDD!/VSS! columns. Metal4: whole footprint (the",
+  "//": "column stripes are drawn before this step, so they are not affected). Metal3:",
+  "//": "stops 2 um short of the pin edge (y 223.55) so Via2 can land on the Metal2 pins.",
+  "//": "Metal2 stays free: it is the pin layer. Removed again before streamout.",
+  "ROUTING_OBSTRUCTIONS": [
+    "Metal3 42.0 3.78 444.61 221.55",
+    "Metal4 42.0 3.78 444.61 223.55",
+    "Metal3 452.6 3.78 855.21 221.55",
+    "Metal4 452.6 3.78 855.21 223.55",
+    "Metal3 863.2 3.78 1265.81 221.55",
+    "Metal4 863.2 3.78 1265.81 223.55",
+    "Metal3 1273.8 3.78 1676.41 221.55",
+    "Metal4 1273.8 3.78 1676.41 223.55"
+  ],
   "PDN_MACRO_CONNECTIONS": [
     "u_sram.sram0 VPWR VGND VDD! VSS!",
     "u_sram.sram0 VPWR VGND VDDARRAY! VSS!",

@@ -82,6 +82,13 @@ are not errors: they are claims this machine cannot test.
 
 ## B. Not checked here (needs the other machine, CI, a board or a person)
 
+* **Update 15 Nov:** the four-macro floorplan and its power grid have now been hardened
+  locally (WSL). The 13-14 Nov run shorted VPWR to VGND. Cells were stranded under the
+  SRAMs, and their wires crossed the SRAMs' Metal4 supply columns. The SRAMs now sit on the
+  core's bottom edge (y = 3.78), with a Metal3/Metal4 router keep-out over them. See
+  [sram-power-integration.md](sram-power-integration.md). The precheck and the gate-level
+  tests on that layout are still open.
+
 * Hardening, timing sign-off, hold margins, the four-macro floorplan and its power grid, the
   precheck: no flow runs here. `src/config.json` has hold margins 0.3 / 0.25 ns (B9) and four
   macros at x = 42, 452.6, 863.2, 1273.8 um (8 um apart; plan section 7.2) that no run has

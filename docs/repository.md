@@ -11,7 +11,7 @@ The README is one screen; this is the rest of the map.
 | `firmware/` | 79 assembly programs, `msf.inc` constants, `report.inc` (the monitors' event reporter); `firmware/msfc/` programs in the `msfc` language |
 | `test/` | the cocotb suite (77 modules), the assembler (`assembler.py`), the ISA reference model (`isa_model.py`), the boot ROM source (`bootloader.s`), the pure-Python tests (`test_msfc.py`, `test_site.py`, `test_learn_tool.py`) |
 | `formal/` | the formal properties and their runner (`run_formal.py`: SymbiYosys with ABC), `parse_check.py` (elaborates every target without a solver) |
-| `tools/` | `msf_boot.py` host loader, `msf_timing.py` deadline checker, `msfc.py` the timing-first language, `check_signoff.py` sign-off check, `mutation.py` mutation score, `gds_metrics.py` hardening table, `synth_check.py` area pre-check, `devsim.py` run a program against its test's device on the ISA model |
+| `tools/` | `msf_boot.py` host loader, `msf_timing.py` deadline checker, `msfc.py` the timing-first language, `check_signoff.py` sign-off check, `mutation.py` mutation score, `gds_metrics.py` hardening table, `synth_check.py` area pre-check, `devsim.py` run a program against its test's device on the ISA model, `sram_pdn_check.py` SRAM rails, stranded cells and shorts over the macros on a hardened ODB |
 | `fpga/` | AUP-ZU3 RTL (`fpga/rtl`, a copy of `src/` but for the board's SRAM and ROM wrappers), board constraints, Vivado block design, Zynq PS loader and C protocol tests |
 | `site/` | the browser playground (the assembler, checker and model, through Pyodide) |
 | `docs/` | everything below |
@@ -59,6 +59,7 @@ python tools/msf_boot.py firmware/uart_tx.s --port COM5   # load onto silicon
 | [msfc](msfc.md) | the language in which a program that compiles is on time |
 | [Instruments](instruments.md) | device emulation, monitors, fault injection, logic analyser, debug probes, other buses, comparison with PIO |
 | [Verification](verification.md) | model, random differential tests, formal, deadlines, FPGA, hardening, mutation, claims and evidence |
+| [SRAM power integration](sram-power-integration.md) | the 8x4 VPWR/VGND short (13-14 Nov run), its cause, the floorplan fix, `tools/sram_pdn_check.py` |
 | [Datasheet](info.md) | pinout, boot protocol, how to test |
 | [How AI was used](ai.md) | who did what, the independent check for each AI-written artefact, and where the AI was wrong |
 | [Plan v4](plan-v4.md) | the plan this branch implements, with its status table |
