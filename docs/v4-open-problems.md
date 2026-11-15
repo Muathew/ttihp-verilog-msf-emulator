@@ -86,8 +86,10 @@ are not errors: they are claims this machine cannot test.
   locally (WSL). The 13-14 Nov run shorted VPWR to VGND. Cells were stranded under the
   SRAMs, and their wires crossed the SRAMs' Metal4 supply columns. The SRAMs now sit on the
   core's bottom edge (y = 3.78), with a Metal3/Metal4 router keep-out over them. See
-  [sram-power-integration.md](sram-power-integration.md). The precheck and the gate-level
-  tests on that layout are still open.
+  [sram-power-integration.md](sram-power-integration.md). Later that day the TT precheck
+  passed locally (0 KLayout DRC items), and a CI GDS run gave the same results as the local
+  one. The CI job was then marked failed by the artifact quota (A2), so the gate-level tests
+  on this layout are still open (section 8 of that document).
 
 * Hardening, timing sign-off, hold margins, the four-macro floorplan and its power grid, the
   precheck: no flow runs here. `src/config.json` has hold margins 0.3 / 0.25 ns (B9) and four

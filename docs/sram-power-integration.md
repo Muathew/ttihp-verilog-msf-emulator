@@ -213,7 +213,7 @@ Also read these on any run: `route__drc_errors` and `design__lvs_error__count` i
   the SRAMs were spacing errors from the forced routes, and only 8 were outside the
   SRAMs. The shuttle's precheck uses KLayout's CMOS5L deck on the final GDS, as Ken's
   guide does (`RUN_MAGIC_DRC: 0`, `RUN_KLAYOUT_DRC: 1`). That KLayout check is the one
-  to trust. It was not run here. *Open:* run TT's precheck on `src/runs/sramfix`.
+  to trust. **It passed (section 8): 0 violations in the full SG13CMOS5L deck.**
 * **The 84 illegal overlaps that remain are expected.** All are `obsm4`/`metal4` at
   y = 170.40-176.25 µm, which is the LEF obstruction band between each column's
   VDD! and VDDARRAY! segments (macro y 47.305-53.15, mirrored by MX). A VPWR column
@@ -222,6 +222,54 @@ Also read these on any run: `route__drc_errors` and `design__lvs_error__count` i
   same benign overlap (22 on his macro).
 * **Magic DRC after the fix:** 416,536 errors, every one inside an SRAM footprint, and
   0 outside.
-* **Not checked here:** the TT precheck, gate-level tests on the new netlist, and a CI GDS
-  run on `tt-gds-action@ttihp27a`. The 48 MHz (20 ns) target is also still untested
-  (`plan-v4.md` 7.3); this run signs off at 30 ns, as configured.
+* **Not checked yet:** the gate-level tests on the new netlist (CI's `gl_test` job was
+  skipped, section 8.2) and the 48 MHz (20 ns) target (`plan-v4.md` 7.3). This layout
+  signs off at 30 ns, as configured.
+
+## 8. Precheck and CI results (15 Nov)
+
+### 8.1 Tiny Tapeout precheck, run locally
+
+`tt/precheck/precheck.py` was run on the `sramfix` GDS. It used the repository's pinned
+requirements (`tt/precheck/requirements.txt`) in a Python 3.12 venv. KLayout 0.30.12 came
+from the LibreLane 3.1.0.dev4 image, through a small `klayout` wrapper script that calls
+`docker run`. Use an absolute `--gds` path: the Verilog syntax check mounts that path in
+a YoWASP sandbox and fails on a relative one.
+
+| Check | Result |
+|---|---|
+| Pin label, pin check, analog pins | pass |
+| KLayout DRC, full SG13CMOS5L deck (`drc_sg13cmos5l.xml`) | pass, 0 items |
+| Zero-area shapes, pin label/drawing overlap | pass, 0 items |
+| KLayout checks, boundary, layers, cell names | pass |
+| Verilog syntax of the gate-level netlist | pass |
+
+So the 416,536 Magic DRC errors (section 7) are not seen by the deck the shuttle uses.
+
+### 8.2 CI GDS run
+
+[Run 43740378700](https://github.com/Muathew/ttihp-verilog-msf-emulator/actions/runs/43740378700),
+`gds.yaml` on `v4` at 38421ee, used `tt-gds-action` on a 4-core GitHub runner. The flow
+took 3 h 01 min (17:19-20:20 UTC). The same flow took 1 h 23 min locally on 16 cores.
+
+| | CI | local (`sramfix`) |
+|---|---|---|
+| Flow | complete | complete |
+| Detailed routing | 0 violations (after antenna repair) | 0 |
+| Antenna | pass | pass |
+| LVS | pass | pass, "Circuits match uniquely" |
+| Setup and hold, all corners | no violations | no violations |
+| Magic DRC | 416,536 (all inside the SRAMs) | 416,536 |
+| Illegal overlaps | 84 | 84 |
+
+The CI run matches the local one in every count above.
+
+**The job is marked failed for a reason unrelated to the layout.** After "Flow complete",
+`tt-gds-action` uploads the logs. GitHub refused with `Failed to CreateArtifact: Artifact
+storage quota has been hit` ([v4-open-problems](v4-open-problems.md) A2). The account
+holds 755 MB of artifacts from `main` and `plan7`. The other uploads were skipped, the job
+failed, and the `precheck`, `gl_test` and `viewer` jobs were skipped because they depend
+on it. The CI precheck is covered by 8.1. The gate-level tests are not covered: they need
+Icarus Verilog, which this machine does not have. Free the artifact store (delete the old
+`GDS_logs`, `test-results` and `gds_render` artifacts, and lower the retention period),
+wait for GitHub to recalculate usage, then rerun `gh workflow run gds.yaml --ref v4`.

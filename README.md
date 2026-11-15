@@ -54,14 +54,13 @@ additions ([envelope](docs/envelope.md): how fast each class of protocol goes, f
 | An edge leaves on its cycle | `test/test_timed_pins.py`: jitter 0 with 1 to 4 threads, one stalled, one loading | v4 RTL, simulation |
 | Deadlines are met | `tools/msf_timing.py --all`; CI also compares it with the RTL | v4 firmware, the checker |
 | Properties hold for all time | formal F1-F16 in CI | **not run on v4**: F17 and F18 are new and F1-F16 need re-running on the changed RTL ([open problems](docs/v4-open-problems.md) A1) |
-| The layout meets timing | CI sign-off job | v2.2 on 6x4: 30 ns in every corner. v4 on 8x4: hardened locally on 15 Nov, 30 ns in every corner, routing DRC and LVS clean ([SRAM power fix](docs/sram-power-integration.md)). **Not yet run on v4: the precheck, the gate-level tests, a CI run** |
+| The layout meets timing | CI sign-off job | v2.2 on 6x4: 30 ns in every corner. v4 on 8x4: hardened on 15 Nov, locally and on CI (same results): 30 ns in every corner, routing DRC and LVS clean, TT precheck passed (run locally) ([SRAM power fix](docs/sram-power-integration.md)). **Not yet run on v4: the gate-level tests** (CI skipped them: the artifact store is full) |
 | It runs on real hardware | AUP-ZU3 FPGA: 67 of 67 C protocol tests; free-running against an LP-MSPM0G3519: UART, SPI, I2C, 148 of 148 passes at 12 MHz | v2.2 core. **v4 is not built on the board** |
 
 ## Limits
 
-* v4 has no timing result. The 48 MHz in `info.yaml` is a target; the numbers above are v2.2's.
-  The four-macro floorplan and the hold margins are set in `src/config.json` and unconfirmed by any
-  flow ([open problems](docs/v4-open-problems.md) B).
+* v4 signs off at 30 ns (33 MHz). The 48 MHz in `info.yaml` is a target that no run has tried
+  ([open problems](docs/v4-open-problems.md) B).
 * Pad speed is unknown: there is no CMOS5L silicon. [`envelope.md`](docs/envelope.md) says which
   limits are logical (one bit a cycle) and which depend on the pads.
 * The board's C tests step the core one clock at a time; only the MCU test runs it free, at 12 MHz.
