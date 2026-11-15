@@ -222,9 +222,8 @@ Also read these on any run: `route__drc_errors` and `design__lvs_error__count` i
   same benign overlap (22 on his macro).
 * **Magic DRC after the fix:** 416,536 errors, every one inside an SRAM footprint, and
   0 outside.
-* **Not checked yet:** the gate-level tests on the new netlist (CI's `gl_test` job was
-  skipped, section 8.2) and the 48 MHz (20 ns) target (`plan-v4.md` 7.3). This layout
-  signs off at 30 ns, as configured.
+* **Not checked yet:** the 48 MHz (20 ns) target (`plan-v4.md` 7.3). This layout signs
+  off at 30 ns, as configured. The gate-level tests pass (section 8.3).
 
 ## 8. Precheck and CI results (15 Nov)
 
@@ -269,7 +268,39 @@ The CI run matches the local one in every count above.
 storage quota has been hit` ([v4-open-problems](v4-open-problems.md) A2). The account
 holds 755 MB of artifacts from `main` and `plan7`. The other uploads were skipped, the job
 failed, and the `precheck`, `gl_test` and `viewer` jobs were skipped because they depend
-on it. The CI precheck is covered by 8.1. The gate-level tests are not covered: they need
-Icarus Verilog, which this machine does not have. Free the artifact store (delete the old
+on it. The CI precheck is covered by 8.1. The gate-level tests were then run locally
+(8.3). Free the artifact store (delete the old
 `GDS_logs`, `test-results` and `gds_render` artifacts, and lower the retention period),
 wait for GitHub to recalculate usage, then rerun `gh workflow run gds.yaml --ref v4`.
+
+**Artifacts cleared (15 Nov, 22:30 UTC):** all 16 artifacts were deleted, on Muath's
+choice. They were older CI outputs from `main` and `plan7`, and nothing has been
+submitted from them. CI was rerun on `v4` at 405f022
+([run 43769989922](https://github.com/Muathew/ttihp-verilog-msf-emulator/actions/runs/43769989922)).
+
+### 8.3 Gate-level tests, run locally
+
+`cd test && GATES=yes make` was run on `final/nl/tt_um_msf.nl.v` from `sramfix`, which
+is the netlist the TT `gl_test` action uses (the `nl`, not the `pnl`). It used cocotb
+2.0.1 (`test/requirements.txt`) and the PDK's `sg13cmos5l_stdcell.v`/`_udp.v`/`_io.v` at
+the pinned commit.
+
+| Test | Result | Simulated time |
+|---|---|---|
+| `test_gl_smoke.test_gl_elaboration_smoke` | pass | 8.9 µs |
+| `test_gl_smoke.test_gl_reset_recover` | pass | 9.9 µs |
+| `test_gl_firmware.test_gl_uart_tx` | pass | 2.17 ms |
+| `test_gl_firmware.test_gl_two_threads` | pass | 0.73 ms |
+| `test_gl_firmware.test_gl_spi_flash` (store at SRAM 1536) | pass | 2.93 ms |
+
+The run took 5 minutes, and `cocotb_tools.check_results` reported 5 of 5 passed. This
+is the first gate-level run of `test_gl_spi_flash` since the flash store moved to 1536
+(`v4-bugs.md` F1).
+
+**Use Tiny Tapeout's Icarus 13.0.** Stock Icarus 12.0 (Ubuntu's package) fails all five
+tests with X on every output. The CMOS5L flip-flop models clock data through the
+`delayed_CLK`/`delayed_D` signals of their `$setuphold` checks. Icarus 12 does not drive
+those signals ("will not be driven", 138 warnings), and `-gspecify` does not help. The
+`gl_test` action installs `iverilog_13.0-1_amd64.deb` from TinyTapeout/iverilog, which
+drives them. After switching versions, delete `test/sim_build/gl` (`make clean` does not
+remove it): a `.vvp` compiled by 12.0 will not run on 13.0.

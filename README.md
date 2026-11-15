@@ -54,7 +54,7 @@ additions ([envelope](docs/envelope.md): how fast each class of protocol goes, f
 | An edge leaves on its cycle | `test/test_timed_pins.py`: jitter 0 with 1 to 4 threads, one stalled, one loading | v4 RTL, simulation |
 | Deadlines are met | `tools/msf_timing.py --all`; CI also compares it with the RTL | v4 firmware, the checker |
 | Properties hold for all time | formal F1-F16 in CI | **not run on v4**: F17 and F18 are new and F1-F16 need re-running on the changed RTL ([open problems](docs/v4-open-problems.md) A1) |
-| The layout meets timing | CI sign-off job | v2.2 on 6x4: 30 ns in every corner. v4 on 8x4: hardened on 15 Nov, locally and on CI (same results): 30 ns in every corner, routing DRC and LVS clean, TT precheck passed (run locally) ([SRAM power fix](docs/sram-power-integration.md)). **Not yet run on v4: the gate-level tests** (CI skipped them: the artifact store is full) |
+| The layout meets timing | CI sign-off job | v2.2 on 6x4: 30 ns in every corner. v4 on 8x4: hardened on 15 Nov, locally and on CI (same results): 30 ns in every corner, routing DRC and LVS clean, TT precheck and the 5 gate-level tests passed (run locally) ([SRAM power fix](docs/sram-power-integration.md)) |
 | It runs on real hardware | AUP-ZU3 FPGA: 67 of 67 C protocol tests; free-running against an LP-MSPM0G3519: UART, SPI, I2C, 148 of 148 passes at 12 MHz | v2.2 core. **v4 is not built on the board** |
 
 ## Limits

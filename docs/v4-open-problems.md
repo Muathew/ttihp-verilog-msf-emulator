@@ -89,7 +89,8 @@ are not errors: they are claims this machine cannot test.
   [sram-power-integration.md](sram-power-integration.md). Later that day the TT precheck
   passed locally (0 KLayout DRC items), and a CI GDS run gave the same results as the local
   one. The CI job was then marked failed by the artifact quota (A2), so the gate-level tests
-  on this layout are still open (section 8 of that document).
+  were run locally instead: 5 of 5 pass, `test_gl_spi_flash` included (section 8.3 of that
+  document).
 
 * Hardening, timing sign-off, hold margins, the four-macro floorplan and its power grid, the
   precheck: no flow runs here. `src/config.json` has hold margins 0.3 / 0.25 ns (B9) and four
@@ -99,9 +100,9 @@ are not errors: they are claims this machine cannot test.
 * Gate-level simulation with delays (SDF): needs a hardened netlist.
 * Vivado build and board run of v4 (Muath); the repository is private (Muath makes it public);
   CI GDS runs need Sam's go-ahead (plan section 7.3); the bench session and video (section 11).
-* `firmware/spi_flash.s` moved its store to SRAM 1536-2047 (`v4-bugs.md` F1). Two things that
-  use it could not be run here: the gate-level `test/test_gl_firmware.py::test_gl_spi_flash`
-  (needs CI's netlist; it now preloads at `FLASH` from `test_targets.py`), and the FPGA's C test
+* `firmware/spi_flash.s` moved its store to SRAM 1536-2047 (`v4-bugs.md` F1). Two things use
+  it. The gate-level `test/test_gl_firmware.py::test_gl_spi_flash` (it now preloads at
+  `FLASH` from `test_targets.py`) **passed on 15 Nov** on the 8x4 netlist. Not run here: the FPGA's C test
   (`fpga/ps/hil/msf_tests.c` line 811, which loads the store at SRAM 512). On the v3 FPGA's
   1,024-word memory 1536 aliases 512, so the C test passes there. **On a v4 bitstream it
   will fail:** `fpga/rtl`'s SRAM is now 2,048 words, so the load in `msf_tests.c` (lines
