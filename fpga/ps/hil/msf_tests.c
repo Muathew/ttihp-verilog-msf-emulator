@@ -3881,7 +3881,10 @@ static int cap_run(const cap_case *cc, int *nw, int *tw, uint16_t *res)
     uint32_t t, k;
     int i;
 
-    if (dbg_boot(cc->img, DBG_STRAP | MSF_BOOT_DIRECT, 0))
+    /* Four cycles before CNT is read: v4 holds the core in reset for two clock
+     * edges after rst_n rises (project.v, plan-v4 B2), and a read there gives
+     * the reset value, not a running count: the pins then lead CNT by one. */
+    if (dbg_boot(cc->img, DBG_STRAP | MSF_BOOT_DIRECT, 4))
         return -1;
     t = dbg_view(0x25, 0);          /* CNT in the cycle after this one (< 256) */
     for (k = 0; k < cc->cycles; ++k, ++t) {
