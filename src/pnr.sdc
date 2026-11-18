@@ -3,7 +3,9 @@
 # at (CLOCK_PERIOD, signoff.sdc). Placement, CTS and the resizer then work
 # as hard as for 50 MHz: with the real period here they left the slow-corner
 # path at 33.2 ns, against 28.4 ns when they aimed at 20 (docs/plan.md 1.2).
-set ::msf_pnr_period 20.0
+# Branch clk50 (18 Nov): 18 ns, 2 ns tighter than the 20 ns sign-off
+# (plan-v4 7.3). At 20 the 15 Nov layout's slow corner stopped at ~21.1 ns.
+set ::msf_pnr_period 18.0
 set clock_port __VIRTUAL_CLK__
 if { [info exists ::env(CLOCK_PORT)] } {
     set port_count [llength $::env(CLOCK_PORT)]
