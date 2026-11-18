@@ -38,7 +38,7 @@ next protocol was written. The results are in `docs/instruments.md` §16.
 * Run `date -u` when you start. Stop at 90 minutes, whatever state it is in, and report what stands.
 * Find the protocol's specification yourself, on the web or from what you know, and name your sources
   in your report and in a comment at the top of your file. Do not read sigrok's decoder source, under
-  `/home/sambo/.msf_sigrok/root/usr/share/libsigrokdecode/decoders/`: it is the judge. If you can find no
+  `~/.msf_sigrok/root/usr/share/libsigrokdecode/decoders/` (in WSL): it is the judge. If you can find no
   description of a protocol at all, you may read that decoder as the only one left, and you must say so,
   because it weakens the result.
 * Report honestly: what works, what does not, what you left out of the protocol, every assumption. A
@@ -62,9 +62,9 @@ holds what the decoder must print, and `tooth` is an edge that must change it. J
 ```sh
 cd test && MSF_BUILD=draw_<id> ../.venv/Scripts/python.exe run_tests.py -m test_draw_<id>   # the RTL
 python -I tools/msf_timing.py firmware/draw_<id>.s                                          # must certify
-export MSYS_NO_PATHCONV=1 SIGROK_CLI="wsl -d Ubuntu -- /home/sambo/.msf_sigrok/sigrok-cli"
+export MSYS_NO_PATHCONV=1 SIGROK_CLI="wsl -d Ubuntu -- /home/<user>/.msf_sigrok/sigrok-cli"
 python -I tools/sigrok_check.py draw_<id> --show                                            # the decoder
-wsl -d Ubuntu -- /home/sambo/.msf_sigrok/sigrok-cli -P <decoder> --show                     # its channels
+wsl -d Ubuntu -- /home/<user>/.msf_sigrok/sigrok-cli -P <decoder> --show                     # its channels
 ```
 
 Always use `MSF_BUILD=draw_<id>`. If the decoder disagrees with you and the specification says you are

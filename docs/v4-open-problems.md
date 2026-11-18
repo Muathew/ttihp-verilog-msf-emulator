@@ -41,31 +41,15 @@ are not errors: they are claims this machine cannot test.
   comparison. If a property is too strong, the F17 ghost is in `tt_um_msf_ctrl.v` under
   `// F17 (v4)`.
 
-### A2. The account's artifact store was full (6.9 GB; cleaned to 713 MB on 12 Nov)
-* **What:** CI's `docs` workflow (Tiny Tapeout's `tt-gds-action/docs`, which uploads the
-  PDF) fails with `Failed to CreateArtifact: Artifact storage quota has been hit` whatever
-  the repository holds. The `test` workflow's uploads now cannot fail the job
-  (`v4-bugs.md` I6), but the `docs` action's upload is not ours to change.
-* **Measured 12 Nov** (`gh api repos/Muathew/ttihp-verilog-msf-emulator/actions/artifacts`):
-  324 live artifacts, 6,922 MB. By kind: `GDS_logs` about 4,650 MB (rtl-changes 1,497,
-  FPGA 750, fixes 702, main 455, optional 426, steal 375, ethernet 196, plan7 179,
-  sram-diversion 70); `test-results` about 1,730 MB (plan7 508, v3 427, fixes 278, mcu 225,
-  main 161, rtl-changes 90, ...); `tt_submission` and `gds_render` the rest. v4 has none: its
-  uploads failed.
-* **Cleaned 12 Nov, on Sam's choice:** 308 artifacts (6,209 MB) deleted, none failed. Kept:
-  the newest artifact of each kind on `main`, `plan7` and `v3`, 16 items, 713 MB: the
-  newest hardening run of `main` (3 Nov) and of `plan7` (7 Nov) with its `GDS_logs`,
-  `tt_submission`, `gds_render`, `precheck_reports`, `gatelevel_test_results`; the newest
-  `test-results` of `main`, `plan7`, `v3`; the three PDFs. Deleted: every older run on those
-  branches and every artifact of rtl-changes (63), FPGA (42), optional (40), fixes (38),
-  steal (21), mcu (14), ethernet (14), sram-diversion (7). Code and CI text logs are not
-  artifacts and are untouched.
-* **Still open:** whether uploads work again. GitHub says it recalculates usage every 6 to
-  12 hours; if the quota is counted over the billing month (GB-hours), uploads may stay
-  blocked until Muath's month resets. 713 MB is under a Pro or Education plan's 2 GB but
-  over GitHub Free's 500 MB. Muath can see which on his billing page; the `docs` workflow
-  of the next push says whether it worked. Each hardening run adds about 230 MB, so the
-  repository's artifact retention (Settings, Actions, General) is worth lowering to a week
+### A2. The artifact store was full (cleared 12 and 15 Nov)
+* **What:** CI's uploads failed with `Failed to CreateArtifact: Artifact storage quota has
+  been hit`, so the `docs` workflow and the GDS job were marked failed after the flow itself
+  had finished (the 15 Nov GDS run matched the local hardening: `sram-power-integration.md`
+  §8.2). The `test` workflow's uploads cannot fail the job (`v4-bugs.md` I6).
+* **Cleared:** 308 old artifacts (6.2 GB) on 12 Nov, the remaining 16 on 15 Nov.
+* **Still open:** since 17 Nov GitHub has started no job on the repository (an account limit
+  on Actions); Actions on a public repository are free. Each hardening run adds about
+  230 MB of artifacts, so set the artifact retention (Settings, Actions, General) to a week
   or two.
 
 ### A3. Long runs left for later (12 Nov: the session had an hour, Sam asked for no long runs)

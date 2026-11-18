@@ -33,6 +33,12 @@ gds_render*.svg
 # Local formal / synthesis scratch
 formal/work/
 
+# Local board consoles, Vivado reports and hardening archives
+*.log.txt
+*.tar.gz
+vivado_reports.zip
+fpga/rtl/a.out
+
 __pycache__/
 test/deadlines_seen.json
 _site/

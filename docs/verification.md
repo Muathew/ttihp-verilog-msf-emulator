@@ -363,7 +363,7 @@ receiver takes as a start bit (fixed in 6ea46bd).
 
 TT's precheck (KLayout CMOS5L DRC, pins, boundary, layers, cell names)
 passed on run 40079395684. From 24 Oct about 11:00, GitHub stopped starting
-jobs on the repository for a billing reason, so the later runs built the
+jobs on the repository (an account limit on Actions), so the later runs built the
 layout but never ran their precheck, gate-level test or sign-off job.
 `check_signoff.py`, the gate-level tests and the precheck (`precheck.py` from
 tt-support-tools, branch `ihp-sg13cmos5l` at d66cf17) were run by hand on
