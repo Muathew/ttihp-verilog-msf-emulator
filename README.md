@@ -6,7 +6,7 @@ A 16-bit CPU for pins and time, for IHP SG13CMOS5L on Tiny Tapeout (8x4 tiles, 2
 Protocols are firmware, loaded over UART or a parallel port after fabrication. Entry for the Jane
 Street protocol emulator ASIC competition. **This branch is v4: hardened on 8x4 (30 ns in every
 corner), formally checked to depth 16 in CI and run on an FPGA board at 12 MHz. Not yet: a 50 MHz
-sign-off and the unbounded proofs** ([what is shown on which version](#evidence)).
+sign-off, and 18 of the controller's 86 assertions are proved to depth 16 only** ([what is shown on which version](#evidence)).
 
 One chip plays the device, drives the bus, watches it and breaks it on purpose: an SPI flash or I2C
 EEPROM, a JTAG or SWD probe, a monitor that reports every timing fault with its length, a margin
@@ -54,7 +54,7 @@ additions ([envelope](docs/envelope.md): how fast each class of protocol goes, f
 | The protocols work | 319 cocotb tests in 77 modules, peers written from the standards (three tests failed in the 11 Nov run and were fixed: [v4-bugs](docs/v4-bugs.md)) | v4 RTL, simulation |
 | An edge leaves on its cycle | `test/test_timed_pins.py`: jitter 0 with 1 to 4 threads, one stalled, one loading | v4 RTL, simulation |
 | Deadlines are met | `tools/msf_timing.py --all`; CI also compares it with the RTL | v4 firmware, the checker |
-| Formal properties hold | the formal properties in CI ([verification](docs/verification.md)) | v4 (12 Nov, CI): bounded check to depth 16 passes on the controller, the capture engine and the top level, 18 of 18 planted bugs caught; F16's planted bug shown on v4 (13 Nov). **Not yet on v4:** the unbounded proofs |
+| Formal properties hold | the formal properties in CI ([verification](docs/verification.md)) | v4 (12 Nov, CI): bounded check to depth 16 passes on the controller, the capture engine and the top level, 18 of 18 planted bugs caught; F16's planted bug shown on v4 (13 Nov). For all time (18 Nov, CI, controller): 68 of 86 assertions proved; the other 18 (F17's timed pins, F3's timeouts, F8) hold to depth 16 only |
 | The layout meets timing | CI sign-off job | v2.2 on 6x4: 30 ns in every corner. v4 on 8x4: hardened on 15 Nov, locally and on CI (same results): 30 ns in every corner, routing DRC and LVS clean, TT precheck and the 5 gate-level tests passed (run locally) ([SRAM power fix](docs/sram-power-integration.md)) |
 | It runs on real hardware | AUP-ZU3 FPGA: 67 of 67 C protocol tests; free-running against an LP-MSPM0G3519: UART, SPI, I2C, 148 of 148 passes at 12 MHz | v2.2 core. v4 (17 Nov, 12 MHz): 304 of 304 passes in the board test against the LP-MSPM0G3519; 60 of 67 C tests, the 7 failures a test-harness fault, fixed and waiting for a rebuild ([open problems](docs/v4-open-problems.md) B) |
 
