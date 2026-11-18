@@ -22,7 +22,7 @@ AI-written work and the chip, and where the AI was wrong.
   formal properties, the tools in `tools/`, and the documentation. The
   agent runs the simulators and tools itself, commits, and pushes to the
   feature branches; nothing is merged to `main` without Sam.
-* **v4 (11 Nov):** the plan (`plan-v4.md`: an RTL review, a competitor re-read, five moves,
+* **v4 (11 Nov):** the plan (`plan-v4.md`: an RTL review, five moves,
   a ladder down) was written by the AI from Sam's brief; Sam's order was "follow this plan and
   implement it fully", and, when stuck, "skip the error, report it, a larger model will review
   it". Steps 1 to 5 of the plan, `msfc` and the documents were then written by the AI in one

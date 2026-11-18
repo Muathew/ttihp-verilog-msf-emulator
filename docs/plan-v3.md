@@ -1,9 +1,8 @@
-# Plan v3: get ahead of the field
+# Plan v3: 50 MHz, a line unit and hardware guarantees
 
-Branch `v3`, started 8 Nov 2026 from `plan7` (06da447). Sam: "figure out how they were
-able to do this [48-50 MHz] ... make sure we have a higher breadth, and hardware
-guarantees, anything for us to get ahead. You can change the RTL. Make a plan first to
-work off, keeping it up to date when you complete a task."
+Branch `v3`, started 8 Nov 2026 from `plan7` (06da447). Sam asked for 48-50 MHz, more
+breadth and hardware guarantees: "You can change the RTL. Make a plan first to work off,
+keeping it up to date when you complete a task."
 
 `main` stays v2.2, signed off and run on the board, until this branch has its own
 sign-off and board run. The status table is kept current as items land.
@@ -21,17 +20,7 @@ sign-off and board run. The status table is kept current as items land.
 | 7 | Sign-off and evidence again | not started |
 | 8 | Board test of v3: the FPGA and the LP-MSPM0G3519 | **written, not yet run on the board** (9 Nov). `firmware/mcu_v3_peer.s` (274 words) on the core, `fpga/ps/mcu_v3` on the A53, and a v3 mode in `mcu_ext/protocol_tests` that the MCU enters by itself when the peer prompts. The MCU draws Manchester frames (mode 3, 5 cycles a bit) and USB packets (NRZI, 4 cycles a bit) with its SPI, after timing its clock against the FPGA's, and reads the guarded pin with each pull (external-mcu_testing.md, "The v3 board test"). Checked: the MCU code compiles with every warning on, its DriverLib calls and pin names against TI's SDK; the A53 summary on the PC; `test_mcu_v3_peer` (the MCU's own SPI words into the RTL) written, not yet run to the end. FPGA readiness on v3: `fpga/rtl` matches `src` (check_fpga_sync); board I/O, SRAM, loader and monitor simulations pass; the 67 C board tests in simulation: 15 run, all pass, the rest stopped. Full suite on the current RTL: 257 of 284 run, all pass. Needs: the Vivado build of v3 and the run, by Muath |
 
-## 0. What the leaders did, and where our time goes (facts of 8 Nov)
-
-**Clock.** All three leaders close a 20 ns clock (`CLOCK_PERIOD` 20) at the slow corner
-(1.08 V, 125 °C), the one we sign off at:
-* Escapement went from 33 MHz (v1.5) to 50.8 MHz at the slow corner (v1.6) by decoding
-  the instruction a stage earlier and reading its operands a stage earlier, for 354 more
-  flip-flops; its register file is in latches. Same 6x4, same four-thread barrel as ours.
-* MarcosAsh: 48 MHz with +4.03 ns at the slow corner, 8x4, two cores, each with its own
-  program SRAM and a shared data SRAM (three 512x16 macros), repair after global routing.
-* Wirelingo: 50 MHz with +0.01 ns, 6x4, two cores with a 256x32 SRAM each, placement and
-  routing repaired at all three corners.
+## 0. Where our time goes (facts of 8 Nov)
 
 Ours (CI 42393871451, shuttle flow, 30 ns): the worst path is the SRAM macro's
 clock-to-output, 6.78 ns, then about 19 ns of decode, register read, ALU and write-back,
@@ -40,20 +29,16 @@ macro's output in the same cycle as the ALU (`tt_um_msf_ctrl.v`: "IMEM has a reg
 read ... decoded in cycle N+1"). The macro is not the lever: at the slow corner a 512x16
 gives its data after 6.3-6.7 ns whether it has one port or two, a 256x32 after 5.1-5.6 ns
 (the PDK's liberty files), so changing macros saves about 1 ns. Splitting the path is
-what Escapement did, and what this plan does.
+what this plan does.
 
-**USB full-speed and 10BASE-T receive** both need clock recovery in hardware, which the
-leaders call a line unit: Wirelingo receives USB at 48 MHz, 4 clocks a bit, and 10BASE-T
-within 802.3's ±13.5 ns of edge jitter at 50 MHz; MarcosAsh has both too. Our RX engine
+**USB full-speed and 10BASE-T receive** both need clock recovery in hardware (a line
+unit): USB at 48 MHz is 4 clocks a bit, and 10BASE-T must hold 802.3's ±13.5 ns of edge
+jitter at 50 MHz. Our RX engine
 samples at fixed bit centres, which needs about 4 samples a half-bit for Manchester: ~80 MHz.
 
-**Hardware guarantees.** MarcosAsh: the chip checks each program against a certificate
-and refuses to start one it cannot check; a missed deadline takes the engine off its
-pins (proved). Escapement: "never late" proved for every program, for all time. Loom:
-each thread's isolation proved. Ours: a static checker (outside the chip) and a LATE flag.
+**Hardware guarantees.** Ours: a static checker (outside the chip) and a LATE flag.
 
-**Breadth.** MarcosAsh 68 firmwares, Wirelingo 68, Escapement 49, Loom adding about forty
-overnight on 8 Nov. Ours: 39.
+**Breadth.** Ours: 39 firmware programs.
 
 ## Goals
 
@@ -100,8 +85,8 @@ flags, branch decision, blocking ops, pins, peripherals).
 
 * A fast loop first: synthesis and STA at the slow corner on the local LibreLane image,
   calibrated against CI's 26.9 ns on the v2.2 RTL.
-* Then local hardening at 20 ns (pnr) with sign-off at 20 ns in every corner, following
-  what the leaders needed: repair after global routing, maximum wire length, all corners.
+* Then local hardening at 20 ns (pnr) with sign-off at 20 ns in every corner, with
+  what closing timing at the slow corner needs: repair after global routing, maximum wire length, all corners.
 * Fallbacks, in order: move the next-longest paths into the new stage; a 256x32 macro
   (about 1 ns); 8x4 tiles if Tiny Tapeout confirms them.
 * **Done when** a local run signs off at 20 ns in every corner, then one CI GDS run (asked first).
@@ -138,7 +123,7 @@ where one exists. In batches:
 1. The draw pool's 24 protocols with decoders not yet done: AM230x, AVR PDI, DALI, DCF77,
    DMX512, DSI, EM4305, I2S, NEC IR, RC-5, RC-6, Maple bus, MDIO, Miller, Morse, Qi, SD card
    (SD mode), ST7735, SWIM, T55xx, TDM audio, TLC5620, USB Power Delivery, Wiegand.
-2. Common ones the field has: LIN, MIDI, SENT, DShot, SBUS, servo PWM, quadrature encoder,
+2. Common ones: LIN, MIDI, SENT, DShot, SBUS, servo PWM, quadrature encoder,
    HD44780, MAX7219, SPI SD-card start-up, WS2812 receive, I3C.
 3. After item 3: USB full-speed device, 10BASE-T receive.
 

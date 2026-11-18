@@ -13,7 +13,7 @@ Where an early decision was later changed, the entry says so.
 | 2026-09-10 | Jane Street | Protocol-emulator ASIC competition announced |
 | 2026-09-19 | Muath | Repository created from the Tiny Tapeout IHP template |
 | 2026-09-23 | Sam | Toolchain working (Icarus, cocotb 2.0.1); 12 MHz clock target chosen |
-| 2026-09-24 | Sam | Architecture decided (hybrid core), ISA v1.0 locked, competitor research, first RTL, assembler and boot ROM |
+| 2026-09-24 | Sam | Architecture decided (hybrid core), ISA v1.0 locked, prior-art research, first RTL, assembler and boot ROM |
 | 2026-09-25 | Sam, Muath | First green suite (9/9): WAIT stalls hold the PC so the next instruction re-executes |
 | 2026-09-28 | Muath | First hardening attempt fails DRC: ~31K cells against a ~24K budget |
 | 2026-09-30 | Muath | IHP SRAM macro integrated in place of the flip-flop SRAM; GDS rendered in GDS3D |
@@ -22,8 +22,8 @@ Where an early decision was later changed, the entry says so.
 | 2026-10-14 | Sam | 10BASE-T transmit at 20 MHz as a real test (v1: waveform playback) |
 | 2026-10-16 | Sam | Full review of v1: 9 bugs and the gaps below; v2 plan written |
 | 2026-10-17 | Sam | v2 done: bug fixes, ISA v2, SERDES, CRC, two threads, boot ROM v2, formal, 103 tests |
-| 2026-10-18 | Muath, Sam | AUP-ZU3 FPGA port; PS-stepped core and C protocol tests (14/14); 1 Hz blink; competitor survey updated (research.md) |
-| 2026-10-19..21 | Sam | Instruments from the survey: SPI and I2C targets, UART / I2C / SPI bus monitors, UART-to-SPI bridge, timing-fault knobs, CI hardening table, mutation score (39/40), WS2812 and a PIO comparison; 130 tests |
+| 2026-10-18 | Muath, Sam | AUP-ZU3 FPGA port; PS-stepped core and C protocol tests (14/14); 1 Hz blink |
+| 2026-10-19..21 | Sam | Instruments: SPI and I2C targets, UART / I2C / SPI bus monitors, UART-to-SPI bridge, timing-fault knobs, CI hardening table, mutation score (39/40), WS2812 and a PIO comparison; 130 tests |
 | 2026-10-21 | Sam | Branch `rtl-changes`: 50 MHz sign-off, a timeout per thread, a hardware FIFO between the threads, the debug view, a second SRAM bank (1024 words), a capture engine (logic analyser), Manchester receive, a glitch filter, four threads; 158 tests |
 | 2026-11-05 | Muath, Sam | First free-running board test: a real LP-MSPM0G3519 against the core on PMOD JA, over 2600 passes of UART, I2C and SPI on the FPGA's count. SPI counted bytes no pass sent, which led to a firmware fix and different SPI bytes each way ([details](../external-mcu_testing.md)) |
 | 2026-11-06 | Muath, Sam | Firmware v3 on the board: UART and SPI pass at both ends, with both logs read. I2C is right on the wires; the MCU's own test turned out to be reading each byte a pass late, and was fixed. UART, SPI and I2C then passed at both ends on all 148 passes ([details](../external-mcu_testing.md)). Muath's earlier board run of all 67 C tests and Vivado's timing at 12 MHz were recorded, and the MCU test merged into `main` |
@@ -86,11 +86,10 @@ decisions that still explain the design are kept here.
 
 Open at the time: the scoring rubric, and who breaks ties on architecture.
 
-## 3. Competitor research
+## 3. The brief and prior art
 
-Moved to [research.md](research.md): the 24 Sep survey (5 entries, IHP
-prior art, ideas taken) and the 18 Oct update (about 55 entries, led by
-PRISM, Abagel-coder and TeslaCoilerOW, with updated recommendations).
+Moved to [research.md](research.md): what the brief asks for, the IHP prior
+art and the ideas taken from it, and the comparison with a RISC-V approach.
 
 ## 4. v1 plan and progress (24 Sep – 11 Oct)
 
@@ -193,9 +192,8 @@ Current state: [fpga.md](fpga.md).
 
 ## 8. Instruments (19 – 21 Oct)
 
-The survey (`research.md`) ranked what to take from other entries; the
-firmware-only items were done without touching the RTL, so the green GDS
-stands. They are described in [instruments.md](instruments.md).
+The firmware-only ideas were done first, without touching the RTL, so the
+green GDS stands. They are described in [instruments.md](instruments.md).
 
 * **Targets.** The SPI target answers in the byte right after the command
   although the address's last bit arrives on its last clock: it loads both
@@ -328,4 +326,4 @@ engine, Manchester receive and a glitch filter, more threads.
 `docs/shared/drc-analysis.md`; `docs/muath-friend/review.md` and
 `updates.md`; `docs/muath/` (three FPGA docs, merged into `fpga.md`). Their
 full text is in git at commit `4f14cf5`, e.g.
-`git show 4f14cf5:docs/sam/competitor-research.md`.
+`git show 4f14cf5:docs/sam/PLAN.md`.

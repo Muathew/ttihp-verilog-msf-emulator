@@ -82,6 +82,14 @@ are not errors: they are claims this machine cannot test.
 
 ## B. Not checked here (needs the other machine, CI, a board or a person)
 
+* **Update 18 Nov:** v4 ran on the AUP-ZU3 on 17 Nov at 12 MHz (bitstream built 03:13;
+  the HIL digest `boot_parallel_go 6F06A9E1 over 5366 steps` is v4's). The v3 board test
+  against the LP-MSPM0G3519 passed 304 of 304. The HIL suite passed 60 of 67; the seven
+  failures are the `cap_*` tests reading `CNT` while v4's two-flop reset release still
+  holds the core, a harness fault fixed in `8ffa5a2`, waiting for a rebuild of the `hil`
+  app. Since 17 Nov GitHub has started no CI job on this repository (an account limit on
+  Actions); Actions on a public repository are free.
+
 * **Update 15 Nov:** the four-macro floorplan and its power grid have now been hardened
   locally (WSL). The 13-14 Nov run shorted VPWR to VGND. Cells were stranded under the
   SRAMs, and their wires crossed the SRAMs' Metal4 supply columns. The SRAMs now sit on the

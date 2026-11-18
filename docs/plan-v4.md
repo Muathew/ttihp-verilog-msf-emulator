@@ -74,8 +74,8 @@ cycle or not at all.
 v4 complete, v4 without the last steps, v3 on 8x4 with the fixes, and at the bottom
 v2.2 as it is on `plan7` today, which already passes the shuttle's flow.
 
-**What I am not recommending:** a RISC-V core on the chip (§4), a second pipeline, a
-copy of MarcosAsh's on-chip certificate check, a host port in hardware, a PLL (§6.7).
+**What I am not recommending:** a RISC-V core on the chip (§4), a second pipeline, an
+on-chip check of each program's timing certificate, a host port in hardware, a PLL (§6.7).
 
 ## 1. What changed this week
 
@@ -139,25 +139,11 @@ quoting any of this in the write-up):
 Folded into this plan: `plan.md` 7.11 (bench) and 7.0 (public repository); `plan-v3.md`
 items 2, 7 and 8, which become §7 and §11 here, on 8x4 and on the v4 netlist.
 
-### 2.2 The field, re-read on 11 Nov
+### 2.2 Position, plainly
 
-As their READMEs state it, read through a page summariser. Re-read before quoting.
-
-| | Tiles; clock at the slow corner | Size | Programs | Hardware | Their strongest claim |
-|---|---|---|---|---|---|
-| MarcosAsh | 8x4; 48 MHz, +4.03 ns, hold +0.019 ns | 47,958 cells, 65.7 %, two cores, three 512x16 macros | 68 | ECP5 board: 21 demos pass, a USB keyboard among them | the chip walks each program against a timing certificate and refuses one it cannot check; a missed deadline releases the pins; a playground; 2,237 commits |
-| Escapement | 6x4; 50.8 MHz | 32,239 cells, 65.9 %, two macros, four contexts and a line unit | 64 | none; a bring-up script rehearsed against a simulated demo board with 22 injected faults | "never late" proved for every program, for all time; 558 planted timing bugs; mutation campaigns of 600-700 |
-| Wirelingo | 6x4; 50 MHz, +0.010 ns | two cores, two 256x32 macros, 1,647 flops and 1,024 latches | 68, and 21 after their freeze | KV260: USB low and full speed against Linux; ping through Linux's stack | USB full-speed device that enumerates; 10BASE-T both ways with ARP, ping and UDP echo; a MicroPython demo-board driver |
-| msfcore `plan7` | 6x4; 33 MHz, +3.62 ns | 17,245 cells, 46.5 %, two macros, four threads | 39 (79 on `v3`) | AUP-ZU3 and a real MSPM0: UART, SPI, I2C at 12 MHz | bus monitors that report each timing fault with its length; margin finder; interposer; pin finder; the honest account |
-
-### 2.3 Position, plainly
-
-The 7 Nov verdict stands: strong, not leading. About four designs are taped out and at
-least three entries are ahead of us on the things a judge sees first. Catching them
-feature for feature is not possible and would not win: they commit ten times as often.
-What can win is being clearly the best at something the brief asks for and none of them
-leads on, with no gap anywhere that lets a judge put us aside. That is what §0's five
-moves are for:
+About four designs are taped out. What can win is being clearly the best at something
+the brief asks for, with no gap anywhere that lets a judge put us aside. That is what
+§0's five moves are for:
 
 * gaps that get an entry put aside: v3 not signed off; nothing above 12 MHz on a board;
   no demo-board driver; assembly only; a write-up nobody can read in ten minutes;
@@ -170,26 +156,26 @@ moves are for:
 |---|---|---|---|
 | Flexibility: "reprogrammed for protocols it wasn't designed for" (the main thing) | 79 programs on v3; six drawn at random on an unchanged chip; a learner | nobody outside the project has written a protocol; assembly only; a synchronous slave tops out at clk/16; one engine pair for four threads; a 1.3 ms time horizon at 50 MHz | §6.4, §6.5, §9, §10 |
 | Protocols demonstrated | USB low speed, 10BASE-T transmit, CAN, JTAG, SWD and the rest in simulation with outside decoders; USB full speed and 10BASE-T receive on v3 | on a board only UART, SPI, I2C; 10BASE-T receive holds 10 ns of jitter, 802.3 asks 13.5 | §6.5, §11 |
-| Unique capabilities the architecture enables | the instrument firmware | nothing in the hardware that the leaders lack | §6.4, §6.5 |
-| Design and verification approach | independent model, random differential tests, formal with planted bugs, mutation, netlist = RTL, deadline checker, claims attacked | F16 unproved; four properties bounded; 40 mutants where rivals run 600-900; the checker's cost table is tested, not proved; no gate-level run with delays | §8 |
+| Unique capabilities the architecture enables | the instrument firmware | no hardware feature of our own yet | §6.4, §6.5 |
+| Design and verification approach | independent model, random differential tests, formal with planted bugs, mutation, netlist = RTL, deadline checker, claims attacked | F16 unproved; four properties bounded; 40 mutants; the checker's cost table is tested, not proved; no gate-level run with delays | §8 |
 | Write-up (weighed heavily; readability, new techniques explained) | honest and complete | long; no short path; never read cold by an outsider | §12 |
 | Sign-off | `plan7` passes the shuttle's flow | v3 and v4 do not exist as layouts; hold +0.08 ns | §7 |
 
-## 4. The extra area and the RISC-V entries
+## 4. The extra area and a RISC-V core
 
 **What 8x4 changes.** At 6x4, a 32-bit core with its memory and a timing engine barely
 fitted, so a small custom core was the natural design and ours used half its tiles.
 At 8x4 (about 1.225 mm² against 0.916 mm², a third more) area stops being a reason: a
-RISC-V core with engines and memory fits. Those entries bring C, a known instruction
+RISC-V core with engines and memory fits. Such a core brings C, a known instruction
 set and ready-made verification of the core. Area is not a judging criterion, so a
 design that leaves a third of the die empty earns nothing for it.
 
-**What a RISC-V entry does not get from its ISA.** A standard core's timing is a
+**What a RISC-V core does not get from its ISA.** A standard core's timing is a
 property of its pipeline and its memory, not of the instruction set, so exact pin
-timing has to come from engines beside it (PRISM's split). That is two machines to
+timing has to come from engines beside it. That is two machines to
 document, verify and program, and the brief's "tiny CPU with an instruction set
 designed for reading pins, writing pins, counting cycles, and hitting timing precisely"
-describes ours, not theirs.
+describes ours, not that split.
 
 **Decision proposed: no RISC-V core on the chip.** Reasons:
 
@@ -458,7 +444,6 @@ If it does not fit in 128 words, read-back goes first. Two working days.
 |---|---|
 | A RISC-V host core | §4 |
 | A second pipeline or core | throughput is not what limits any protocol we have measured; engines and timed pins are |
-| MarcosAsh's on-chip certificate walk | it is theirs, it took them months, and a copy would be judged as one; our answer is refusal at the pin (§6.4) and the late guard |
 | A host port in hardware (SPI slave into the SRAM) | the UART loader moves 2,048 words in about a tenth of a second at 50 MHz; the rest of its value (live memory access) is not worth a new block on the pins this late |
 | A PLL or any analog block | allowed, but unverifiable for us and the RP2350 already makes the clock |
 | 60 MHz as the target | clock is not a criterion; 48 and 50 MHz are what USB and Ethernet need |
@@ -521,7 +506,7 @@ registers (B4) and the synchronisers go next to them.
   routing (today +0.08 ns). Setup slack on the bench is recoverable; hold is not.
 * **Gate-level simulation with delays** (SDF) at the slow and fast corners for the boot,
   one UART program and one thread program. We have gate-level tests without delays;
-  the FAQ recommends gate-level simulation and Wirelingo shows SDF runs.
+  the FAQ recommends gate-level simulation.
 * **Unknown memory at power-up:** one gate-level run with the SRAM model filled with
   random words instead of zeros, to show nothing depends on a clean memory.
 * Then the existing chain: `tools/check_signoff.py` on the metrics, the precheck, the
@@ -576,8 +561,7 @@ are: the first draw's disagreement with a data sheet is the most convincing part
 Two or three people outside the project (course mates, a lab demonstrator) each write
 one protocol from the quick-start and `isa.md` alone, timed, with the playground. We
 publish the time taken, what they got wrong, and what we changed in the documents
-because of it. No rival shows a human newcomer; several show AI agents. An afternoon
-each.
+because of it. An afternoon each.
 
 ### 9.4 The envelope
 
@@ -636,7 +620,7 @@ We have a PC loader (`tools/msf_boot.py`) and nothing for the board the winners 
   view, single-step, run the self-test.
 * The same code runs on a PC against the RTL, with the board's pins as a cocotb model,
   so the bring-up is rehearsed before any chip exists, with faults planted (a stuck
-  pin, a wrong rate, a bad SRAM word), as Escapement does.
+  pin, a wrong rate, a bad SRAM word; the idea is Escapement's).
 * A bring-up document in stages: clock and reset; the debug view answers; the ROM
   answers; the memory test; the self-test firmware; loopbacks on Pmod jumpers; then the
   clock raised step by step to find the limit.
@@ -681,7 +665,7 @@ The FAQ: the write-up is weighed heavily, for readability and for how clearly ne
 techniques are explained.
 
 * **A ten-minute path.** The README becomes one screen: what it is, a diagram, the
-  three things no other entry has, a table of evidence with links, the limits, and
+  three things that set it apart, a table of evidence with links, the limits, and
   "try it" (the playground, one command for a demo). Everything else is behind links.
 * **One architecture document** with one diagram, written for someone who knows PIO and
   PRU: instruction costs as part of the ISA, the thread rotation, timed pins, engines,
@@ -746,7 +730,6 @@ On every rung §9 to §12 still happen: they do not depend on the RTL.
 | Muath's time for builds and the board | no build by 13 Dec | one build only, of the tagged RTL; the C tests in simulation stand in, and the write-up says which evidence is from which version |
 | The other machine or Docker fails again mid-run | as on 9 Nov | checkpoints; CI as the fallback for one run, asked first |
 | Usage limits cut a session | as on 7 Nov | the status table and the memory notes are kept current so the next session starts from them |
-| A rival ships the same idea first | their README | cite them; ours is still ours on a real board with a proof |
 | The write-up grows instead of shrinking | the README is more than a screen | the cold read decides |
 | We lose anyway | | every rung leaves a chip design and a method worth having; nothing here is done only for the judges |
 
@@ -755,8 +738,8 @@ On every rung §9 to §12 still happen: they do not depend on the RTL.
 For Sam, and Muath where named. My recommendation is first in each.
 
 1. **Scope.** v4 as in §6, with the ladder, or v3 on 8x4 with the fixes only (rung 4)
-   and all the time on §9-§12. I recommend v4: rung 4 alone leaves us behind three
-   entries with nothing in the hardware they lack.
+   and all the time on §9-§12. I recommend v4: rung 4 alone adds nothing new in the
+   hardware.
 2. **Base.** `v3`, on a new branch `v4`. `plan7` merges into `main` whenever Sam likes;
    it does not affect this.
 3. **8x4.** Yes: it is the shuttle's size, it costs nothing, and it eases routing.

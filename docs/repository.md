@@ -66,5 +66,5 @@ python tools/msf_boot.py firmware/uart_tx.s --port COM5   # load onto silicon
 | [v4 bugs](v4-bugs.md), [v4 open problems](v4-open-problems.md) | every bug found while building v4, with file references, and what could not be checked: written for review |
 | [FPGA port](fpga.md), [FPGA PS software](../fpga/ps/README.md) | AUP-ZU3 board mapping, build, status; the Zynq loader and C protocol tests |
 | [Test suite](../test/README.md) | running the cocotb tests |
-| [History](history.md), [Competitor research](research.md), earlier plans [v2.2](plan.md) and [v3](plan-v3.md) | decisions and problems as a log; other entries and prior art, dated |
+| [History](history.md), [The brief and prior art](research.md), earlier plans [v2.2](plan.md) and [v3](plan-v3.md) | decisions and problems as a log; what the brief asks for and prior art |
 | [GDS viewer](https://muathew.github.io/ttihp-verilog-msf-emulator/) | 3D view of the hardened layout (of v2.2) |

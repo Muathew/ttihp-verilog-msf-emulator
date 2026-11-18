@@ -485,9 +485,9 @@ replayed as one, and a table holds 511 changes.
 
 Point the logic analyser at a transmitter nobody documented. `msf_learn.py` works out how
 its bits are coded and what its frames hold, from the timing alone, and `msf_gen.py` turns
-that into firmware, so the chip can send a message the transmitter never sent. Escapement
-and openPIO have this too; the method (try several line codes, keep the one that writes the
-recording down in the fewest bits, refuse what fits none) is theirs, the code is ours.
+that into firmware, so the chip can send a message the transmitter never sent. The method
+(try several line codes, keep the one that writes the recording down in the fewest bits,
+refuse what fits none) follows Escapement's and openPIO's learners; the code is ours.
 
 * **Line codes:** pulse distance, pulse length, pulse width, Manchester and UART serial. A
   carrier under the marks is taken off first and remembered.
@@ -525,9 +525,8 @@ recording down in the fewest bits, refuse what fits none) is theirs, the code is
 **Limits.** Single-wire, self-timed codes. Clocked buses, conversations and generated
 receivers are not done. On real recordings, about one claim in five is wrong (above). The plan's
 step 5, the measured spread of each symbol driving the margin finder, is not done. Manchester's bit polarity is a convention the waveform can't settle.
-A recording is limited by §11. The first version failed many of its random tests in the
-ways Escapement's did: runs of equal symbols read as a carrier, chains of near lengths read
-as symbols. Each is fixed by a rule, not a special case, and the tests stay.
+A recording is limited by §11. The first version failed many of its random tests in two
+ways: runs of equal symbols read as a carrier, chains of near lengths read as symbols. Each is fixed by a rule, not a special case, and the tests stay.
 
 ## 13. Flight recorder — `firmware/flight_*.s`, `flight.inc` (`test_flight.py`)
 
@@ -569,9 +568,9 @@ It found an error in the test that checks it: the arithmetic said 77 cycles for 
 receiver, and the chip said 76, which is right, since the stop sample may land in the idle line
 after the stop bit.
 
-Every edge is on the cycle counter, so a phase is exactly the value swept. MarcosAsh's
-`demo/margins.py` sweeps real parts past their datasheet limits with a Pico, a logic analyser
-and a PC; this needs none of them. A device that answers nothing reports `lo = 0`.
+Every edge is on the cycle counter, so a phase is exactly the value swept. The idea follows
+MarcosAsh's `demo/margins.py`, which sweeps real parts with a Pico, a logic analyser and a PC;
+here the chip does it alone. A device that answers nothing reports `lo = 0`.
 
 **Limits.** A step is one core cycle, 83 ns at 12 MHz, about 1 % of a bit at 115200 baud.
 `SWEEP_LO` must leave time for the bit loop: the checker refuses less. I2C clock stretching
@@ -622,8 +621,7 @@ Every one also passes its own test on the RTL, against a peer that checks the sp
 timing (the test files list what each checks). The times run from the first line written to the
 decoder's verdict; the specifications of SDA 2506, EM4100 and CEC were looked up before, about ten
 minutes together. CEC's 31 minutes include two 10-minute simulations (0.55 s of bus, 6.4 million
-cycles), during which S/PDIF and SDA 2506 were written. MarcosAsh's blind runs took 24 to 68
-minutes each.
+cycles), during which S/PDIF and SDA 2506 were written.
 
 **What went wrong, and what the sources disagreed on.**
 * EM4100: my bug, an `AND` followed by `JZ`. `AND` sets no flags, so the branch read a stale Z and
