@@ -359,3 +359,100 @@ and Wirelingo an I2C sniffer. What we did not find in their documents is what
 ours does: monitors for UART, I2C and SPI that run on the chip and report each
 timing fault with its length. FIPE has the idea but no formal proofs or board
 run, and has not pushed since 22 Oct.
+
+## Update of 18 Nov 2026
+
+Written for: the team, reading the repository. GitHub search for "protocol
+emulator" and "jane street asic" finds about 70 repositories with real names;
+about 50 were pushed after 7 Nov and about 10 today. The claims are as each
+entrant states them in its README or `info.yaml` (read 18 Nov), not checked by
+us. Only the tile count and clock are read from `info.yaml`.
+
+| Entry | Tiles; clock in `info.yaml` | Pushed | What changed since 7 Nov, or what stands out |
+|---|---|---|---|
+| [MarcosAsh](https://github.com/MarcosAsh/protocol-emulator) | 8x4; 48 MHz | 18 Nov | Unchanged claims: a program that cannot be certified does not start; 127 of 128 mutants; ECP5 demos |
+| [Escapement](https://github.com/parthDOOM/escapement) | 8x4 (was 6x4); 25 MHz (was 50) | 18 Nov | Retiled to 8x4; description now says 71 programs; "never late" proved for all programs |
+| [Loom](https://github.com/thomasgilbert481/tt_um_loom) | 8x4; 50 MHz | 18 Nov | 26 programs, 13 of them written after the hardware was frozen for protocols it was not designed for (NEC IR, 1-Wire, LIN, HDLC, Wiegand, DMX512, DShot): the "new protocols after fabrication" point, shown |
+| [openPIO](https://github.com/theotacconi/openPIO) | 8x4; 50 MHz (was 42) | 18 Nov | 24 protocols, each tested on its pins against a reference device written from the spec; a logic analyser; Tang Nano bring-up next |
+| [Wirelingo](https://github.com/josusanmartin/wirelingo) | 8x4 (was 6x4); 48 MHz | 17 Nov | Checked on 16 Nov at STA, gate level, precheck and formal equivalence; "FPGA is not silicon" |
+| [ProEm](https://github.com/Vertrex-star/ProEm-Open-Source-Protocol-Emulator) | 6x4; 50 MHz | 18 Nov | Frame engine for an RP2040 host, ISA v0.7.1, design reference PDF |
+| [pivotvlsi](https://github.com/pivotvlsi/jane_street_asic_protocol_emulator) | 8x4; 50 MHz in `info.yaml`, 100 MHz in the README | 18 Nov | Four 8-bit accumulator cores; the README and `info.yaml` disagree on the clock |
+| [RISC-M/COMMS-M](https://github.com/RISC-M/COMMS-M) | 8x4; 50 MHz | 18 Nov | New. Dual core, transport-triggered architecture |
+| [MikeKovetsky/protoemu](https://github.com/MikeKovetsky/protoemu) | 8x4; 60 MHz | 17 Nov | New. Built by an AI agent in a scored loop |
+| [Sarkar22/pe-asic](https://github.com/Sarkar22/pe-asic) | 8x4; 50 MHz | 17 Nov | New in this table; logs cited 6 Nov for the 8x4 confirmation |
+| [Kanishk234 (TRIPWIRE)](https://github.com/Kanishk234/protocol-emulator-asic) | 8x4; 50 MHz | 18 Nov | Not re-read; was a placeholder on 7 Nov |
+| msfcore (ours) | 8x4; 48 MHz target, signed off at 33 MHz (30 ns) | 17 Nov | See below |
+
+Our `info.yaml` says 8x4 (`tiles`, line 11), with the comment "8x4 is the
+shuttle's final size (Jane Street, 11 Nov 2026)". Its clock line (line 8) gives
+48 MHz and calls it a target, not signed off.
+
+What changed in the field:
+
+* **8x4 is now the common size.** Eight of the strongest entries declare it.
+  Area is not a judging criterion, so 8x4 no longer sets us apart.
+* **Formal and proof claims have spread.** MarcosAsh (kernel proved against the
+  RTL, netlist equal to RTL), Escapement (unbounded "never late" and gate-level
+  equivalence), Loom (per-thread isolation proved, 911 mutants), Wirelingo (Lean
+  proofs and a Hardcaml port proved equal). Ours are bounded (depth 16) on v2.
+* **"New protocols after fabrication" is shown.** Loom and openPIO both show it;
+  we have not.
+* **Clocks are higher.** Rivals claim 42 to 60 MHz. We sign off at 33 MHz
+  (30 ns). The 15 Nov layout has +8.90 ns of setup slack at the slow corner,
+  so its worst path is about 21 ns (about 47 MHz), but no run has been
+  constrained tighter than 30 ns. The "50 MHz sign-off" of 21 Oct (branch
+  `rtl-changes`, never merged) was withdrawn on 23 Oct: its slow corner had
+  been timed with the typical SRAM library (`ai.md`).
+* **10BASE-T receive** is in MarcosAsh and Wirelingo, and in Escapement's
+  description. We have transmit only.
+
+Where we stand: still strong, not leading, and the gap has grown on proofs
+and clock. The claim that is still ours is the instrument story:
+on-chip monitors that report every timing fault with its length, and exact
+timing-fault injection. Escapement's capture and `EXPECT` windows and Wirelingo's
+I2C sniffer come close, and MarcosAsh's margin sweep is a bench tool we don't
+have. Protocol breadth is level with the leaders (79 programs in the README
+against 68 to 71). Two corrections to our own tables: the 7 Nov row for
+msfcore's firmware says 22 programs, and the repository has 79; and the 18 Oct
+text that says 8x4 "doesn't comply" is out of date.
+
+Our CI, read on 18 Nov:
+
+* **The GDS run of 15 Nov failed** at its Magic DRC step (416,536 errors, all
+  inside SRAM footprints; `sram-power-integration.md` §7). It also hit the
+  artifact quota. The shuttle's own KLayout deck passes with 0 items, so the
+  sign-off is not in doubt, but CI is red, and the precheck, gate-level and
+  viewer jobs did not run in CI.
+* **The newest v4 push (`8ffa5a2`, 17 Nov 07:02) failed `formal`, `docs` and
+  `test` in about 4 seconds with no steps run.** The job log is not available
+  through the API, so the cause is not known. Check the workflow file and the
+  account's Actions settings before anything else.
+* **README and commit text overstate this.** The README's evidence row says the
+  CI GDS run gives "same results" as the local hardening, and `405f022` says the
+  CI GDS run "matches the local hardening". CI did not confirm either.
+* **Formal on v4:** BMC depth 16 was green at `e92524b` (12 Nov). The `ni`
+  target and the unbounded proof have not been run on v4.
+* **Board:** v4 ran on the AUP-ZU3 on 17 Nov at 12 MHz (bitstream built
+  03:13; the HIL digest `boot_parallel_go 6F06A9E1 over 5366 steps` is v4's).
+  The v3 board test against the LP-MSPM0G3519 passed 304 of 304, guard checks
+  included. The HIL suite passed 60 of 67; the 7 failures are the `cap_*`
+  tests reading CNT while v4's two-flop reset release still holds the core,
+  a harness fault fixed in `8ffa5a2` and waiting for a rebuild of the `hil`
+  app. The README's "v4 is not built on the board" is out of date.
+
+Recommended next, ranked by what a judge sees first:
+
+1. Find out why the 17 Nov runs failed in 4 seconds, and make CI green. Turn off
+   `RUN_MAGIC_DRC` in the GDS config (the shuttle's precheck already does) so the
+   GDS job reaches the checks that matter.
+2. Correct the README evidence row and the `405f022` claim until a CI GDS run is
+   green.
+3. Show new protocols after fabrication: write three programs for protocols not
+   on our list (NEC IR, DShot, Wiegand or DMX512) with no RTL change, and record
+   them in `instruments.md` the way Loom does.
+4. Run the unbounded `ctrl` proof and the `ni` target on v4, so the proof claim
+   is not behind the others.
+5. Choose the clock. The 15 Nov layout's slack points at about 47 MHz, so a
+   run at 21 ns (or the plan's 18 ns place-and-route, 20 ns sign-off) is the
+   one that settles 48 or 50 MHz. Until one passes, `info.yaml` should give
+   the signed-off rate. The judges read `info.yaml`.
