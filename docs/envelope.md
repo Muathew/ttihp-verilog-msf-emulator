@@ -1,8 +1,8 @@
 # The envelope: how fast each class of protocol goes, and what sets the limit
 
 Limits are in clock cycles, so they do not depend on the clock; the last column converts to a rate at
-50 MHz, the clock v3 and v4 aim at (the chip's own limit is a sign-off question, not settled: see
-[`plan-v4.md`](plan-v4.md) item 7). Every number is from a test in this repository, named in the
+50 MHz, the clock v4 is signed off at in every corner (20 ns, 19 Nov: [`plan-v4.md`](plan-v4.md)
+item 7). Every number is from a test in this repository, named in the
 last column, or says "not measured". This table is made by hand from those tests: the sweep script the
 plan wanted to generate it in CI is not built.
 

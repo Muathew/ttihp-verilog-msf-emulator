@@ -4,9 +4,10 @@
 
 A 16-bit CPU for pins and time, for IHP SG13CMOS5L on Tiny Tapeout (8x4 tiles, 24 digital pins).
 Protocols are firmware, loaded over UART or a parallel port after fabrication. Entry for the Jane
-Street protocol emulator ASIC competition. **This branch is v4: hardened on 8x4 (30 ns in every
-corner), formally checked to depth 16 in CI and run on an FPGA board at 12 MHz. Not yet: a 50 MHz
-sign-off, and 18 of the controller's 86 assertions are proved to depth 16 only** ([what is shown on which version](#evidence)).
+Street protocol emulator ASIC competition. **This branch is v4: signed off on 8x4 at 50 MHz (20 ns)
+in every corner, formally checked to depth 16 in CI and run on an FPGA board at 12 MHz. Not yet:
+gate-level simulation with delays, and 18 of the controller's 86 assertions are proved to depth 16
+only** ([what is shown on which version](#evidence)).
 
 One chip plays the device, drives the bus, watches it and breaks it on purpose: an SPI flash or I2C
 EEPROM, a JTAG or SWD probe, a monitor that reports every timing fault with its length, a margin
@@ -51,23 +52,25 @@ additions ([envelope](docs/envelope.md): how fast each class of protocol goes, f
 | Claim | Evidence | Shown on |
 |---|---|---|
 | The RTL does what [`isa.md`](docs/isa.md) says | the model against the RTL on every issue of random programs, timed windows and both engine sets included | v4 RTL, simulation, 11 Nov |
-| The protocols work | 319 cocotb tests in 77 modules, peers written from the standards (three tests failed in the 11 Nov run and were fixed: [v4-bugs](docs/v4-bugs.md)) | v4 RTL, simulation |
+| The protocols work | 325 cocotb tests in 79 modules, peers written from the standards: all pass (19 Nov, the signed-off RTL; three failed in the 11 Nov run and were fixed: [v4-bugs](docs/v4-bugs.md)) | v4 RTL, simulation |
 | An edge leaves on its cycle | `test/test_timed_pins.py`: jitter 0 with 1 to 4 threads, one stalled, one loading | v4 RTL, simulation |
 | Deadlines are met | `tools/msf_timing.py --all`; CI also compares it with the RTL | v4 firmware, the checker |
 | Formal properties hold | the formal properties in CI ([verification](docs/verification.md)) | v4 (12 Nov, CI): bounded check to depth 16 passes on the controller, the capture engine and the top level, 18 of 18 planted bugs caught; F16's planted bug shown on v4 (13 Nov). For all time (18 Nov, CI, controller): 68 of 86 assertions proved; the other 18 (F17's timed pins, F3's timeouts, F8) hold to depth 16 only |
-| The layout meets timing | CI sign-off job | v2.2 on 6x4: 30 ns in every corner. v4 on 8x4: hardened on 15 Nov, locally and on CI (same results): 30 ns in every corner, routing DRC and LVS clean, TT precheck and the 5 gate-level tests passed (run locally) ([SRAM power fix](docs/sram-power-integration.md)) |
+| The layout meets timing | CI sign-off job | v2.2 on 6x4: 30 ns in every corner. v4 on 8x4 (19 Nov, CI 44499734618): **20 ns (50 MHz) in every corner**, setup slack +3.36 ns at the slow corner (1.08 V, 125 °C), hold +0.26 ns; routing DRC, antenna and LVS clean; TT precheck, the gate-level tests (zero delay) and netlist = RTL pass. First hardened on 15 Nov at 30 ns ([SRAM power fix](docs/sram-power-integration.md)) |
 | It runs on real hardware | AUP-ZU3 FPGA: 67 of 67 C protocol tests; free-running against an LP-MSPM0G3519: UART, SPI, I2C, 148 of 148 passes at 12 MHz | v2.2 core. v4 (17 Nov, 12 MHz): 304 of 304 passes in the board test against the LP-MSPM0G3519; 60 of 67 C tests, the 7 failures a test-harness fault, fixed and waiting for a rebuild ([open problems](docs/v4-open-problems.md) B) |
 
 ## Limits
 
-* v4 signs off at 30 ns (33 MHz). The 48 MHz in `info.yaml` is a target that no run has tried
-  ([open problems](docs/v4-open-problems.md) B).
+* v4 signs off at 20 ns (50 MHz), which covers the 48 MHz in `info.yaml` (USB full speed at 4
+  cycles a bit). Not run at that speed: gate-level simulation with delays, and any board run above
+  12 MHz ([open problems](docs/v4-open-problems.md) B).
 * Pad speed is unknown: there is no CMOS5L silicon. [`envelope.md`](docs/envelope.md) says which
   limits are logical (one bit a cycle) and which depend on the pads.
 * The board's C tests step the core one clock at a time; only the MCU test runs it free, at 12 MHz.
 * Firmware is assembly, or `msfc` (one thread, 16-bit values, no functions).
 * Planned and not built: half-cycle sampling, the fractional divider, the ROM's read-back and memory
-  test, the demo-board driver ([plan v4](docs/plan-v4.md) has the status of every item).
+  test ([plan v4](docs/plan-v4.md) has the status of every item). The demo-board driver (`host/`) is
+  a first cut: it runs against the RTL in simulation, not yet on a board.
 * Programs are at most 2,048 words, data included. Not a RISC-V core, by decision.
 
 ## Try it

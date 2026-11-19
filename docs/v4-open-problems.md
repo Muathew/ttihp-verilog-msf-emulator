@@ -82,7 +82,13 @@ are not errors: they are claims this machine cannot test.
   `RUN_POST_GRT_RESIZER_TIMING` were also still off (`plan.md` 1.2 step 1 asked for them).
   dfa4c86 (`rom-areg`) sets `LAYERS_RC` to 1.95 x the LEF capacitance and turns both on;
   CI 44499734618 runs it, and CI 44499740319 runs the calibration alone (branch
-  `rom-areg-rc`, to be deleted). Neither had finished when this was written.
+  `rom-areg-rc`). **Both passed** (finished 12:30 UTC). With all three settings: setup slack
+  slow +3.36 ns, typical +9.69, fast +12.84; hold +0.26 ns at the fast corner; routing DRC,
+  antenna and LVS clean; precheck, `gl_test`, `check_signoff.py` and `netlist_equiv.py` pass.
+  The calibration alone: slow +1.45 ns, hold +0.25. `rom-areg` (with `clk50`) is merged into
+  `v4` and `main`, and `rom-areg-rc` is deleted. **50 MHz is closed.** Magic's DRC reports
+  416,536 errors in every run since 18 Nov (188,488 on 7 Nov): a warning in this flow, whose
+  DRC gate is the KLayout precheck, which passes.
 
 * **Update 19 Nov: the MCU build's stream check.** In the 17 Nov MCU console log
   (`v3_board_mcu_console.log.txt`, from line 757; `*.log.txt` is not committed) every USB
@@ -115,12 +121,13 @@ are not errors: they are claims this machine cannot test.
   precheck: no flow runs here.~~ **Confirmed by runs since:** the four macros at x = 42,
   452.6, 863.2, 1273.8 um (15 Nov, above); the hold margin (+0.31 ns at the fast corner,
   CI 44379389831, from the post-CTS margin of 0.3; the 0.25 after global routing was unused
-  until dfa4c86 turned that repair on); the TT precheck (passed locally, 15 Nov). **Still
-  open:** 50 MHz (above); the CI precheck, `gl_test` and `viewer` jobs, skipped in every GDS
-  run so far because the GDS job before them failed; the false path from `ui_in*` to
+  until dfa4c86 turned that repair on; +0.26 ns at 50 MHz); the TT precheck (passed locally,
+  15 Nov); 50 MHz, with CI's precheck, `gl_test` and `viewer` jobs passing for the first time
+  on v4 (19 Nov, above). **Still open:** the false path from `ui_in*` to
   `uo_out*` in `src/pnr.sdc` and `src/signoff.sdc` (the debug-view select, B7) is still
   declared from the RTL, not checked against a timing report.
-* Gate-level simulation with delays (SDF): needs the 50 MHz netlist.
+* Gate-level simulation with delays (SDF): not run. The 50 MHz netlist and its SDF files are
+  in CI 44499734618's artifacts (19 Nov).
 * A board run above 12 MHz (Muath); the repository is public (18 Nov); CI GDS runs need
   Sam's go-ahead (plan section 7.3); the bench session and video (section 11).
 * `firmware/spi_flash.s` moved its store to SRAM 1536-2047 (`v4-bugs.md` F1). Two things use

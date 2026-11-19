@@ -34,7 +34,7 @@ generic building blocks that firmware composes into protocols.
 | Capture engine | a logic analyser: records 8 pins into an SRAM ring buffer every *n* cycles (two samples a word, or a word per change with its time), level or edge trigger with pre-trigger history, using only data-RAM cycles the core leaves free |
 | Pins | `uio[7:0]` with per-bit set/clear/toggle/write of OUT and OE (open drain = OE), `uo_out[7:0]` written by firmware, `ui_in[7:0]` readable; all inputs pass a 2-flip-flop synchroniser; an optional glitch filter per `uio` pin removes pulses shorter than 1-15 cycles |
 | Identity (v4) | `ESEL #6` then `PR`: chip ID `MS`, ISA version, capability bits, and the high half of a 32-bit cycle counter; a v2.2 or v3 chip reads 0, so a host tool can tell the generations apart |
-| Clock | up to 33 MHz in every corner (signed off at 30 ns, slow corner 1.08 V 125 °C included); 50 MHz at the typical corner. The demos run at 12 or 20 MHz (`docs/verification.md` §7) |
+| Clock | up to 50 MHz in every corner (signed off at 20 ns, slow corner 1.08 V 125 °C included, with 3.36 ns to spare there); `info.yaml` asks for 48 MHz, USB full speed at 4 cycles a bit. The demos run at 12 or 20 MHz (`docs/verification.md` §7) |
 | Power | about 1.8-2.1 mW at 12.5 MHz (typical corner, estimated from the routed netlist with a gate-level workload; `docs/verification.md` §7b) |
 
 ### Timing model (what makes bit-banging exact)
@@ -92,9 +92,8 @@ must not leave bit 2 high while `rst_n` is low.
 
 The demos' timing constants are set for the clock in the table below; at
 another clock, scale each program's timing defines (e.g. `BIT`). No demo
-needs more than 20 MHz. The design is signed off at 33 MHz (30 ns) in
-every corner, including the slow one (1.08 V, 125 °C), and meets 50 MHz at
-the typical corner (`docs/verification.md` §7). The boot ROM's UART loader is 115200 baud only
+needs more than 20 MHz. The design is signed off at 50 MHz (20 ns) in
+every corner, including the slow one (1.08 V, 125 °C) (`docs/verification.md` §7). The boot ROM's UART loader is 115200 baud only
 at 12 MHz (its rate scales with the clock); the parallel loader works at
 any clock.
 
@@ -106,15 +105,17 @@ the page selected by `ui_in[1]`: any thread's registers, the PC and word of
 the last instruction issued,
 flags, stall state, `CNT`, `SR`, the pin registers and the FIFO (full table
 in `docs/isa.md` §8). The select works without a clock edge, so with the
-demo board's RP2040 clocking the chip one cycle at a time you can halt,
-single-step, stop at a PC and read every register.
+demo board's RP2350 clocking the chip one cycle at a time you can halt,
+single-step, stop at a PC and read every register. `host/tt_board.py`
+(MicroPython on the demo board) does this, and loads programs through the
+parallel or UART loader; it runs against the RTL in simulation, not yet on a board.
 
 ## How to test
 
 1. Assemble a demo from `firmware/` (or your own program) with
    `test/assembler.py`, and load it with `tools/msf_boot.py` over a 3.3 V
    USB-UART on `uio[1]` (RX) / `uio[0]` (TX), with `ui_in[1:0] = 00` at reset.
-   With the demo board's RP2040 you can use the parallel loader instead
+   With the demo board's RP2350 you can use the parallel loader instead
    (`ui_in[1:0] = 10`, strobe on `uio[1]`).
 2. The demos (all checked in simulation at the pins by `test/test_firmware.py`):
 
@@ -147,14 +148,14 @@ single-step, stop at a PC and read every register.
    and high, SCK high and low.
 
 4. In simulation: `cd test && make` (or `python run_tests.py --all` on
-   Windows) runs 191 cocotb tests including a random differential check of
+   Windows) runs 325 cocotb tests including a random differential check of
    the RTL against an independent ISA model; `python formal/run_formal.py`
    runs the formal properties; `python tools/mutation.py` measures how many
    seeded RTL faults the tests catch (37 of 40; the three left cannot change behaviour).
 
 ## External hardware
 
-* USB-UART adapter (3.3 V) for loading firmware, or the TT demo board's RP2040.
+* USB-UART adapter (3.3 V) for loading firmware, or the TT demo board's RP2350.
 * Pull-up resistors (e.g. 4.7 kOhm) for I2C on `uio[5]`/`uio[6]`.
 * USB low speed: 1.5 kOhm pull-up on D- (device side) and series resistors.
 * 10BASE-T: TD+/TD- through a resistor network into an Ethernet magnetics
