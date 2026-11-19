@@ -41,38 +41,65 @@ are not errors: they are claims this machine cannot test.
   comparison. If a property is too strong, the F17 ghost is in `tt_um_msf_ctrl.v` under
   `// F17 (v4)`.
 
-### A2. The artifact store was full (cleared 12 and 15 Nov)
+### A2. The artifact store was full (cleared 12 and 15 Nov), then no CI at all (resolved 18 Nov)
 * **What:** CI's uploads failed with `Failed to CreateArtifact: Artifact storage quota has
   been hit`, so the `docs` workflow and the GDS job were marked failed after the flow itself
   had finished (the 15 Nov GDS run matched the local hardening: `sram-power-integration.md`
   §8.2). The `test` workflow's uploads cannot fail the job (`v4-bugs.md` I6).
 * **Cleared:** 308 old artifacts (6.2 GB) on 12 Nov, the remaining 16 on 15 Nov.
-* **Still open:** since 17 Nov GitHub has started no job on the repository (an account limit
-  on Actions); Actions on a public repository are free. Each hardening run adds about
-  230 MB of artifacts, so set the artifact retention (Settings, Actions, General) to a week
-  or two.
+* **Resolved 18 Nov:** from 17 Nov GitHub started no job on the repository (an account limit
+  on Actions). The repository went public on 18 Nov, where Actions are free, and CI has run
+  since: `docs`, `test` and `formal` pass on `main` at fa8bcfc, and GDS runs upload their
+  logs again (CI 44379389831). Still worth doing: each hardening run adds about 230 MB of
+  artifacts, so set the artifact retention (Settings, Actions, General) to a week or two.
 
 ### A3. Long runs left for later (12 Nov: the session had an hour, Sam asked for no long runs)
 * **Formal to depth 16:** done by CI instead, green at e92524b (`v4-bugs.md`, "State on
-  12 Nov"), so a local rerun is not needed. Still not run anywhere on v4: the `ni` target
-  (F16, `formal/run_formal.py --engine abc --depth 16 --top ni`, hours) and the unbounded
-  proof of the controller (`--prove --prove-timeout 3600 --top ctrl --no-mutants`).
+  12 Nov"), so a local rerun is not needed. **The unbounded proof of the controller ran on
+  18 Nov** (CI 44363125574, `--prove --prove-timeout 3600 --top ctrl --no-mutants`): 68 of
+  86 assertions proved for all time; F17's timed pins (12), F3's timeouts (5) and F8 (1) are
+  open, with no counterexample, when the hour runs out (the job is then marked failed). They
+  need helper invariants. Still not run anywhere on v4: the unmutated `ni` target (F16,
+  `formal/run_formal.py --engine abc --depth 16 --top ni`, hours).
 * **The full cocotb suite (319) and the pure-Python tests** after the 12 Nov edits: not run
   locally. What ran: the modules each edit touches (`test_nes_pad`, `test_mcu_v3_peer`, the
   new `test_site.py` tests). CI's `test` workflow on the push runs all of it, plus the
-  deadline cross-check.
+  deadline cross-check. **18 Nov:** it passes on `main` at fa8bcfc and on `rom-areg`.
 
 (more entries are added below as they come up)
 
 ## B. Not checked here (needs the other machine, CI, a board or a person)
+
+* **Update 19 Nov: 50 MHz.** Two CI runs at sign-off 20 ns, place and route 18 ns, on 18 Nov.
+  CI 44351742340 missed at the slow corner by 1.40 ns on 16 paths through the boot ROM's
+  lookup; the ROM now registers its address (784a270). Its run, CI 44379389831, missed by
+  0.02 ns on one path (`u_ctrl.cur` through `per_we` to serdes 1's receive register, 16 of
+  whose bits are within 0.6 ns); typical +7.35, fast +11.74, hold +0.31, LVS and antenna
+  clean. **Cause:** every estimate before extraction used the tech LEF's 0.092 fF/um, and
+  extraction gives 0.18 (11,423 routed nets: slope 0.179 fF/um). Post-CTS repair therefore
+  saw no setup violation at 18 ns, added 5,505 hold buffers (1.33 ns of them on that path)
+  and no setup buffers; the routed path came to 20.02 ns. `PL_TIMING_DRIVEN` and
+  `RUN_POST_GRT_RESIZER_TIMING` were also still off (`plan.md` 1.2 step 1 asked for them).
+  dfa4c86 (`rom-areg`) sets `LAYERS_RC` to 1.95 x the LEF capacitance and turns both on;
+  CI 44499734618 runs it, and CI 44499740319 runs the calibration alone (branch
+  `rom-areg-rc`, to be deleted). Neither had finished when this was written.
+
+* **Update 19 Nov: the MCU build's stream check.** In the 17 Nov MCU console log
+  (`v3_board_mcu_console.log.txt`, from line 757; `*.log.txt` is not committed) every USB
+  pass reads `stream 3647/3456 cycles -> PASS`: 3,647 cycles measured for 108 words of 32.
+  The repository's `gapless()` (`mcu_ext/protocol_tests/v3_test.c` line 238) allows
+  3,456 + 1 % + 4 words = 3,618 and would print NOT VALID. So the build that ran had a wider
+  `gapless()` than the repository and `origin/v4`. Muath: commit the `gapless()` that ran,
+  with the reason for the slack (the extra 191 cycles are about 6 words), or rerun with the
+  repository's, so the 304 of 304 in the README is reproducible.
 
 * **Update 18 Nov:** v4 ran on the AUP-ZU3 on 17 Nov at 12 MHz (bitstream built 03:13;
   the HIL digest `boot_parallel_go 6F06A9E1 over 5366 steps` is v4's). The v3 board test
   against the LP-MSPM0G3519 passed 304 of 304. The HIL suite passed 60 of 67; the seven
   failures are the `cap_*` tests reading `CNT` while v4's two-flop reset release still
   holds the core, a harness fault fixed in `8ffa5a2`, waiting for a rebuild of the `hil`
-  app. Since 17 Nov GitHub has started no CI job on this repository (an account limit on
-  Actions); Actions on a public repository are free.
+  app. (CI was stopped by an account limit from 17 Nov until the repository went public on
+  18 Nov: A2.)
 
 * **Update 15 Nov:** the four-macro floorplan and its power grid have now been hardened
   locally (WSL). The 13-14 Nov run shorted VPWR to VGND. Cells were stranded under the
@@ -84,14 +111,18 @@ are not errors: they are claims this machine cannot test.
   were run locally instead: 5 of 5 pass, `test_gl_spi_flash` included (section 8.3 of that
   document).
 
-* Hardening, timing sign-off, hold margins, the four-macro floorplan and its power grid, the
-  precheck: no flow runs here. `src/config.json` has hold margins 0.3 / 0.25 ns (B9) and four
-  macros at x = 42, 452.6, 863.2, 1273.8 um (8 um apart; plan section 7.2) that no run has
-  confirmed. `src/pnr.sdc` and `src/signoff.sdc` have a false path from `ui_in*` to `uo_out*`
-  (the debug-view select, B7) declared from the RTL, not from a timing report.
-* Gate-level simulation with delays (SDF): needs a hardened netlist.
-* Vivado build and board run of v4 (Muath); the repository is private (Muath makes it public);
-  CI GDS runs need Sam's go-ahead (plan section 7.3); the bench session and video (section 11).
+* ~~Hardening, timing sign-off, hold margins, the four-macro floorplan and its power grid, the
+  precheck: no flow runs here.~~ **Confirmed by runs since:** the four macros at x = 42,
+  452.6, 863.2, 1273.8 um (15 Nov, above); the hold margin (+0.31 ns at the fast corner,
+  CI 44379389831, from the post-CTS margin of 0.3; the 0.25 after global routing was unused
+  until dfa4c86 turned that repair on); the TT precheck (passed locally, 15 Nov). **Still
+  open:** 50 MHz (above); the CI precheck, `gl_test` and `viewer` jobs, skipped in every GDS
+  run so far because the GDS job before them failed; the false path from `ui_in*` to
+  `uo_out*` in `src/pnr.sdc` and `src/signoff.sdc` (the debug-view select, B7) is still
+  declared from the RTL, not checked against a timing report.
+* Gate-level simulation with delays (SDF): needs the 50 MHz netlist.
+* A board run above 12 MHz (Muath); the repository is public (18 Nov); CI GDS runs need
+  Sam's go-ahead (plan section 7.3); the bench session and video (section 11).
 * `firmware/spi_flash.s` moved its store to SRAM 1536-2047 (`v4-bugs.md` F1). Two things use
   it. The gate-level `test/test_gl_firmware.py::test_gl_spi_flash` (it now preloads at
   `FLASH` from `test_targets.py`) **passed on 15 Nov** on the 8x4 netlist. Not run here: the FPGA's C test
