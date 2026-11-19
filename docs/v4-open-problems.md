@@ -126,8 +126,11 @@ are not errors: they are claims this machine cannot test.
   on v4 (19 Nov, above). **Still open:** the false path from `ui_in*` to
   `uo_out*` in `src/pnr.sdc` and `src/signoff.sdc` (the debug-view select, B7) is still
   declared from the RTL, not checked against a timing report.
-* Gate-level simulation with delays (SDF): not run. The 50 MHz netlist and its SDF files are
-  in CI 44499734618's artifacts (19 Nov).
+* Gate-level simulation with delays (SDF): **run 19 Nov** (`test/run_gl_sdf.py`, locally, on CI
+  44499734618's netlist and SDF at 20 ns): 5 of 5 at the slow and fast corners and with random
+  SRAM contents (`verification.md` §7). Still open: Icarus runs no setup or hold checks, so a
+  violation shows only if it changes what the pins do; and the runs are local, not in CI (the
+  annotation alone takes about 25 minutes a corner).
 * A board run above 12 MHz (Muath); the repository is public (18 Nov); CI GDS runs need
   Sam's go-ahead (plan section 7.3); the bench session and video (section 11).
 * `firmware/spi_flash.s` moved its store to SRAM 1536-2047 (`v4-bugs.md` F1). Two things use

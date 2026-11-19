@@ -213,7 +213,9 @@ def main():
         results_xml=str(build / "results.xml"), log_file=str(build / "test.log"),
     )
     tlog = (build / "test.log").read_text(errors="replace")
-    sdf_errors = [l for l in tlog.splitlines() if l.startswith("SDF ")
+    # Icarus's messages and cocotb's log share the file and can interleave mid-line, so only
+    # "SDF ERROR" counts (a warning never does), and a known one anywhere on its line is benign.
+    sdf_errors = [l for l in tlog.splitlines() if "SDF ERROR" in l
                   and not any(b in l for b in BENIGN)]
     states = {}
     for t in ET.parse(results).iter("testcase"):

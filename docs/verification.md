@@ -373,6 +373,24 @@ on the netlists of run 40085473871 and local run F. The UART test found a real b
 boot ROM let `uio[0]` go low for one cycle when it handed over, which a
 receiver takes as a start bit (fixed in 6ea46bd).
 
+**Gate-level tests with delays** (`test/run_gl_sdf.py`, v4, 19 Nov). The same five tests on the
+netlist of CI 44499734618 with that run's SDF, every cell and wire delay of a corner and the
+SRAM macros' read time (6.5 ns slow, 2.4 ns fast), at 20 ns, the sign-off clock:
+
+| Corner | SRAM at power-up | Clock at an SRAM's pin | Result |
+|---|---|---|---|
+| slow (1.08 V, 125 °C) | zeros | 1.107 ns after the top | 5 of 5 |
+| fast (1.32 V, −40 °C) | zeros | 0.514 ns | 5 of 5 |
+| slow | random words | 1.107 ns | 5 of 5 |
+
+A sixth test, `gl_sdf_probe`, measures the clock's arrival at an SRAM macro and fails if it is
+not later than at the top, so a run whose annotation did not happen cannot pass; the runner also
+fails on any SDF error. Icarus runs no timing checks: a setup or hold violation would show only as
+wrong behaviour at the pins (STA signs setup and hold off, above). It needs an Icarus that drives
+the cells' `delayed_*` nets (OSS CAD Suite's 14.0); the runner makes three changes Icarus needs
+in its build directory (the SRAM instance names, one IOPATH per SRAM read port, module paths on
+the SRAM model) and says why in its header. Annotation takes about 25 minutes a corner.
+
 TT's precheck (KLayout CMOS5L DRC, pins, boundary, layers, cell names)
 passed on run 40079395684. From 24 Oct about 11:00, GitHub stopped starting
 jobs on the repository (an account limit on Actions), so the later runs built the

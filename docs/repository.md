@@ -9,7 +9,7 @@ The README is one screen; this is the rest of the map.
 | `src/` | RTL (Verilog-2005): `project.v` top, `tt_um_msf_ctrl.v` core, `_serdes` (the engines, two sets), `_crc`, `_cap`, `_filt`, `_pio`, `_sram` (four 512-word macros), `_bootrom`, `_regfile`, `_alu`; the LibreLane config (`config.json`, `pdn_cfg.tcl`, `pnr.sdc`, `signoff.sdc`) |
 | `librelane_plugin_msf_pdn.py`, `odb_sram_stripes.py` | a LibreLane step that puts the power stripes on the SRAM macros' supply pins (CMOS5L) |
 | `firmware/` | 79 assembly programs, `msf.inc` constants, `report.inc` (the monitors' event reporter); `firmware/msfc/` programs in the `msfc` language |
-| `test/` | the cocotb suite (79 modules), the assembler (`assembler.py`), the ISA reference model (`isa_model.py`), the boot ROM source (`bootloader.s`), the pure-Python tests (`test_msfc.py`, `test_site.py`, `test_learn_tool.py`) |
+| `test/` | the cocotb suite (79 modules), `run_gl_sdf.py` (the gate-level tests with a hardening run's SDF delays), the assembler (`assembler.py`), the ISA reference model (`isa_model.py`), the boot ROM source (`bootloader.s`), the pure-Python tests (`test_msfc.py`, `test_site.py`, `test_learn_tool.py`) |
 | `host/` | the demo-board driver, first cut: `msf_host.py` (reset, both loaders, single steps, run to a PC, registers through the debug view; the same code runs against the RTL in `test/test_host_driver.py`) and `tt_board.py` (binds it to the demo board's MicroPython library on the RP2350; not yet run on a board) |
 | `formal/` | the formal properties and their runner (`run_formal.py`: SymbiYosys with ABC), `parse_check.py` (elaborates every target without a solver) |
 | `tools/` | `msf_boot.py` host loader, `msf_timing.py` deadline checker, `msfc.py` the timing-first language, `check_signoff.py` sign-off check, `mutation.py` mutation score, `gds_metrics.py` hardening table, `synth_check.py` area pre-check, `devsim.py` run a program against its test's device on the ISA model, `sram_pdn_check.py` SRAM rails, stranded cells and shorts over the macros on a hardened ODB |
@@ -39,6 +39,7 @@ guess, an I2C ACK, a monitor's timing check) and runs the whole job on the chip.
 pip install -r test/requirements.txt        # cocotb; plus Icarus Verilog
 cd test && make                              # RTL suite (Windows: python run_tests.py --all)
 python run_tests.py -m test_timed_pins       # one module; -t <exact test name> for one test
+python run_gl_sdf.py --final runs/wokwi/final --corner slow   # gate level with SDF (PDK_ROOT, Icarus 14)
 python -m pytest test/test_learn_tool.py test/test_site.py test/test_msfc.py   # pure Python
 python tools/msf_timing.py --all             # certify every firmware deadline
 python tools/msfc.py firmware/msfc/uart_tx.msf --run 1400    # compile, certify, run on the model
