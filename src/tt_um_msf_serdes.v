@@ -20,6 +20,9 @@
 //     bit, re-arm after each word) start, single word buffer + overrun flag;
 //     Manchester with blanking (mode 2) or with a fractional phase that
 //     tracks the bit centres (mode 3, v3: 10BASE-T at 50 MHz).
+// Mode 3 fine (RX_OPT bit 6, plan-v4 6.5 f): the pin is also taken on the falling clock edge,
+//     which places each edge to half a cycle; the lock averages 31 centres and the tracking
+//     pulls a 32nd of the way. 10BASE-T's 13.5 ns of edge jitter at 50 MHz (isa.md 6.9).
 `default_nettype none
 
 module tt_um_msf_serdes (
@@ -31,6 +34,8 @@ module tt_um_msf_serdes (
     input  wire        rx_pop,
     input  wire [7:0]  uio_in,      // synchronised pad inputs
     input  wire [7:0]  ui_in,       // synchronised `ui` inputs (RX_CFG bit 3)
+    input  wire [7:0]  uio_raw,     // the same pads before the synchroniser: mode 3 fine
+    input  wire [7:0]  ui_raw,      //   takes the RX pin on the falling edge from these
     // engine options, port page 2 (isa.md 6.9)
     input  wire        opt_we,
     input  wire [2:0]  opt_port,
@@ -273,13 +278,27 @@ module tt_um_msf_serdes (
   reg        rx_av, rx_ovr, rx_run, rx_prev, rx_ref;
   reg        rx_mw;                  // Manchester: past the blanking, a
                                      // transition now is a bit centre
-  reg [2:0]  rx_ones;                // Manchester mode 3: the lock's centres
+  reg [4:0]  rx_ones;                // Manchester mode 3: the lock's centres (7, or 31 fine)
   reg [3:0]  rx_srun;                // stuffing: consecutive 1s (kind 0) or equal bits (kind 1)
   reg        rx_slast;               //   and the bit before (kind 1)
   reg        rx_stop;                // character mode, stop bit checked: the word waits for it
   reg        rxe_clk_q;              // external clock pin a cycle ago
 
   wire        rx_pin  = rx_cfg[3] ? ui_in[rx_cfg[2:0]] : uio_in[rx_cfg[2:0]];   // bit 3: ui
+
+  // Mode 3 fine: the same pin from the pad, through two falling-edge flops (a synchroniser,
+  // as project.v's) and one rising-edge flop. rx_pin shows the pad at a rising edge t (taken
+  // by project.v's first flop); in the same cycle rx_hq shows it at t - 1/2. Not reset, as
+  // the synchronisers; only p_early reads it, and only with RX_OPT bit 6. The glitch filter
+  // delays rx_pin, so a filtered pin cannot use fine mode (isa.md 6.9).
+  wire        rx_raw  = rx_cfg[3] ? ui_raw[rx_cfg[2:0]] : uio_raw[rx_cfg[2:0]];
+  reg         rx_hn1, rx_hn2, rx_hq;
+  always @(negedge clk) begin
+    rx_hn1 <= rx_raw;
+    rx_hn2 <= rx_hn1;
+  end
+  always @(posedge clk) rx_hq <= rx_hn2;
+
   wire        rx_en   = rx_cfg[13];
   wire        rx_char = rx_cfg[12];
   wire        rx_rs   = rx_cfg[14];
@@ -325,14 +344,29 @@ module tt_um_msf_serdes (
   // centre gives the bit, the level after it. A bit that ends with no centre ends
   // the frame. rx_ones counts the lock's centres.
   wire        rx_pll   = (rx_cfg[5:4] == 2'd3) && !rx_xe;
-  wire        p_lock   = (rx_ones == 3'd7);
-  wire        p_win    = rx_tmr[15] ^ rx_tmr[14];
+  // Fine (RX_OPT bit 6, plan-v4 6.5 f). rx_hq is the pin half a cycle before rx_pin: when an
+  // edge is seen and rx_hq already has the new level, the edge came in the first half of the
+  // cycle, so its phase is half a cycle (RX_DIV / 2) less than rx_tmr's. The lock then counts
+  // 31 centres and pulls the k-th 1/2^(1 + floor(log2 k)) of the way (1/2, 1/4, 1/4, 1/8 x 4,
+  // 1/16 x 8, then 1/32): the average of what it has seen. After it each centre pulls 1/32.
+  // With the bit clear every value below is the v3 one.
+  wire        p_fine   = rx_opt[6];
+  wire        p_early  = p_fine && rx_edge && (rx_hq == rx_pin);
+  wire [15:0] p_back   = p_early ? rx_half : 16'd0;
+  wire [15:0] p_step   = rx_div + p_back;                       // beside the phase, not after it
+  wire [15:0] p_te     = rx_tmr - p_back;                       // the edge's phase
+  wire        p_lock   = (rx_ones == (p_fine ? 5'd31 : 5'd7));
+  wire        p_win    = p_te[15] ^ p_te[14];
   wire        p_acc    = rx_pll && rx_edge && (!rx_run || !p_lock || p_win);
   wire        p_done   = p_acc && (rx_cnt + 5'd1 == rx_w);
   wire [16:0] p_next   = {1'b0, rx_tmr} + {1'b0, rx_div};       // carry: the bit ends
-  wire [16:0] p_half   = {1'b0, rx_tmr} + 17'h08000;            // 2 x (half way to 0.5)
-  wire [16:0] p_err    = 17'h08000 - {1'b0, rx_tmr};            // 0.5 - phase, signed
-  wire [15:0] p_frac   = rx_tmr + {{4{p_err[16]}}, p_err[15:4]}; // a sixteenth of the way
+  wire [16:0] p_half   = {1'b0, p_te} + 17'h08000;              // 2 x (half way to 0.5)
+  wire [16:0] p_err    = 17'h08000 - {1'b0, p_te};              // 0.5 - phase, signed
+  wire        p_hway   = !p_lock && (!p_fine || rx_ones == 5'd1);       // pull half way
+  wire [2:0]  p_sh     = !p_fine ? 3'd4 : p_lock ? 3'd5 :               // v3: a sixteenth
+                         rx_ones[4] ? 3'd5 : rx_ones[3] ? 3'd4 : rx_ones[2] ? 3'd3 : 3'd2;
+  wire [16:0] p_errs   = $signed(p_err) >>> p_sh;
+  wire [15:0] p_frac   = p_te + p_errs[15:0];                    // 1/2^p_sh of the way
   wire [16:0] rx_mask  = (17'd1 << rx_w) - 17'd1;
   wire [15:0] rx_wordn = rx_lsb ? (rx_srn >> (5'd16 - rx_w)) : (rx_srn & rx_mask[15:0]);
   wire [15:0] rx_wordc = rx_lsb ? (rx_sr >> (5'd16 - rx_w)) : (rx_sr & rx_mask[15:0]);   // the finished shifter
@@ -349,7 +383,7 @@ module tt_um_msf_serdes (
     if (!rst_n) begin
       rx_cfg <= 16'h0; rx_div <= 16'd1; rx_sr <= 16'h0; rx_buf <= 16'h0;
       rx_tmr <= 16'h0; rx_cnt <= 5'd0; rx_av <= 1'b0; rx_ovr <= 1'b0;
-      rx_run <= 1'b0; rx_prev <= 1'b0; rx_ref <= 1'b0; rx_ones <= 3'd0;
+      rx_run <= 1'b0; rx_prev <= 1'b0; rx_ref <= 1'b0; rx_ones <= 5'd0;
       rx_mw <= 1'b0; rx_srun <= 4'd0; rx_slast <= 1'b0; rx_stop <= 1'b0;
       rx_opt <= 16'h0; rx_ext <= 16'h0; rxe_clk_q <= 1'b0; e_stuff <= 1'b0; e_frame <= 1'b0;
     end else begin
@@ -358,7 +392,7 @@ module tt_um_msf_serdes (
       if (rx_cfg_wr) begin
         rx_cfg  <= per_wd;
         rx_run  <= 1'b0; rx_cnt <= 5'd0; rx_av <= 1'b0; rx_ovr <= 1'b0;
-        rx_ones <= 3'd0; rx_tmr <= 16'h0; rx_mw <= 1'b0;
+        rx_ones <= 5'd0; rx_tmr <= 16'h0; rx_mw <= 1'b0;
         rx_srun <= 4'd0; rx_slast <= 1'b0; rx_stop <= 1'b0; e_stuff <= 1'b0; e_frame <= 1'b0;
         rx_ref  <= per_wd[3] ? ui_in[per_wd[2:0]] : uio_in[per_wd[2:0]];
         rx_prev <= per_wd[3] ? ui_in[per_wd[2:0]] : uio_in[per_wd[2:0]];
@@ -414,10 +448,11 @@ module tt_um_msf_serdes (
         end else if (rx_en && rx_pll) begin
           if (p_acc) begin
             rx_run <= 1'b1; rx_mw <= 1'b1;   // this bit has its centre
-            // the first centre: phase 0.5; the lock: half way to 0.5; then a sixteenth
-            rx_tmr <= (!rx_run ? 16'h8000 : !p_lock ? p_half[16:1] : p_frac) + rx_div;
-            if (!rx_run)     rx_ones <= 3'd1;
-            else if (!p_lock) rx_ones <= rx_ones + 3'd1;
+            // the first centre: phase 0.5; the lock: half way to 0.5 (fine: the gears);
+            // then a sixteenth (fine: a 32nd). That is the edge's phase; now is p_back later.
+            rx_tmr <= (!rx_run ? 16'h8000 : p_hway ? p_half[16:1] : p_frac) + p_step;
+            if (!rx_run)     rx_ones <= 5'd1;
+            else if (!p_lock) rx_ones <= rx_ones + 5'd1;
             rx_sr  <= rx_srn;
             if (p_done) begin
               rx_buf <= rx_wordn;
@@ -432,7 +467,7 @@ module tt_um_msf_serdes (
             if (p_next[16]) begin              // a bit boundary
               if (rx_mw) rx_mw <= 1'b0;
               else begin                        // a bit with no centre: the frame ended
-                rx_run <= 1'b0; rx_cnt <= 5'd0; rx_ones <= 3'd0;
+                rx_run <= 1'b0; rx_cnt <= 5'd0; rx_ones <= 5'd0;
               end
             end
           end

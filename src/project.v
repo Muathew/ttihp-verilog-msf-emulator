@@ -199,7 +199,7 @@ module tt_um_msf (
   tt_um_msf_serdes u_serdes (
       .clk(clk), .rst_n(rst_s),
       .per_we(per_we0), .per_sub(per_sub), .per_wd(per_wd), .rx_pop(rx_pop0),
-      .uio_in(uio_f), .ui_in(ui_sync),
+      .uio_in(uio_f), .ui_in(ui_sync), .uio_raw(uio_in), .ui_raw(ui_in),
       .opt_we(opt_we0), .opt_port(opt_port), .opt_wd(opt_wd), .opt_rport(opt_rport),
       .opt_rd(opt_rd0), .err_any(err0),
       .tx_full(tx_full), .tx_busy(tx_busy), .tx_mask(tx_mask0), .tx_val(tx_val0),
@@ -211,7 +211,7 @@ module tt_um_msf (
   tt_um_msf_serdes u_serdes1 (
       .clk(clk), .rst_n(rst_s),
       .per_we(per_we1), .per_sub(per_sub), .per_wd(per_wd), .rx_pop(rx_pop1),
-      .uio_in(uio_f), .ui_in(ui_sync),
+      .uio_in(uio_f), .ui_in(ui_sync), .uio_raw(uio_in), .ui_raw(ui_in),
       .opt_we(opt_we1), .opt_port(opt_port), .opt_wd(opt_wd), .opt_rport(opt_rport),
       .opt_rd(opt_rd1), .err_any(err1),
       .tx_full(tx_full1), .tx_busy(tx_busy1), .tx_mask(tx_mask1), .tx_val(tx_val1),

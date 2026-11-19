@@ -68,8 +68,7 @@ additions ([envelope](docs/envelope.md): how fast each class of protocol goes, f
   limits are logical (one bit a cycle) and which depend on the pads.
 * The board's C tests step the core one clock at a time; only the MCU test runs it free, at 12 MHz.
 * Firmware is assembly, or `msfc` (one thread, 16-bit values, no functions).
-* Planned and not built: half-cycle sampling, the fractional divider, the ROM's read-back and memory
-  test ([plan v4](docs/plan-v4.md) has the status of every item). The demo-board driver (`host/`) is
+* Planned and not built: the fractional divider, the ROM's read-back and memory test ([plan v4](docs/plan-v4.md) has the status of every item). The demo-board driver (`host/`) is
   a first cut: it runs against the RTL in simulation, not yet on a board.
 * Programs are at most 2,048 words, data included. Not a RISC-V core, by decision.
 

@@ -173,7 +173,7 @@ finish; `--top top` runs it alone.
 | `test_monitors` | UART, I2C and SPI bus monitors: decoding, timing faults reported with their lengths, no event on legal buses (random phases), limits |
 | `test_bridge` | UART to SPI bridge across the two threads, all SPI modes, against a shift-register device model |
 | `test_faults` | the controllers' timing knobs measured at the pins; a UART bit-time sweep finds a receiver's theoretical limits |
-| `test_usb_fs`, `test_eth10_rx` (v3) | USB full speed both ways at 48 MHz (4 cycles a bit) and 10BASE-T receive at 50 MHz (RX mode 3), against peers written from the specifications: every edge placed in continuous time (random phase, the rate at the spec's limits, edge jitter: 8 ns for USB, 10 ns for 10BASE-T) and seen from the next clock, as the input synchroniser sees it; sigrok's `usb_signalling` reads both USB packets |
+| `test_usb_fs`, `test_eth10_rx` (v3) | USB full speed both ways at 48 MHz (4 cycles a bit) and 10BASE-T receive at 50 MHz (RX mode 3), against peers written from the specifications: every edge placed in continuous time (random phase, the rate at the spec's limits, edge jitter: 8 ns for USB, 10 ns for 10BASE-T) and seen from the next clock, as the input synchroniser sees it; sigrok's `usb_signalling` reads both USB packets. 10BASE-T in fine mode (`RX_OPT` bit 6, v4): 13.5 ns spread at random and at the limit, the pin driven on both clock edges, and the RTL's phase and lock count equal to `test/mode3_model.py`'s at every cycle of a frame (two planted bugs, an inverted early-edge test and a 1/16 tracking gain, fail it) |
 
 The instruments these test are described, with their figures, in
 [`instruments.md`](instruments.md). Firmware tests run against models
