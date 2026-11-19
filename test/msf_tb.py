@@ -1,12 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """Shared cocotb helpers for the msfcore test modules."""
+import os
+
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, Edge, RisingEdge, ReadOnly, Timer
 
 from assembler import assemble
 
-CLK_NS = 80  # 12.5 MHz sim clock; the design is cycle-based, period is arbitrary
+# 12.5 MHz sim clock; the design is cycle-based, so the period is arbitrary in RTL runs.
+# MSF_CLK_NS sets it for gate-level runs with delays (run_gl_sdf.py: 20, the sign-off clock).
+CLK_NS = int(os.environ.get("MSF_CLK_NS", "80"))
 RESET_SYNC = 2  # clock edges between rst_n rising and the core's cycle 0 (isa.md section 1)
 
 

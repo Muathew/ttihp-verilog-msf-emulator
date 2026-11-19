@@ -19,6 +19,8 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, RisingEdge
 
+from msf_tb import CLK_NS
+
 
 def _is_x(val):
     """Check if a cocotb LogicArray contains X or Z bits."""
@@ -28,7 +30,7 @@ def _is_x(val):
 @cocotb.test()
 async def test_gl_elaboration_smoke(dut):
     """Reset the GL netlist, run 100 cycles, verify outputs are clean."""
-    clock = Clock(dut.clk, 80, unit="ns")
+    clock = Clock(dut.clk, CLK_NS, unit="ns")
     cocotb.start_soon(clock.start())
 
     # Reset: ena=1, ui_in=1 (direct SRAM boot -> JMP 128)
@@ -64,7 +66,7 @@ async def test_gl_elaboration_smoke(dut):
 @cocotb.test()
 async def test_gl_reset_recover(dut):
     """Reset the GL design twice and verify outputs stay clean."""
-    clock = Clock(dut.clk, 80, unit="ns")
+    clock = Clock(dut.clk, CLK_NS, unit="ns")
     cocotb.start_soon(clock.start())
 
     for attempt in (1, 2):
