@@ -40,6 +40,7 @@ ALL_MODULES = [
     "test_engine_sets",
     "test_engine_options",
     "test_boot",
+    "test_host_driver",
     "test_random_diff",
     "test_protocols",
     "test_extensions",
