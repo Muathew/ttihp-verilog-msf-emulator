@@ -26,6 +26,10 @@ What Icarus needs that LibreLane's files do not give it directly, made in the bu
 * One IOPATH per SRAM read port: the reader rejects a bit-select in an IOPATH port
   (`A_DOUT[0]`) and stops at the first SRAM cell. The 16 bits become one vector path with
   the slowest bit's delays (they differ by about 0.1 ns); the macro's timing checks go.
+* No wire delays to antenna diodes: they have no logic, and Icarus cannot find the path of
+  one fed straight from a top-level port ("Could not find intermodpath"). The delays on the
+  same nets to real cells stay. Their load is in every delay already (the SDF is computed
+  with them).
 * The SRAM model (`src/RM_IHPSG13_2P_512x16_c2_bm_bist_sim.v`) with module paths for the
   SDF to annotate, and, with --random-sram, random words at power-up instead of zeros.
 * `tb.v` with an `$sdf_annotate` of the design under test.
@@ -71,10 +75,20 @@ IOPATH_BIT = re.compile(r"\(IOPATH (\w+) (\w+)\[\d+\] \(([\d.]+):([\d.]+):([\d.]
                         r"\(([\d.]+):([\d.]+):([\d.]+)\)\)")
 
 
-def sdf_fix(text):
+DIODE = re.compile(r"^\s*sg13cmos5l_antenna\w*\s+(\S+)\s*\(", re.M)
+INTERCONNECT_TO = re.compile(r"^\s*\(INTERCONNECT \S+ (\S+)\.\w+ ")
+
+
+def diodes(netlist):
+    """The antenna diodes' instance names: cells with an input and no logic."""
+    return set(DIODE.findall(netlist))
+
+
+def sdf_fix(text, drop=frozenset()):
     text = SDF_TOKEN.sub(lambda m: plain(m.group(0).replace(BS, "")) if BS in m.group(0)
                          else m.group(0), text)
     lines, out, i, n = text.split("\n"), [], 0, 0
+    lines = [l for l in lines if not ((m := INTERCONNECT_TO.match(l)) and m.group(1) in drop)]
     while i < len(lines):
         if lines[i].strip() != "(CELL":
             out.append(lines[i]); i += 1
@@ -173,12 +187,15 @@ def main():
     build = HERE / "sim_build" / ("gl_sdf_" + tag)
     build.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
-    (build / "tt_um_msf.nl.v").write_text(netlist_fix((final / "nl" / "tt_um_msf.nl.v").read_text()))
+    netlist = (final / "nl" / "tt_um_msf.nl.v").read_text()
+    (build / "tt_um_msf.nl.v").write_text(netlist_fix(netlist))
     sdf = None
     if a.corner != "none":
         c = CORNERS[a.corner]
         sdf = build / ("tt_um_msf__%s.sdf" % c)
-        sdf.write_text(sdf_fix((final / "sdf" / c / ("tt_um_msf__%s.sdf" % c)).read_text()))
+        drop = diodes(netlist)
+        sdf.write_text(sdf_fix((final / "sdf" / c / ("tt_um_msf__%s.sdf" % c)).read_text(), drop))
+        print("[gl_sdf] %d antenna diodes: their wire delays left out (no logic)" % len(drop))
     (build / "sram_sdf.v").write_text(sram_model())
     (build / "tb_sdf.v").write_text(testbench(sdf))
     print("[gl_sdf] files prepared in %s (%.0f s)" % (build, time.time() - t0), flush=True)
