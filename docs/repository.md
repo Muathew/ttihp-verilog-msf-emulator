@@ -40,6 +40,7 @@ pip install -r test/requirements.txt        # cocotb; plus Icarus Verilog
 cd test && make                              # RTL suite (Windows: python run_tests.py --all)
 python run_tests.py -m test_timed_pins       # one module; -t <exact test name> for one test
 python run_gl_sdf.py --final runs/wokwi/final --corner slow   # gate level with SDF (PDK_ROOT, Icarus 14)
+gh workflow run gl_sdf.yaml -f run_id=<gds run>   # the same in CI: slow, fast, slow with random SRAM
 python -m pytest test/test_learn_tool.py test/test_site.py test/test_msfc.py   # pure Python
 python tools/msf_timing.py --all             # certify every firmware deadline
 python tools/msfc.py firmware/msfc/uart_tx.msf --run 1400    # compile, certify, run on the model

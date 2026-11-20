@@ -5,8 +5,7 @@
 A 16-bit CPU for pins and time, for IHP SG13CMOS5L on Tiny Tapeout (8x4 tiles, 24 digital pins).
 Protocols are firmware, loaded over UART or a parallel port after fabrication. Entry for the Jane
 Street protocol emulator ASIC competition. **This branch is v4: signed off on 8x4 at 50 MHz (20 ns)
-in every corner, its netlist run with the sign-off delays at that clock, formally checked to depth
-16 in CI and run on an FPGA board at 12 MHz. Not yet: 18 of the controller's 86 assertions are
+in every corner, formally checked to depth 16 in CI and run on an FPGA board at 12 MHz. Not yet: 18 of the controller's 86 assertions are
 proved to depth 16 only** ([what is shown on which version](#evidence)).
 
 One chip plays the device, drives the bus, watches it and breaks it on purpose: an SPI flash or I2C
@@ -44,19 +43,21 @@ low speed and 10BASE-T ([the list](docs/repository.md#firmware-by-role-firmware)
    judged by sigrok's decoders; [every bug we found on the way is listed](docs/v4-bugs.md).
 
 Two engine sets (both directions of a link, or two protocols, at once), engines that follow the other
-side's clock (a fast SPI target), HDLC/CAN stuffing and frame/stuff/underrun flags are v4's other
-additions ([envelope](docs/envelope.md): how fast each class of protocol goes, from tests).
+side's clock (a fast SPI target), HDLC/CAN stuffing, frame/stuff/underrun flags and 10BASE-T
+receive with 802.3's full 13.5 ns of edge jitter (fine mode: the pin sampled on both clock edges)
+are v4's other additions ([envelope](docs/envelope.md): how fast each class of protocol goes, from
+tests).
 
 ## Evidence
 
 | Claim | Evidence | Shown on |
 |---|---|---|
 | The RTL does what [`isa.md`](docs/isa.md) says | the model against the RTL on every issue of random programs, timed windows and both engine sets included | v4 RTL, simulation, 11 Nov |
-| The protocols work | 325 cocotb tests in 79 modules, peers written from the standards: all pass (19 Nov, the signed-off RTL; three failed in the 11 Nov run and were fixed: [v4-bugs](docs/v4-bugs.md)) | v4 RTL, simulation |
+| The protocols work | 330 cocotb tests in 79 modules, peers written from the standards: all pass (20 Nov, the signed-off RTL; three failed in the 11 Nov run and were fixed: [v4-bugs](docs/v4-bugs.md)) | v4 RTL, simulation |
 | An edge leaves on its cycle | `test/test_timed_pins.py`: jitter 0 with 1 to 4 threads, one stalled, one loading | v4 RTL, simulation |
 | Deadlines are met | `tools/msf_timing.py --all`; CI also compares it with the RTL | v4 firmware, the checker |
 | Formal properties hold | the formal properties in CI ([verification](docs/verification.md)) | v4 (12 Nov, CI): bounded check to depth 16 passes on the controller, the capture engine and the top level, 18 of 18 planted bugs caught; F16's planted bug shown on v4 (13 Nov). For all time (18 Nov, CI, controller): 68 of 86 assertions proved; the other 18 (F17's timed pins, F3's timeouts, F8) hold to depth 16 only |
-| The layout meets timing | CI sign-off job | v2.2 on 6x4: 30 ns in every corner. v4 on 8x4 (19 Nov, CI 44499734618): **20 ns (50 MHz) in every corner**, setup slack +3.36 ns at the slow corner (1.08 V, 125 °C), hold +0.26 ns; routing DRC, antenna and LVS clean; TT precheck, the gate-level tests (zero delay) and netlist = RTL pass; the gate-level tests also pass with that run's SDF at 20 ns, slow and fast corners, and with random SRAM contents at power-up (run locally, `test/run_gl_sdf.py`). First hardened on 15 Nov at 30 ns ([SRAM power fix](docs/sram-power-integration.md)) |
+| The layout meets timing | CI sign-off job | v2.2 on 6x4: 30 ns in every corner. v4 on 8x4 with fine mode (20 Nov, CI 44698976647): **20 ns (50 MHz) in every corner**, setup slack +2.27 ns at the slow corner (1.08 V, 125 °C), hold +0.29 ns; routing DRC, antenna and LVS clean; TT precheck, the gate-level tests (zero delay) and netlist = RTL pass. The 19 Nov layout, before fine mode (CI 44499734618, slow +3.36 ns), also passed the gate-level tests with its SDF at 20 ns, slow and fast corners, and with random SRAM contents at power-up (run locally, `test/run_gl_sdf.py`). First hardened on 15 Nov at 30 ns ([SRAM power fix](docs/sram-power-integration.md)) |
 | It runs on real hardware | AUP-ZU3 FPGA: 67 of 67 C protocol tests; free-running against an LP-MSPM0G3519: UART, SPI, I2C, 148 of 148 passes at 12 MHz | v2.2 core. v4 (17 Nov, 12 MHz): 304 of 304 passes in the board test against the LP-MSPM0G3519; 60 of 67 C tests, the 7 failures a test-harness fault, fixed and waiting for a rebuild ([open problems](docs/v4-open-problems.md) B) |
 
 ## Limits
@@ -68,8 +69,8 @@ additions ([envelope](docs/envelope.md): how fast each class of protocol goes, f
   limits are logical (one bit a cycle) and which depend on the pads.
 * The board's C tests step the core one clock at a time; only the MCU test runs it free, at 12 MHz.
 * Firmware is assembly, or `msfc` (one thread, 16-bit values, no functions).
-* Planned and not built: half-cycle sampling, the fractional divider, the ROM's read-back and memory
-  test ([plan v4](docs/plan-v4.md) has the status of every item). The demo-board driver (`host/`) is
+* Planned and not built: the fractional divider, the ROM's read-back and memory test
+  ([plan v4](docs/plan-v4.md) has the status of every item). The demo-board driver (`host/`) is
   a first cut: it runs against the RTL in simulation, not yet on a board.
 * Programs are at most 2,048 words, data included. Not a RISC-V core, by decision.
 

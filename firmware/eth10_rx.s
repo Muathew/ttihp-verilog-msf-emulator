@@ -13,6 +13,9 @@
 ; takes up to 13.5 ns of edge jitter), clause 3 (preamble of 7 x 0x55, SFD 0xD5,
 ; bytes LSB first; FCS = CRC-32, reflected 0xEDB88320, init all ones; over the
 ; frame and its FCS the register ends at 0xDEBB20E3).
+; FINE (default 1) turns on the engine's fine mode (RX_OPT bit 6): the pin is also taken
+; on the falling clock edge and the lock averages 31 preamble centres, which holds
+; 802.3's 13.5 ns of jitter; FINE=0 is the v3 receiver, which holds 10 (uniform).
 ; The engine takes the frame from its first transition, the first preamble bit's
 ; centre (idle low, a 1 is low then high), so the bytes are aligned from there.
 .include "msf.inc"
@@ -24,9 +27,14 @@
 .equ OK,     0x81
 .equ BADFCS, 0x82
 .equ NOSFD,  0x83
+.equ FINE,   1                      ; RX_OPT bit 6 (mode 3 fine), 0: v3
 
 start:  LDI      R1, STEP
         RX_DIV   R1
+        LDI      R1, FINE * OPT_FINE
+        ESEL     #ESEL_OPT
+        RX_OPT   R1                 ; fine mode, or none
+        ESEL     #ESEL_SET0
         LDI      R1, 0x8320         ; CRC-32, reflected, 8 bits per CRC_W
         CRC_POLL R1
         LDI      R1, 0xEDB8

@@ -79,6 +79,8 @@
 .equ OPT_KIND1,   0x0010
 .equ OPT_STREAM,  0x0020
 .equ OPT_STOPCHK, 0x0020
+; RX_OPT bit 6: mode 3 fine (half-cycle sampling, a 31-centre lock, 1/32 tracking: 10BASE-T's 13.5 ns)
+.equ OPT_FINE,    0x0040
 ; TX_EXT / RX_EXT: clock pin | bank << 3 | falling << 4 | enable | pre << 6 | gate << 8 | gate bank << 11 |
 ; gate active high << 12 | gate enable << 13
 .equ EXT_FALL,    0x0010

@@ -335,16 +335,20 @@ half of the bit (phase 0.25–0.75), and moves the phase a sixteenth of the way 
 boundary (between equal bits) is ignored. A centre gives the bit (the level after
 it); a bit that ends with no centre ends the frame, dropping a partial word, and
 the next transition starts a frame. Start mode, de-stuffing and resync do not
-apply. At 50 MHz it takes 10BASE-T with up to 10 ns of edge jitter at random and
-±100 ppm (`test_eth10_rx`); 802.3 allows 13.5 ns, but sampling at 20 ns adds 20 ns
-of spread, which leaves the centres and the boundaries 1.5 ns apart even with a
-perfect clock: more needs sampling on both clock edges or a faster clock.
+apply. At 50 MHz it takes 10BASE-T with up to 10 ns of edge jitter spread at random
+and ±100 ppm (`test_eth10_rx`). An edge is seen to the nearest cycle (20 ns), so in
+the worst case, every edge at the limit, it holds 5 ns. 802.3 allows 13.5 ns: that
+is **fine mode** (`RX_OPT` bit 6, §6.9), which also samples on the falling edge.
 **Limit (plan-v4 B10):** the phase is a 16-bit number and a centre moves it to within
 a sixteenth of the bit's middle (the first centre of a frame to 0.5, the lock's to
 between 0.25 and 0.75) before `RX_DIV` is added. The sum must not wrap, or a bit
 boundary is missed, so `RX_DIV` must stay below about 0.25 of a bit a cycle (16,384):
 a bit period of **four cycles is the least, five (13,107) is what the tests cover**.
-Below four cycles a bit the mode is not defined.
+Below four cycles a bit the mode is not defined. In fine mode the cycle of an early
+centre adds 1.5 `RX_DIV`, so at five cycles a bit a late centre can wrap the phase
+past a boundary unmarked; that boundary's only work is to clear the centre flag the
+next centre sets again, so it delays the end of a frame by a bit and nothing else
+(the model and the RTL agree on it). Fine mode is characterised at five cycles a bit.
 
 ### 6.3 CRC unit
 32-bit `CRC` and `POLY`. `CRC_W` processes `len` (=`CRC_CFG[3:0]`+1) bits of rb,
@@ -476,6 +480,20 @@ set (`RX_OVERRUN`, `STAT` bit 3, stays separate).
 * **E_UNDER**: `TX_OPT` bit 5 (*stream*): the engine finishes a word with no next word waiting
   and sets E_UNDER. A program that streams sets the bit with its first push and clears it when
   it pushes the last word, so the end of a message is not an error.
+
+**Fine mode** (`RX_OPT` bit 6, RX mode 3 only): the engine also takes its pin on the falling
+clock edge, from the pad through two flip-flops of its own, so an edge is placed to half a
+cycle (an edge seen at a rising edge that the falling edge before it already had came in the
+first half of the cycle). The lock averages 31 centres, the *k*-th pulling 1/2^(1+⌊log2 *k*⌋)
+of the way (1/2, 1/4, 1/4, 1/8 four times, 1/16 eight times, then 1/32), and after it each
+centre pulls 1/32. It needs a preamble of at least 31 alternating bits (10BASE-T sends 56
+before the SFD) and the pin's glitch filter off (the filter delays the rising-edge sample
+only). At 50 MHz it takes 10BASE-T with 802.3's 13.5 ns of edge jitter at ±100 ppm, spread
+at random or with every edge at ±13.5 ns (`test_eth10_rx`; in `test/mode3_model.py`, which
+the RTL equals cycle by cycle: 0 of 4,000 minimum frames wrong spread at random, 3 of 4,000
+at the limit). Its worst case is 15 ns: an edge is seen to 10 ns, and ±100 ppm moves the
+grid under the edges, so a centre can land 13.5 + 10 ns from where the lock expects it,
+against the window's 25. With the bit clear, mode 3 is v3's.
 
 **External clock** (`TX_EXT` / `RX_EXT`, same layout): the engine shifts on edges of a pin
 instead of its divider, so a protocol whose clock comes from the other side runs word by word.

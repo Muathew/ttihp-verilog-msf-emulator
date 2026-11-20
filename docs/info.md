@@ -29,12 +29,12 @@ generic building blocks that firmware composes into protocols.
 | Memory | 2048 x 16 SRAM in four IHP two-port macros (512 words each) + 128-word boot ROM. Fetch: 0-127 ROM, 128-2047 SRAM. Data (`LD`/`ST`/`MEM_W`/FIFO): all 2048 SRAM words, so 0-127 is free data RAM (v4; v2.2 and v3 had 1024) |
 | Shift register | 16-bit SR, load/read, `SHIFT_OUT`/`SHIFT_IN`/`XFER` (full duplex) on configurable pins, MSB- or LSB-first |
 | SERDES TX | NRZ / NRZI / Manchester, bit stuffing, differential pin pair, 1-16 bit words, programmable symbol period, double buffered (gapless), release mode for exact idle/EOP timing |
-| SERDES RX | NRZ / NRZI / Manchester, de-stuffing, edge resync, continuous or async-character (UART-style) start, overrun flag |
+| SERDES RX | NRZ / NRZI / Manchester, de-stuffing, edge resync, continuous or async-character (UART-style) start, overrun flag; a phase-tracking Manchester mode for 10BASE-T, which in fine mode (v4) samples the pin on both clock edges and takes 802.3's 13.5 ns of edge jitter |
 | CRC unit | any CRC up to 32 bits, normal or reflected, 1-16 bits per write, bit-serial in the background (CRC-8, CRC-5/16 USB, CRC-32 Ethernet ...) |
 | Capture engine | a logic analyser: records 8 pins into an SRAM ring buffer every *n* cycles (two samples a word, or a word per change with its time), level or edge trigger with pre-trigger history, using only data-RAM cycles the core leaves free |
 | Pins | `uio[7:0]` with per-bit set/clear/toggle/write of OUT and OE (open drain = OE), `uo_out[7:0]` written by firmware, `ui_in[7:0]` readable; all inputs pass a 2-flip-flop synchroniser; an optional glitch filter per `uio` pin removes pulses shorter than 1-15 cycles |
 | Identity (v4) | `ESEL #6` then `PR`: chip ID `MS`, ISA version, capability bits, and the high half of a 32-bit cycle counter; a v2.2 or v3 chip reads 0, so a host tool can tell the generations apart |
-| Clock | up to 50 MHz in every corner (signed off at 20 ns, slow corner 1.08 V 125 °C included, with 3.36 ns to spare there); `info.yaml` asks for 48 MHz, USB full speed at 4 cycles a bit. The demos run at 12 or 20 MHz (`docs/verification.md` §7) |
+| Clock | up to 50 MHz in every corner (signed off at 20 ns, slow corner 1.08 V 125 °C included, with 2.27 ns to spare there); `info.yaml` asks for 48 MHz, USB full speed at 4 cycles a bit. The demos run at 12 or 20 MHz (`docs/verification.md` §7) |
 | Power | about 1.8-2.1 mW at 12.5 MHz (typical corner, estimated from the routed netlist with a gate-level workload; `docs/verification.md` §7b) |
 
 ### Timing model (what makes bit-banging exact)
@@ -148,7 +148,7 @@ parallel or UART loader; it runs against the RTL in simulation, not yet on a boa
    and high, SCK high and low.
 
 4. In simulation: `cd test && make` (or `python run_tests.py --all` on
-   Windows) runs 325 cocotb tests including a random differential check of
+   Windows) runs 330 cocotb tests including a random differential check of
    the RTL against an independent ISA model; `python formal/run_formal.py`
    runs the formal properties; `python tools/mutation.py` measures how many
    seeded RTL faults the tests catch (37 of 40; the three left cannot change behaviour).

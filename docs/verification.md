@@ -69,7 +69,9 @@ four-thread design needs more memory than 32-bit WASM has, and `--engine
 sat` remains for smaller runs. A run only counts as passed, failed or caught
 on SymbiYosys's own verdict: a tool error is reported as an error. The instruction memory
 read data, data-RAM read data, pins and peripheral status are **free
-inputs**, so the proofs hold for every program and environment.
+inputs**, so the proofs hold for every program and environment. So is fine mode's sample of a
+pin on the falling clock edge (v4): the checks model rising edges only, and nothing there fixes a
+pin between two of them (`ifdef FORMAL` in `tt_um_msf_serdes.v`; synthesis builds the flops).
 
 | ID | Property |
 |---|---|
@@ -173,7 +175,7 @@ finish; `--top top` runs it alone.
 | `test_monitors` | UART, I2C and SPI bus monitors: decoding, timing faults reported with their lengths, no event on legal buses (random phases), limits |
 | `test_bridge` | UART to SPI bridge across the two threads, all SPI modes, against a shift-register device model |
 | `test_faults` | the controllers' timing knobs measured at the pins; a UART bit-time sweep finds a receiver's theoretical limits |
-| `test_usb_fs`, `test_eth10_rx` (v3) | USB full speed both ways at 48 MHz (4 cycles a bit) and 10BASE-T receive at 50 MHz (RX mode 3), against peers written from the specifications: every edge placed in continuous time (random phase, the rate at the spec's limits, edge jitter: 8 ns for USB, 10 ns for 10BASE-T) and seen from the next clock, as the input synchroniser sees it; sigrok's `usb_signalling` reads both USB packets |
+| `test_usb_fs`, `test_eth10_rx` (v3) | USB full speed both ways at 48 MHz (4 cycles a bit) and 10BASE-T receive at 50 MHz (RX mode 3), against peers written from the specifications: every edge placed in continuous time (random phase, the rate at the spec's limits, edge jitter: 8 ns for USB, 10 ns for 10BASE-T) and seen from the next clock, as the input synchroniser sees it; sigrok's `usb_signalling` reads both USB packets. 10BASE-T in fine mode (`RX_OPT` bit 6, v4): 13.5 ns spread at random and at the limit, the pin driven on both clock edges, and the RTL's phase and lock count equal to `test/mode3_model.py`'s at every cycle of a frame (two planted bugs, an inverted early-edge test and a 1/16 tracking gain, fail it) |
 
 The instruments these test are described, with their figures, in
 [`instruments.md`](instruments.md). Firmware tests run against models
@@ -331,10 +333,16 @@ typical silicon), but only the slow corner is promised.
 | **CI 42393871451, the shuttle's flow** | df70880: `tt-gds-action@ttihp27a`, LibreLane 3.1.0.dev4, PDK `89d42ee6`, `SYNTH_STRATEGY` pinned | 17 245 | 46.5 % | **+3.62 / +11.93 ns** | 0.08 ns | 0 / 0 | 3 / 1 | 0, 0, 0 | yes |
 
 The table above is v2.2 on 6x4. **v4 on 8x4 is signed off at 20 ns (50 MHz) in every corner**
-(CI 44499734618, dfa4c86, 19 Nov; placement and routing aim at 18 ns): setup slack slow
-+3.36 ns, typical +9.69 ns, fast +12.84 ns; hold +0.26 ns at the fast corner; 62.7 %
+(CI 44698976647, 970d4b8, 20 Nov, with fine mode; placement and routing aim at 18 ns): setup
+slack slow +2.27 ns, typical +3.89 ns, fast +4.58 ns; hold +0.29 ns at the fast corner; 64.1 %
 utilisation; routing DRC, antenna and LVS clean; precheck, the gate-level tests and
-`netlist_equiv.py` pass, and `check_signoff.py` prints "signed off". Two changes got it there
+`netlist_equiv.py` pass, and `check_signoff.py` prints "signed off". At the typical and fast
+corners the worst path is now a pad into fine mode's falling-edge flop, which has half a cycle:
+the constraints give the pad 4 ns (a fifth of the period), which leaves 6 ns for the wire
+(+2.73 ns at the slow corner, where an SRAM read to a flop is worst). One max-slew warning:
+`B_ADDR[8]` of one SRAM at the slow corner, 0.596 ns against 0.595 ns. The run before fine mode
+(CI 44499734618, dfa4c86, 19 Nov) had slow +3.36, typical +9.69, fast +12.84 ns, hold +0.26 ns,
+62.7 % utilisation and no slew warning. Two changes got v4 to 50 MHz
 ([`v4-open-problems.md`](v4-open-problems.md) B): the boot ROM registers its address rather than
 its word (784a270), which takes the 128-word lookup out of the fetch cycle, and the wire model
 before extraction uses 1.95 times the tech LEF's capacitance (`LAYERS_RC` in `src/config.json`),
@@ -562,7 +570,7 @@ change behaviour.
 | A host can halt, single-step and read the core's state through the pins | `test_debug.test_debug_single_step`: hand-driven clock, PC trace and register read between edges |
 | Timing faults can be injected by exact amounts | `test_faults`: each knob measured at the pins; a one-cycle step in the UART bit time moves a receiver from pass to fail exactly where its geometry predicts |
 | The design fits its 6x4 tiles on CMOS5L, on the shuttle's own flow, and runs at 33 MHz in every corner, 50 MHz at the typical one | §7: CI 42393871451 on `tt-gds-action@ttihp27a`: 46.5 % utilisation; at 30 ns, setup and hold met in all three corners (slow +3.62 ns, typical +11.93 ns, fast +14.00 ns, hold +0.08 ns), no routing DRC, antenna or LVS errors; precheck, gate-level tests and netlist = RTL pass |
-| v4 fits 8x4 tiles with four SRAM macros and runs at 50 MHz in every corner | §7: CI 44499734618 (19 Nov): at 20 ns, setup and hold met in all three corners (slow +3.36 ns, typical +9.69 ns, fast +12.84 ns, hold +0.26 ns), 62.7 % utilisation, no routing DRC, antenna or LVS errors; precheck, gate-level tests and netlist = RTL pass |
+| v4 fits 8x4 tiles with four SRAM macros and runs at 50 MHz in every corner | §7: CI 44698976647 (20 Nov, with fine mode): at 20 ns, setup and hold met in all three corners (slow +2.27 ns, typical +3.89 ns, fast +4.58 ns, hold +0.29 ns), 64.1 % utilisation, no routing DRC, antenna or LVS errors; precheck, gate-level tests and netlist = RTL pass |
 | The layout is the RTL, so every check above applies to it | `netlist_equiv.py` (§7c): the routed netlist is proved equivalent to the RTL from reset, for all inputs and all time, with the SRAMs as black boxes. Of three bugs put into the netlist, two are found and the third, deep in the receiver, is left undecided: the tool never calls a broken netlist equivalent. The netlist also boots and runs firmware in gate-level simulation (§7) |
 | The tests catch a broken design, not only pass a working one | 39 of 40 sampled single-bit mutants killed on v2.0, 38 of 40 on v2.1, 37 of 40 on v2.2; every survivor cannot change behaviour (§8) |
 
