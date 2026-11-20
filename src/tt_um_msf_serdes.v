@@ -292,11 +292,19 @@ module tt_um_msf_serdes (
   // the synchronisers; only p_early reads it, and only with RX_OPT bit 6. The glitch filter
   // delays rx_pin, so a filtered pin cannot use fine mode (isa.md 6.9).
   wire        rx_raw  = rx_cfg[3] ? ui_raw[rx_cfg[2:0]] : uio_raw[rx_cfg[2:0]];
+`ifdef FORMAL
+  // The formal checks model rising edges only (one clock, no falling-edge flops). Nothing
+  // there fixes the pad between two rising edges, so the falling-edge sample is free: every
+  // value the real one can take, and more. Synthesis and simulation build the flops below.
+  reg         rx_hq;
+  (* anyseq *) reg rx_hn2;
+`else
   reg         rx_hn1, rx_hn2, rx_hq;
   always @(negedge clk) begin
     rx_hn1 <= rx_raw;
     rx_hn2 <= rx_hn1;
   end
+`endif
   always @(posedge clk) rx_hq <= rx_hn2;
 
   wire        rx_en   = rx_cfg[13];
