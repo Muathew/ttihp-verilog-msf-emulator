@@ -1,0 +1,112 @@
+name: gl sdf
+
+# The gate-level tests with the sign-off delays (test/run_gl_sdf.py) on an earlier gds
+# run's netlist and SDF, at the commit it was built from: every cell and wire delay of a
+# corner, at the clock the layout is signed off for. Three jobs in parallel: the slow
+# corner, the fast corner, and the slow corner with random SRAM contents at power-up.
+# Annotation alone takes about 25 minutes a job. On demand only:
+#   gh workflow run gl_sdf.yaml -f run_id=<id of the gds run>
+# The run must be of a commit that has test/run_gl_sdf.py (3817325 or later).
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "id of the gds run whose netlist and SDF to simulate"
+        type: string
+        required: true
+      clk_ns:
+        description: "clock period in ns"
+        type: string
+        default: "20"
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  sdf:
+    name: ${{ matrix.corner }}${{ matrix.random && ', random SRAM' || '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - corner: slow
+          - corner: fast
+          - corner: slow
+            random: 1
+    steps:
+      - name: Commit the layout was built from
+        id: run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "sha=$(gh api repos/${{ github.repository }}/actions/runs/${{ inputs.run_id }} --jq .head_sha)" >> "$GITHUB_OUTPUT"
+
+      - name: checkout repo
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.run.outputs.sha }}
+
+      # artifact/tt_submission/pdk.json names the PDK version the layout was built with.
+      - name: Download the submission
+        uses: actions/download-artifact@v8
+        with:
+          name: tt_submission
+          path: artifact
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+
+      # LibreLane's run directory: runs/wokwi/final/{nl,sdf} are the netlist and the SDFs.
+      - name: Download the run's netlist and SDF
+        uses: actions/download-artifact@v8
+        with:
+          name: GDS_logs
+          path: gds_logs
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: PDK version
+        run: echo "PDK_VERSION=$(jq -r .PDK_VERSION artifact/tt_submission/pdk.json)" >> "$GITHUB_ENV"
+
+      - name: Install the PDK (cell models)
+        uses: TinyTapeout/ciel-action@v1
+        with:
+          pdk_name: ihp-sg13cmos5l
+          pdk_version: ${{ env.PDK_VERSION }}
+          pdk_root: /home/runner/pdk
+
+      - name: Setup python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install cocotb
+        run: pip install -r test/requirements.txt
+
+      # Its Icarus drives the cells' delayed_* nets; older builds leave them undriven, and
+      # run_gl_sdf.py stops if they are.
+      - name: Install OSS CAD Suite
+        uses: YosysHQ/setup-oss-cad-suite@v4
+        with:
+          version: '2026-10-01'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Gate-level tests with the delays
+        working-directory: test
+        run: |
+          test -f run_gl_sdf.py || { echo "commit ${{ steps.run.outputs.sha }} has no test/run_gl_sdf.py"; exit 1; }
+          iverilog -V 2>&1 | head -1
+          python run_gl_sdf.py --final ../gds_logs/runs/wokwi/final --corner ${{ matrix.corner }} \
+            --clk-ns ${{ inputs.clk_ns }} --pdk-root /home/runner/pdk \
+            ${{ matrix.random && format('--random-sram {0}', matrix.random) || '' }}
+
+      - name: Upload the logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gl_sdf_${{ matrix.corner }}${{ matrix.random && '_random' || '' }}
+          path: |
+            test/sim_build/gl_sdf_*/build.log
+            test/sim_build/gl_sdf_*/test.log
+            test/sim_build/gl_sdf_*/results.xml

@@ -90,6 +90,18 @@ are not errors: they are claims this machine cannot test.
   416,536 errors in every run since 18 Nov (188,488 on 7 Nov): a warning in this flow, whose
   DRC gate is the KLayout precheck, which passes.
 
+* **Update 20 Nov: fine mode hardened.** CI 44698976647 (970d4b8, branch `halfcycle`, plan
+  5f) signs off at 20 ns in every corner: setup slack slow +2.27 ns, typical +3.89, fast +4.58;
+  hold +0.29 ns; routing DRC, antenna and LVS clean; precheck, `gl_test`, `check_signoff.py` and
+  `netlist_equiv.py` pass. The typical and fast corners lost 6-8 ns of slack because their worst
+  path is now a pad into the falling-edge flop, which the constraints give half a cycle less the
+  pad's 4 ns; at the slow corner that path has +2.73 ns. One max-slew warning: `B_ADDR[8]` of one
+  SRAM at the slow corner, 0.596 ns against 0.595 ns (the previous run had none; the macro's
+  timing is extrapolated 0.1 % beyond its table). The `formal` workflow failed on the branch:
+  SymbiYosys's single-clock model refuses a falling-edge flop, so under `ifdef FORMAL` the
+  sample is a free input (sound: nothing in a rising-edge model fixes a pin between two rising
+  edges). Merged into `v4` and `main`.
+
 * **Update 19 Nov: the MCU build's stream check.** In the 17 Nov MCU console log
   (`v3_board_mcu_console.log.txt`, from line 757; `*.log.txt` is not committed) every USB
   pass reads `stream 3647/3456 cycles -> PASS`: 3,647 cycles measured for 108 words of 32.
@@ -129,8 +141,9 @@ are not errors: they are claims this machine cannot test.
 * Gate-level simulation with delays (SDF): **run 19 Nov** (`test/run_gl_sdf.py`, locally, on CI
   44499734618's netlist and SDF at 20 ns): 5 of 5 at the slow and fast corners and with random
   SRAM contents (`verification.md` §7). Still open: Icarus runs no setup or hold checks, so a
-  violation shows only if it changes what the pins do; and the runs are local, not in CI (the
-  annotation alone takes about 25 minutes a corner).
+  violation shows only if it changes what the pins do. **20 Nov:** `gl_sdf.yaml` runs the same
+  three in CI, on demand, on any gds run's netlist and SDF (the annotation alone takes about 25
+  minutes a corner); still to run on the fine-mode layout (CI 44698976647).
 * A board run above 12 MHz (Muath); the repository is public (18 Nov); CI GDS runs need
   Sam's go-ahead (plan section 7.3); the bench session and video (section 11).
 * `firmware/spi_flash.s` moved its store to SRAM 1536-2047 (`v4-bugs.md` F1). Two things use
@@ -154,7 +167,8 @@ are not errors: they are claims this machine cannot test.
 
 ## C. Planned and not built (not errors: left out on purpose, in the plan's cut order)
 
-* Half-cycle sampling (plan 4f; it needs a model study first) and the fractional divider (4g).
+* The fractional divider (plan 4g). ~~Half-cycle sampling (4f)~~: built after its model study
+  and hardened, 20 Nov (B above).
 * The boot ROM's read-back and memory test (plan step 5; no room in 128 words, the plan's
   fallback). The capability word says so: `0x0BBF`, its memory-test bit is clear.
 * The demo-board driver and the bring-up kit (plan section 10), the envelope sweep script (the
