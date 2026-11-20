@@ -143,7 +143,10 @@ are not errors: they are claims this machine cannot test.
   SRAM contents (`verification.md` §7). Still open: Icarus runs no setup or hold checks, so a
   violation shows only if it changes what the pins do. **20 Nov:** `gl_sdf.yaml` runs the same
   three in CI, on demand, on any gds run's netlist and SDF (the annotation alone takes about 25
-  minutes a corner); still to run on the fine-mode layout (CI 44698976647).
+  minutes a corner). On the fine-mode layout (CI 44698976647): 5 of 5 at the slow and fast
+  corners and with random SRAM contents (CI 44821883241). Its first run stopped on two SDF
+  errors, wire delays from `ui_in[5]` to two antenna diodes that Icarus could not place; the
+  runner now leaves out wire delays to diodes, which have no logic.
 * A board run above 12 MHz (Muath); the repository is public (18 Nov); CI GDS runs need
   Sam's go-ahead (plan section 7.3); the bench session and video (section 11).
 * `firmware/spi_flash.s` moved its store to SRAM 1536-2047 (`v4-bugs.md` F1). Two things use
