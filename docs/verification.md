@@ -92,14 +92,14 @@ pin between two of them (`ifdef FORMAL` in `tt_um_msf_serdes.v`; synthesis build
 | F15 | (v3) the late guard: from the cycle after a guarded thread's late `WAIT_CMP` released, the guard's pins are off the bus (their OE forced to 0), and they stay off while that LATE flag is set; with no guarded flag set no pin is held off |
 | F16 | (v3, target `ni`, run by `--top ni`) thread non-interference on two copies of the core (`formal/ni_miter.v`): both get the same inputs; T0 and one more thread *k* run the same program in both, the other threads anything that touches no shared state (pins, SR, MEM_W pointer, FIFO, engines, ports, `TSTART`/`TSTOP`), each copy its own. Then the slot owner is the same in both copies every cycle, T0 and *k* issue in the same cycles the same words from the same addresses with the same operands, and the pins are the same. `LATE_RD`, which reads every thread's flag, is left out on purpose |
 
-| F17 | (v4, `ctrl` target) timed pins, for every program (isa.md 6.8): a pin write that the slot accepts as held is applied in the cycle `CNT` reaches its time and in no other, as the operation it was; a refused write (time passed, or the slot occupied) makes no write, sets Z = 1 and the thread's LATE flag, and a held or refused write makes none now. The ghost restates the rule with a down counter and its own copy of the `AT` operand, not with the design's compare |
+| F17 | (v4, `ctrl` target) timed pins, for every program (isa.md 6.8): a pin write that the slot accepts as held is applied in the cycle `CNT` reaches its time and in no other, as the operation it was; a refused write (time passed, or the slot occupied) makes no write, sets Z = 1 and the thread's LATE flag, and a held or refused write makes none now. The ghost restates the rule with a down counter and its own copy of the `AT` operand, not with the design's compare. **Proved for all time** (23 Nov, on every push: "For all time" below) |
 | F18 | (v4, `top` target) the pad registers (`uio_out`, `uio_oe`, `uo_out`) hold in every cycle what the old combinational expressions give (`(OUT & ~mask) \| (val & mask)`, `OE & ~guard`): registering the pads moved no edge |
 
 F5 was extended (a timed event writes the pins in any cycle: `exec` or a due event), F11 too
-(a LATE flag also rises at a refused timed write). **None of F1-F18 has been run on v4**: the
-YoWASP Yosys on the development PC aborts inside `sat` (on v3 too) and has no `yosys-abc`, so
-`formal/parse_check.py` (new) only shows that all four targets elaborate; the `formal` workflow
-runs the proofs. See `v4-open-problems.md`.
+(a LATE flag also rises at a refused timed write). On v4 the `formal` workflow runs the
+bounded check on every push (first green at e92524b, 12 Nov: `ctrl`, `cap` and the top level
+to depth 16, all 18 planted bugs of its list caught; F16's runs only with `--top ni`), and
+since 23 Nov the proof of F17 for all time.
 
 Every `cover()` point (WAIT edge/CMP/timeout release, LD release in T1, dual
 issue, TSTOP, all four threads running and issuing, a push to a full FIFO,
@@ -121,16 +121,32 @@ and each must make the proof fail:
 | a stalled thread holds on to the next slot | F13 (`run_formal.py`'s mutant list) |
 | no forwarding into E (v3) | F14 |
 | the guard ignores which threads it names (v3) | F15 |
-| a held timed event is applied one cycle late (v4) | F17. **Not shown**: the proof has not run (`v4-open-problems.md` A1); the mutant's text anchor resolves |
-| a refused timed write still goes out (v4) | F17. Not shown, as above |
-| a held timed write forgets its operation (v4) | F17. Not shown, as above |
-| the pad registers load the old values instead of the next ones (v4; `--top top`) | F18. Not shown, as above |
+| a held timed event is applied one cycle late (v4) | F17 (an event in its cycle and no other), step 6. Also in F17's proof for all time: a BMC in the same flow finds each of these three |
+| a refused timed write still goes out (v4) | F17 (a refusal makes no write), step 4 |
+| a held timed write forgets its operation (v4) | F17 (the same operation), step 6 |
+| the pad registers load the old values instead of the next ones (v4; `--top top`) | F18, step 10 |
 | `STAT` shows any thread's LATE flag, not the reader's (v3; `--top ni`) | F16 is meant to: no single-copy property sees it. **Shown on v4 (13 Nov):** `run_formal.py --engine abc --depth 16 --top ni --only-mutant 0` catches it, F16 at `ni_miter.v:186`, step 8, in 11 minutes (at depth 5 it passes, 9 Nov). The 15 cycles this row used to give as the reach was an overestimate. This shows F16 can fail; the unmutated `ni` run to depth 16 has still not been done |
 
 A mutant stops at its first counterexample, so the cheap targets go first
 (controller, capture module, top level).
 
-**For all time** (`--prove`, ABC `pdr`, which proves each assertion
+**For all time, v4.** Two ways. `--prove` runs ABC `pdr` on each assertion on its own: on
+v4's controller (18 Nov, CI 44363125574, an hour) it proved 68 of the 86 assertions; F17's
+twelve per-thread assertions, F3's five timeout assertions and F8's one were open when the
+hour ran out, with no counterexample. `--block F17` (23 Nov, on every push) proves F17's
+block alone. The runner removes every other assertion by source line, from the `// F17`
+comment to the next `// F<n>`, and stops if none is left. The block carries six helper
+invariants per thread that say how the design's slot and the ghost agree in every state: the
+same arming; a refuse-next only while armed, and then the ghost's; while armed to hold, the
+same time; while an event is held, the cycles to its time are the ghost's count and the write
+is the ghost's. With them SymbiYosys proves all 41 assertions (4 x 9, and 5 for all threads)
+together by k-induction to depth 4 (smtbmc, yices), in under a minute: **F17 holds in every
+reachable state, for every program.** In the same flow, with only those assertions, a BMC
+from reset finds each of F17's three planted bugs, so the proof keeps the assertions that
+catch them and its assumptions leave real runs to check. On v4's controller six assertions
+stay bounded (depth 16 in CI): F3's timeouts and F8.
+
+**For all time, v2.2 (24 Oct)** (`--prove`, ABC `pdr`, which proves each assertion
 separately): on the controller, 31 of its 35 assertions are proved for
 every reachable state, not just to depth 16. 30 of them took under 7
 minutes; F8's `fcount <= fsize` took 3.4 hours. Proved: F1, F2, F3 for
@@ -591,14 +607,12 @@ What is **not** validated yet:
   outside check on what the chip sends (§6c), not on how a real device responds.
 * Electrical behaviour is not modelled: pad drive, rise times with real
   pull-ups, USB and 10BASE-T signal levels.
-* Timing is checked by static analysis only (§7): the gate-level
-  simulations have no delays.
-* v4's formal properties, F17 and F18 and the edited F5 and F11, have not been run
-  by anything: Yosys parses all four targets (`formal/parse_check.py`) but this PC cannot run the
-  solvers, and CI has not run them yet. The same goes for the hardening of v4: four macros on the
-  8x4 die, hold margins of 0.3/0.25 ns and the debug-select false path are written, not run.
-* Some formal properties are bounded (depth 16 from reset): four of the
-  controller's (§3) and those of the top level. The properties cover the
+* Timing is checked by static analysis (§7) and by the gate-level tests run with the
+  sign-off delays (SDF). Icarus checks no setup or hold times, so a violation shows there only
+  if it changes what the pins do. The debug-select false path (`ui_in` to `uo_out`) is declared
+  from the RTL, not checked against a timing report.
+* Some formal properties are bounded (depth 16 from reset): six of v4's
+  controller's (F3's timeouts and F8, §3) and those of the top level. The properties cover the
   control pipeline; the SERDES and CRC datapaths are checked in simulation
   only.
 * The mutation score comes from a sample of 40 single-bit faults.
