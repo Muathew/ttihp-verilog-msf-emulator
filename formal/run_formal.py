@@ -439,17 +439,25 @@ def keep_block(fname, first, last):
             f"select -assert-min 1 {asserts}")
 
 
-def prove_block(tools, name, depth, solver, fname="tt_um_msf_ctrl.v"):
+def prove_block(tools, name, depth, solver, fname="tt_um_msf_ctrl.v", mutant=None):
     """One property block of the controller, alone, for all time: its assertions are
     the only ones left, and SymbiYosys proves them together by k-induction (smtbmc),
     so each may lean on the others. A block can carry helper assertions that make it
-    inductive; they are proved with it. The base case is a BMC to the same depth."""
+    inductive; they are proved with it. The base case is a BMC to the same depth.
+    Verdict: "pass" (proved), "fail" (a counterexample from reset), "unknown" (the
+    induction step failed: not proved) or "error" (the tool did not decide)."""
     first, last = block_lines(fname, name)
     top, files = TARGETS["ctrl"]
-    d = prepare()
+    d = prepare(mutant)
     cfg = sby_config(top, files, depth, "prove", f"smtbmc {solver}", vfiles(d), aigsmt=None,
                      timeout=tools.get("timeout"), extra=keep_block(fname, first, last))
     verdict, out = run_sby(tools["sby"], d, cfg)
+    if verdict == "error" and "DONE (UNKNOWN" in out:
+        verdict = "unknown"
+    failed = sorted(set(re.findall(r"Assert failed in \S+: (\S+)", out)))
+    if mutant:
+        shutil.rmtree(d, ignore_errors=True)
+        return verdict, failed
     kept = glob.glob(os.path.join(d, "run", "**", "kept_asserts.txt"), recursive=True)
     names = [s for s in open(kept[0]).read().split() if "$assert" in s] if kept else []
     where = sorted({int(m) for m in re.findall(rf"{re.escape(fname)}:([0-9]+)", " ".join(names))})
@@ -458,9 +466,10 @@ def prove_block(tools, name, depth, solver, fname="tt_um_msf_ctrl.v"):
     if verdict == "pass":
         print(f"  PROVED for all time")
     else:
-        print("  " + ("COUNTEREXAMPLE from reset" if verdict == "fail" else
-                      "NOT PROVED: the induction step failed, or the tool stopped"))
-        for src in sorted(set(re.findall(r"Assert failed in \S+: (\S+)", out))):
+        print("  " + {"fail": "COUNTEREXAMPLE from reset",
+                      "unknown": "NOT PROVED: the induction step failed"}.get(
+                          verdict, "NOT PROVED: the tool stopped without a verdict"))
+        for src in failed:
             print(f"    failed: {src}")
         keep = os.path.join(HERE, "work", f"block_{name}")
         os.makedirs(keep, exist_ok=True)
@@ -469,7 +478,7 @@ def prove_block(tools, name, depth, solver, fname="tt_um_msf_ctrl.v"):
         print(f"  traces in {keep}")
         print(out[-4000:])
     shutil.rmtree(d, ignore_errors=True)
-    return 0 if verdict == "pass" else 1
+    return verdict, failed
 
 
 def main():
@@ -498,7 +507,23 @@ def main():
     status = 0
 
     if a.block:
-        return prove_block(tools, a.block, a.depth, a.solver)
+        verdict, _ = prove_block(tools, a.block, a.depth, a.solver)
+        status = 0 if verdict == "pass" else 1
+        # the block's own planted bugs (MUTANTS named "F17: ..."): the same proof must not
+        # pass on any of them; a tool that stops without a verdict does not count
+        own = [m for m in MUTANTS if m[0].startswith(a.block + ":")]
+        if own and not a.no_mutants:
+            print(f"== {a.block}'s planted bugs: the same proof must not pass ==")
+            for m in own:
+                v, failed = prove_block(tools, a.block, a.depth, a.solver, mutant=m)
+                caught = v in ("fail", "unknown")
+                how = {"fail": "counterexample from reset", "unknown": "induction step fails",
+                       "pass": "PROVED", "error": "tool error"}[v]
+                print(f"  {m[0]:46s} {'caught' if caught else 'NOT CAUGHT'} ({how}"
+                      + (f": {failed[0]}" if failed else "") + ")", flush=True)
+                if not caught:
+                    status = 1
+        return status
 
     if a.only_mutant is not None:
         m = mutants[a.only_mutant]

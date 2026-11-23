@@ -32,6 +32,13 @@ jobs:
           version: '2026-10-01'
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # F17 (timed pins) for all time: its block alone, helper invariants included, by
+      # k-induction to depth 4 (under a minute); each of its three planted bugs must
+      # fail the same proof.
+      - name: F17 for all time
+        if: ${{ !inputs.block }}
+        run: python3 formal/run_formal.py --block F17 --depth 4
+
       # BMC of the properties (all inputs free) with ABC bmc3, cover
       # reachability, and the mutation check (re-introduced bugs B1-B4 must
       # each give a counterexample; a tool error never counts as caught).
