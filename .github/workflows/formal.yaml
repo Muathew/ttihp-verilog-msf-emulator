@@ -8,6 +8,14 @@ on:
         description: "also prove the controller's properties for all time (ABC pdr)"
         type: boolean
         default: false
+      block:
+        description: "instead, prove one property block for all time by k-induction (e.g. F17)"
+        type: string
+        default: ""
+      block_depth:
+        description: "the block proof's induction depth"
+        type: string
+        default: "4"
 
 jobs:
   formal:
@@ -28,9 +36,25 @@ jobs:
       # reachability, and the mutation check (re-introduced bugs B1-B4 must
       # each give a counterexample; a tool error never counts as caught).
       - name: Formal (SymbiYosys + ABC)
+        if: ${{ !inputs.block }}
         run: python3 formal/run_formal.py --engine abc --depth 16
 
       # Started by hand: PDR on each of the controller's properties, an hour at most.
       - name: Unbounded proofs
-        if: ${{ inputs.prove }}
+        if: ${{ inputs.prove && !inputs.block }}
         run: python3 formal/run_formal.py --engine abc --depth 16 --prove --prove-timeout 3600 --top ctrl --no-mutants
+
+      # Started by hand: one block's assertions, alone, by k-induction (smtbmc), an hour at most.
+      - name: Block proof
+        if: ${{ inputs.block }}
+        run: python3 formal/run_formal.py --block "${{ inputs.block }}" --depth "${{ inputs.block_depth }}" --prove-timeout 3600
+
+      # A failed induction step's trace shows the state the invariants still allow.
+      - name: Block proof traces
+        if: ${{ failure() && inputs.block }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: block-traces
+          path: formal/work/block_*/
+          retention-days: 7

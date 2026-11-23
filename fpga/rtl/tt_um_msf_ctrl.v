@@ -1246,6 +1246,18 @@ module tt_um_msf_ctrl (
                              p_val[8*t +: 8] == g_val[t]);
           // the slot holds exactly the ghost's events
           assert(at_pend[t] == g_pend[t]);
+          // The rest says how the slot and the ghost agree in every state, so that the
+          // three lines above are inductive (run_formal.py --block F17 proves them all
+          // for all time): the same arming; a refuse-next only while armed, and the
+          // ghost's then; while armed to hold, the same time; while an event is held,
+          // the cycles to its time are the ghost's count, and it is the ghost's write.
+          assert(at_arm[t] == g_arm[t]);
+          if (at_bad[t]) assert(at_arm[t]);
+          if (at_arm[t]) assert(at_bad[t] == g_bad[t]);
+          if (at_arm[t] && !at_bad[t]) assert(at_time[16*t +: 16] == g_at[t]);
+          if (g_pend[t]) assert(at_time[16*t +: 16] - cnt == g_left[t]);
+          if (g_pend[t]) assert(p_tgt[2*t +: 2] == g_tgt[t] && p_opk[2*t +: 2] == g_opk[t] &&
+                                p_val[8*t +: 8] == g_val[t]);
         end
     end
   endgenerate

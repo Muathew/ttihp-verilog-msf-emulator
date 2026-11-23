@@ -32,8 +32,13 @@ Engines (--engine):
 Usage:  python formal/run_formal.py [--depth N] [--engine abc|sat] [--prove]
                                     [--prove-timeout S] [--top ctrl|top]
                                     [--no-mutants] [--yosys PATH] [--sby PATH]
+        python formal/run_formal.py --block F17 [--depth K] [--solver yices]
+            one property block of the controller alone (its `// F17` comment to the
+            next `// F<n>`), proved for all time by k-induction: its assertions, helper
+            invariants included, are the only ones left, so each may lean on the others.
 """
 import argparse
+import glob
 import os
 import re
 import shutil
@@ -132,17 +137,18 @@ def vfiles(d):
     return sorted(f for f in os.listdir(d) if f.endswith(".v"))
 
 
-def sby_config(top, files, depth, mode, engine, copy, aigsmt="yices", timeout=None):
+def sby_config(top, files, depth, mode, engine, copy, aigsmt="yices", timeout=None, extra=""):
     # `copy`: every file SymbiYosys copies, including `include`d ones such as
     # the boot ROM data. `x` constants become free values (setundef -anyseq),
     # which over-approximates any choice synthesis could make for them.
+    # `extra`: Yosys commands right after prep (keep_block: one block's assertions).
     reads = "\n".join(f"read_verilog -formal -sv -DFORMAL -DSYNTHESIS -I. {f}" for f in files)
     # aigsmt: the SMT solver that turns an ABC counterexample into a trace;
-    # "none" skips the trace (the verdict is the same).
+    # "none" skips the trace (the verdict is the same). None: no ABC engine.
     return f"""[options]
 mode {mode}
 depth {depth}
-aigsmt {aigsmt}
+{f"aigsmt {aigsmt}" if aigsmt else ""}
 {f"timeout {timeout}" if timeout else ""}
 
 [engines]
@@ -152,6 +158,7 @@ aigsmt {aigsmt}
 {reads}
 prep -top {top}
 {"chformal -assert -remove tt_um_msf_ctrl_ni" if top == "ni_miter" else ""}
+{extra}
 memory -nomap
 memory_map
 opt_clean
@@ -410,6 +417,61 @@ def covers(tools, depth):
     return reached
 
 
+def block_lines(fname, name):
+    """First and last line of the property block whose comment starts `// NAME` in
+    src/fname: up to the next block comment `// F<n>`."""
+    lines = open(os.path.join(SRC, fname), encoding="utf-8").read().splitlines()
+    start = next(i for i, s in enumerate(lines, 1)
+                 if re.match(rf"\s*//\s*{re.escape(name)}\b", s))
+    end = next((i for i, s in enumerate(lines, 1)
+                if i > start and re.match(r"\s*//\s*F[0-9]+\b", s)), len(lines) + 1)
+    return start, end - 1
+
+
+def keep_block(fname, first, last):
+    """Yosys commands that remove every assertion outside lines first..last of fname,
+    list the ones left, and stop if there are none (a proof of nothing would pass)."""
+    pats = " ".join(f"a:src={fname}:{n}.*" for n in range(first, last + 1))
+    unions = " %u" * (last - first)
+    asserts = "t:$check t:$assert %u n:$assert* %i"     # cells only: wires share the names
+    return (f"chformal -assert -remove t:$check t:$assert %u {pats}{unions} %d\n"
+            f"tee -q -o kept_asserts.txt select -list {asserts}\n"
+            f"select -assert-min 1 {asserts}")
+
+
+def prove_block(tools, name, depth, solver, fname="tt_um_msf_ctrl.v"):
+    """One property block of the controller, alone, for all time: its assertions are
+    the only ones left, and SymbiYosys proves them together by k-induction (smtbmc),
+    so each may lean on the others. A block can carry helper assertions that make it
+    inductive; they are proved with it. The base case is a BMC to the same depth."""
+    first, last = block_lines(fname, name)
+    top, files = TARGETS["ctrl"]
+    d = prepare()
+    cfg = sby_config(top, files, depth, "prove", f"smtbmc {solver}", vfiles(d), aigsmt=None,
+                     timeout=tools.get("timeout"), extra=keep_block(fname, first, last))
+    verdict, out = run_sby(tools["sby"], d, cfg)
+    kept = glob.glob(os.path.join(d, "run", "**", "kept_asserts.txt"), recursive=True)
+    names = [s for s in open(kept[0]).read().split() if "$assert" in s] if kept else []
+    where = sorted({int(m) for m in re.findall(rf"{re.escape(fname)}:([0-9]+)", " ".join(names))})
+    print(f"== {name}: {fname} lines {first}-{last}, {len(names)} assertions "
+          f"(on lines {', '.join(map(str, where))}), k-induction to depth {depth} ({solver}) ==")
+    if verdict == "pass":
+        print(f"  PROVED for all time")
+    else:
+        print("  " + ("COUNTEREXAMPLE from reset" if verdict == "fail" else
+                      "NOT PROVED: the induction step failed, or the tool stopped"))
+        for src in sorted(set(re.findall(r"Assert failed in \S+: (\S+)", out))):
+            print(f"    failed: {src}")
+        keep = os.path.join(HERE, "work", f"block_{name}")
+        os.makedirs(keep, exist_ok=True)
+        for vcd in glob.glob(os.path.join(d, "run", "engine_*", "*.vcd")):
+            shutil.copy(vcd, keep)
+        print(f"  traces in {keep}")
+        print(out[-4000:])
+    shutil.rmtree(d, ignore_errors=True)
+    return 0 if verdict == "pass" else 1
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--depth", type=int, default=20)
@@ -425,12 +487,18 @@ def main():
     ap.add_argument("--no-mutants", action="store_true")
     ap.add_argument("--no-cover", action="store_true")
     ap.add_argument("--only-mutant", type=int, help="run just mutant N (0-based)")
+    ap.add_argument("--block", help="prove only this property block of the controller "
+                    "(e.g. F17) for all time, by k-induction to --depth, and stop")
+    ap.add_argument("--solver", default="yices", help="SMT solver for --block")
     a = ap.parse_args()
     tools = {"engine": a.engine, "yosys": a.yosys.split(), "sby": a.sby.split(),
              "aigsmt": a.aigsmt, "timeout": a.prove_timeout,
              "targets": [a.top] if a.top else DEFAULT_TARGETS}
     mutants = NI_MUTANTS if a.top == "ni" else MUTANTS
     status = 0
+
+    if a.block:
+        return prove_block(tools, a.block, a.depth, a.solver)
 
     if a.only_mutant is not None:
         m = mutants[a.only_mutant]
