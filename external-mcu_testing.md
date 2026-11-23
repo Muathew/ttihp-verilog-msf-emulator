@@ -357,13 +357,24 @@ are not 10 and 12 Mbit/s: the chip's speed comes from the sign-off STA, not from
 this test. The edge spread, up to 31 ns at 12 MHz, scales to 7.5 ns at 50 MHz;
 `test_eth10_rx` covers 10 ns at 50 MHz in simulation.
 
+**At 48 MHz** (a bitstream built with `--mhz 48`, the peer assembled with
+`CLK_SHIFT = 2`): every time constant of the peer is scaled by 4, so a pass takes the
+same microseconds and the MCU's code is unchanged. The frames and packets stay at 2.4
+and 3 Mbit/s, which is 20 and 16 core cycles a bit: 5 cycles a bit of 48 MHz would put
+the SPI's 62.5 ns edge grid beyond what any receiver takes. T comes back in 12 MHz
+cycles, so the MCU's check of T and its arithmetic hold, and its log still says
+"against the FPGA's 12 MHz". What the 48 MHz run adds is the core running free at
+48 MHz against a real MCU. `test_mcu_v3_pass_48mhz` runs that image on the RTL.
+The steps for both clocks are in [docs/board-run-v4.md](docs/board-run-v4.md).
+
 ### Running it
 
 1. Program the v3 bitstream: `fpga/rtl` from branch `v3`, built as before
    (`fpga/vivado/build.tcl`). The board wrapper and block design are unchanged.
 2. On the Vitis machine: `vitis -s fpga/ps/mcu_v3/build_vitis.py`, then launch
    `mcu_v3.elf` with PuTTY logging on the Zynq console. It prints `Loading the v3
-   board peer (274 words)`.
+   board peer (278 words, for a 12 MHz core clock)` (274 words before 23 Nov). For a
+   48 MHz bitstream, `set MSF_CORE_MHZ=48` first.
 3. In CCS, rebuild `mcu_ext/protocol_tests` and flash it. The project has two new
    files, `v3_lines.c` and `v3_test.c`, so let CCS rebuild its makefiles. Log the
    XDS110 Application/User UART at 115200 8N1, as before.

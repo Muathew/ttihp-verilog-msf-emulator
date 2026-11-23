@@ -36,6 +36,13 @@ jobs:
         shell: bash
         run: pip install -r test/requirements.txt
 
+      # The A53 apps: they compile against the Vitis stubs, and the v3 board test's
+      # monitor prints the right summary for a pass, for the 12 and 48 MHz images
+      - name: PS apps
+        run: |
+          sh fpga/tests/run_ps_loader_compile_test.sh
+          python3 fpga/tests/run_mcu_monitor_test.py
+
       - name: Run tests
         run: |
           cd test

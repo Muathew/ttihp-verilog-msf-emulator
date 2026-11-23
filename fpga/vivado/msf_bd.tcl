@@ -509,6 +509,18 @@ Port;FD4A0000;FD4AFFFF;1|FPD;DPDMA;FD4C0000;FD4CFFFF;1|FPD;DDR_XMPU5_CFG;FD05000
     CONFIG.PSU__USE__M_AXI_GP2 {0} \
   ] $zynq_ultra_ps_e_0
 
+  # The core clock, pl_clk0: build.tcl sets ::msf_core_mhz (--mhz, 12 if not given).
+  # 12 MHz is the IOPLL (1500 MHz) / 125, as set above. Any other clock comes from the
+  # DPLL (1200 MHz: DDR's 600 and TOPSW's 400 above), which gives 48 MHz exactly
+  # (/ 25), as USB full speed needs; the IOPLL can only give 48.39 (/ 31) or 46.88
+  # (/ 32). build.tcl reads back the clock Vivado constrains and stops on a mismatch.
+  if {[info exists ::msf_core_mhz] && $::msf_core_mhz != 12} {
+    set_property -dict [list \
+      CONFIG.PSU__CRL_APB__PL0_REF_CTRL__SRCSEL {DPLL} \
+      CONFIG.PSU__CRL_APB__PL0_REF_CTRL__FREQMHZ $::msf_core_mhz \
+    ] $zynq_ultra_ps_e_0
+  }
+
 
   # Create instance: aup_zu3_io_0, and set properties
   set block_name aup_zu3_io

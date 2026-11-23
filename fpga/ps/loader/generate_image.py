@@ -15,17 +15,28 @@ def main():
         help="word address to load the firmware at (default: 128)",
     )
     parser.add_argument(
+        "-D", dest="defines", action="append", default=[], metavar="NAME=VALUE",
+        help="override the source's .equ NAME (repeatable), e.g. -D CLK_SHIFT=2",
+    )
+    parser.add_argument(
         "--output", type=Path,
         default=Path(__file__).parent / "src" / "firmware_image.h",
         help="generated C header path",
     )
     args = parser.parse_args()
 
+    defines = {}
+    for d in args.defines:
+        name, sep, value = d.partition("=")
+        if not sep or not name.isidentifier():
+            parser.error(f"-D {d}: expected NAME=VALUE")
+        defines[name] = int(value, 0)
+
     repo_root = Path(__file__).resolve().parents[3]
     sys.path.insert(0, str(repo_root / "test"))
     from assembler import assemble_file
 
-    words = assemble_file(str(args.source), base_addr=args.address)
+    words = assemble_file(str(args.source), base_addr=args.address, defines=defines)
     if args.address < 0 or args.address + len(words) > 1024:
         parser.error("firmware image must fit within the 1024-word address space")
     if len(words) > 384:
@@ -39,7 +50,8 @@ def main():
         "#include <stdint.h>\n\n"
         f"#define FIRMWARE_LOAD_ADDRESS {args.address}U\n"
         f"#define FIRMWARE_WORD_COUNT {len(words)}U\n"
-        "static const uint16_t firmware_words[FIRMWARE_WORD_COUNT] = {\n"
+        + "".join(f"#define FIRMWARE_DEF_{k} {v}\n" for k, v in sorted(defines.items()))
+        + "static const uint16_t firmware_words[FIRMWARE_WORD_COUNT] = {\n"
         + ",\n".join(entries)
         + "\n};\n\n"
         "#endif\n"

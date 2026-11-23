@@ -49,12 +49,13 @@ class Trace:
         self.events((PINS, pins), (ACT, moved), (SENT, sent))
 
 
-def build(out_dir, app="mcu_test", firmware="mcu_protocol_target.s"):
-    out_dir = out_dir / app
+def build(out_dir, app="mcu_test", firmware="mcu_protocol_target.s", defines=()):
+    out_dir = out_dir / (app + "".join(f"_{d}" for d in defines).replace("=", ""))
     out_dir.mkdir(exist_ok=True)
     image = out_dir / "firmware_image.h"
     subprocess.run([sys.executable, str(PS / "loader" / "generate_image.py"),
-                    str(REPO / "firmware" / firmware), "--output", str(image)],
+                    str(REPO / "firmware" / firmware), "--output", str(image)]
+                   + [a for d in defines for a in ("-D", d)],
                    check=True, stdout=subprocess.DEVNULL)
     exe = out_dir / "mcu_monitor"
     subprocess.run(["gcc", "-std=c99", "-O1", "-Wall", "-Wextra", "-Werror", "-DMSF_HOST",
@@ -196,6 +197,7 @@ def main():
         for byte in v3_pass_bytes():
             t.event(1, byte)
         check("v3: a pass's summary, data bytes kept apart from prompts", run(v3, t.reads),
+              "for a 12 MHz core clock",
               "v3 pass 1", "cal  T=12288 cycles: MCU clock 32000 kHz",
               "eth  0: status 81, 64 bytes", "eth  1: status 81, 339 bytes",
               "eth  3: status 81, 1518 bytes", "eth  4: status 82, 109 bytes",
@@ -205,6 +207,13 @@ def main():
               "guard D: the guard names T1, T0 late: UIO7 stays, LATE_RD 8021",
               "passes 1 | framing 0 | other events 0 | stray bytes 0",
               absent=("eth  5", "usb  4"))
+
+        # the 48 MHz bitstream's image: the peer still sends T in 12 MHz cycles
+        v3 = build(Path(tmp), "mcu_v3", "mcu_v3_peer.s", defines=("CLK_SHIFT=2",))
+        check("v3 at 48 MHz: the clock named, T in 12 MHz cycles", run(v3, t.reads),
+              "for a 48 MHz core clock", "v3 pass 1",
+              "cal  T=12288 cycles of 12 MHz: MCU clock 32000 kHz",
+              "passes 1 | framing 0 | other events 0 | stray bytes 0")
     print("PASS: MCU monitor")
     return 0
 

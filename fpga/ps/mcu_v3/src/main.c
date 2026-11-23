@@ -23,6 +23,13 @@
 #define MAX_ETH      8
 #define MAX_USB      8
 
+/* The core clock the image was assembled for: 12 MHz << CLK_SHIFT (build_vitis.py
+ * with MSF_CORE_MHZ=48 gives CLK_SHIFT 2). The peer sends T in 12 MHz cycles either way. */
+#ifndef FIRMWARE_DEF_CLK_SHIFT
+#define FIRMWARE_DEF_CLK_SHIFT 0
+#endif
+#define CORE_MHZ     (12 << FIRMWARE_DEF_CLK_SHIFT)
+
 static uint8_t raw, stable;
 static int have_first, seen_event;
 static uint8_t first_group;
@@ -50,8 +57,9 @@ static void print_pass(void)
 
     msf_printf("FPGA ---- v3 pass %d: what the FPGA sent the MCU ----\r\n", (int)++passes);
     if (cal_seen && cal_t != 0U)
-        msf_printf("FPGA cal  T=%d cycles: MCU clock %d kHz\r\n", (int)cal_t,
-                   (int)((24000U * 16384U + cal_t / 2U) / cal_t));
+        msf_printf(FIRMWARE_DEF_CLK_SHIFT ? "FPGA cal  T=%d cycles of 12 MHz: MCU clock %d kHz\r\n"
+                                          : "FPGA cal  T=%d cycles: MCU clock %d kHz\r\n",
+                   (int)cal_t, (int)((24000U * 16384U + cal_t / 2U) / cal_t));
     else if (cal_seen)
         msf_printf("FPGA cal  T=0: the calibration pattern did not all arrive\r\n");
     for (i = 0; i < n_eth; ++i)
@@ -182,8 +190,8 @@ static int load_peer(void)
         msf_printf("Core reset/status did not initialize (%d).\r\n", rc);
         return 1;
     }
-    msf_printf("Loading the v3 board peer (%d words), app built %s %s.\r\n",
-               (int)FIRMWARE_WORD_COUNT, __DATE__, __TIME__);
+    msf_printf("Loading the v3 board peer (%d words, for a %d MHz core clock), app built %s %s.\r\n",
+               (int)FIRMWARE_WORD_COUNT, CORE_MHZ, __DATE__, __TIME__);
     rc = msf_boot_write(FIRMWARE_LOAD_ADDRESS, firmware_words, FIRMWARE_WORD_COUNT);
     if (rc != MSF_OK) {
         msf_printf(rc == MSF_ERR_NAK ? "Firmware write frame was rejected.\r\n"
