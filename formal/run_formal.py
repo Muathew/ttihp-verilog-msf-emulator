@@ -444,22 +444,31 @@ def prove_block(tools, name, depth, solver, fname="tt_um_msf_ctrl.v", mutant=Non
     the only ones left, and SymbiYosys proves them together by k-induction (smtbmc),
     so each may lean on the others. A block can carry helper assertions that make it
     inductive; they are proved with it. The base case is a BMC to the same depth.
-    Verdict: "pass" (proved), "fail" (a counterexample from reset), "unknown" (the
-    induction step failed: not proved) or "error" (the tool did not decide)."""
+    With a mutant it is a BMC from reset to `depth` instead, in the same flow with the
+    same assertions: the planted bug must give a counterexample.
+    Verdict: "pass" (proved, or no counterexample), "fail" (a counterexample from
+    reset), "unknown" (the induction step failed: not proved) or "error" (no verdict).
+    The engine's own lines decide when SymbiYosys ends in ERROR only because writing
+    the trace afterwards crashed (smtbmc's witness file, seen on 23 Nov)."""
     first, last = block_lines(fname, name)
     top, files = TARGETS["ctrl"]
     d = prepare(mutant)
-    cfg = sby_config(top, files, depth, "prove", f"smtbmc {solver}", vfiles(d), aigsmt=None,
-                     timeout=tools.get("timeout"), extra=keep_block(fname, first, last))
+    cfg = sby_config(top, files, depth, "bmc" if mutant else "prove", f"smtbmc {solver}",
+                     vfiles(d), aigsmt=None, timeout=tools.get("timeout"),
+                     extra=keep_block(fname, first, last))
     verdict, out = run_sby(tools["sby"], d, cfg)
-    if verdict == "error" and "DONE (UNKNOWN" in out:
-        verdict = "unknown"
+    if verdict == "error":
+        if "DONE (UNKNOWN" in out or "Temporal induction failed!" in out:
+            verdict = "unknown"
+        if "BMC failed!" in out:
+            verdict = "fail"
     failed = sorted(set(re.findall(r"Assert failed in \S+: (\S+)", out)))
     if mutant:
+        steps = re.findall(r"Checking assertions in step ([0-9]+)", out)
         if verdict == "error":
             print("\n".join(out.splitlines()[-30:]))
         shutil.rmtree(d, ignore_errors=True)
-        return verdict, failed
+        return verdict, failed + ([f"step {steps[-1]}"] if steps and verdict == "fail" else [])
     kept = glob.glob(os.path.join(d, "run", "**", "kept_asserts.txt"), recursive=True)
     names = [s for s in open(kept[0]).read().split() if "$assert" in s] if kept else []
     where = sorted({int(m) for m in re.findall(rf"{re.escape(fname)}:([0-9]+)", " ".join(names))})
@@ -501,6 +510,8 @@ def main():
     ap.add_argument("--block", help="prove only this property block of the controller "
                     "(e.g. F17) for all time, by k-induction to --depth, and stop")
     ap.add_argument("--solver", default="yices", help="SMT solver for --block")
+    ap.add_argument("--mutant-depth", type=int, default=8,
+                    help="BMC depth for the block's planted bugs (F17's are found by step 6)")
     a = ap.parse_args()
     tools = {"engine": a.engine, "yosys": a.yosys.split(), "sby": a.sby.split(),
              "aigsmt": a.aigsmt, "timeout": a.prove_timeout,
@@ -511,19 +522,21 @@ def main():
     if a.block:
         verdict, _ = prove_block(tools, a.block, a.depth, a.solver)
         status = 0 if verdict == "pass" else 1
-        # the block's own planted bugs (MUTANTS named "F17: ..."): the same proof must not
-        # pass on any of them; a tool that stops without a verdict does not count
+        # the block's own planted bugs (MUTANTS named "F17: ..."): in the same flow, with
+        # only the block's assertions kept, a BMC from reset must find each one. That
+        # shows the proof above keeps the assertions that catch them, and that its
+        # assumptions leave real runs to check. A failed induction would not show it.
         own = [m for m in MUTANTS if m[0].startswith(a.block + ":")]
         if own and not a.no_mutants:
-            print(f"== {a.block}'s planted bugs: the same proof must not pass ==")
+            print(f"== {a.block}'s planted bugs: a counterexample from reset, in the same "
+                  f"flow (BMC to depth {a.mutant_depth}) ==")
             for m in own:
-                v, failed = prove_block(tools, a.block, a.depth, a.solver, mutant=m)
-                caught = v in ("fail", "unknown")
-                how = {"fail": "counterexample from reset", "unknown": "induction step fails",
-                       "pass": "PROVED", "error": "tool error"}[v]
-                print(f"  {m[0]:46s} {'caught' if caught else 'NOT CAUGHT'} ({how}"
-                      + (f": {failed[0]}" if failed else "") + ")", flush=True)
-                if not caught:
+                v, failed = prove_block(tools, a.block, a.mutant_depth, a.solver, mutant=m)
+                how = {"fail": "counterexample", "unknown": "?", "pass": "no counterexample",
+                       "error": "tool error"}[v]
+                print(f"  {m[0]:46s} {'caught' if v == 'fail' else 'NOT CAUGHT'} ({how}"
+                      + (f": {', '.join(failed)}" if failed else "") + ")", flush=True)
+                if v != "fail":
                     status = 1
         return status
 
