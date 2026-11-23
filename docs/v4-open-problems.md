@@ -59,7 +59,11 @@ are not errors: they are claims this machine cannot test.
   18 Nov** (CI 44363125574, `--prove --prove-timeout 3600 --top ctrl --no-mutants`): 68 of
   86 assertions proved for all time; F17's timed pins (12), F3's timeouts (5) and F8 (1) are
   open, with no counterexample, when the hour runs out (the job is then marked failed). They
-  need helper invariants. Still not run anywhere on v4: the unmutated `ni` target (F16,
+  need helper invariants. **23 Nov: F17 is proved for all time**, on every push:
+  `run_formal.py --block F17` keeps only F17's block, six helper invariants per thread
+  included, and proves its 41 assertions by k-induction to depth 4 in under a minute; a BMC
+  in the same flow finds each of its three planted bugs (`verification.md` §3). Open: F3's
+  timeouts (5) and F8 (1). Still not run anywhere on v4: the unmutated `ni` target (F16,
   `formal/run_formal.py --engine abc --depth 16 --top ni`, hours).
 * **The full cocotb suite (319) and the pure-Python tests** after the 12 Nov edits: not run
   locally. What ran: the modules each edit touches (`test_nes_pad`, `test_mcu_v3_peer`, the
