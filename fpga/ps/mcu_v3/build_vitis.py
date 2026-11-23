@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""Create or rebuild the v3 board-test Vitis application (fpga/ps/mcu_v3)."""
+"""Create or rebuild the v3 board-test Vitis application (fpga/ps/mcu_v3).
 
+The peer is assembled for the bitstream's core clock: 12 MHz unless the environment
+says MSF_CORE_MHZ=48 (`set MSF_CORE_MHZ=48` in the Vitis command prompt), for a
+bitstream built with `build.tcl -tclargs --mhz 48`. The app prints the clock it was
+built for when it loads the peer."""
+
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -27,11 +33,16 @@ PLATFORM = (
 APP_DIR = WORKSPACE / APP_NAME
 APP_SRC = APP_DIR / "src"
 IMAGE_HEADER = ROOT / "fpga" / "build" / "mcu_v3" / "firmware_image.h"
+CLK_SHIFT = {12: 0, 48: 2}      # firmware/mcu_v3_peer.s: the core at 12 MHz << CLK_SHIFT
 
 
 def main():
     if not PLATFORM.is_file():
         raise FileNotFoundError(f"Vitis platform not found: {PLATFORM}")
+    mhz = int(os.environ.get("MSF_CORE_MHZ", "12"))
+    if mhz not in CLK_SHIFT:
+        raise ValueError(f"MSF_CORE_MHZ={mhz}: the peer is built for 12 or 48 MHz")
+    print(f"Building the v3 board peer for a {mhz} MHz core clock")
 
     subprocess.run(
         [
@@ -40,7 +51,8 @@ def main():
             str(ROOT / "firmware" / "mcu_v3_peer.s"),
             "--output",
             str(IMAGE_HEADER),
-        ],
+        ]
+        + (["-D", f"CLK_SHIFT={CLK_SHIFT[mhz]}"] if CLK_SHIFT[mhz] else []),
         check=True,
     )
 

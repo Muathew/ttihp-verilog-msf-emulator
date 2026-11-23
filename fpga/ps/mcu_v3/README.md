@@ -18,9 +18,17 @@ repository root:
 vitis -s fpga/ps/mcu_v3/build_vitis.py
 ```
 
-The ELF is `fpga/build/vitis/workspace_mcu_v3/mcu_v3/build/mcu_v3.elf`. It needs the
-v3 bitstream (`fpga/rtl` as of branch `v3`). The firmware is loaded at run time
-(274 of the loader's 384 words), so the peer can change without a new bitstream.
+The ELF is `fpga/build/vitis/workspace_mcu_v3/mcu_v3/build/mcu_v3.elf`. It needs a
+v3 or later bitstream. The firmware is loaded at run time (278 of the loader's 384
+words), so the peer can change without a new bitstream.
+
+For a bitstream built with `build.tcl -tclargs --mhz 48`, run `set MSF_CORE_MHZ=48`
+in the prompt first: the script then assembles the peer with `CLK_SHIFT = 2`, and the
+app's first line says `for a 48 MHz core clock`. An app built for the other clock
+fails at once: the UART runs at a quarter or four times 115200. Make the platform
+again after every new XSA (`vitis -s fpga/ps/build_platform.py`), then delete
+`fpga/build/vitis/workspace_mcu_v3` before this script, so the app is made against it.
+The steps for a whole run are in [docs/board-run-v4.md](../../../docs/board-run-v4.md).
 
 The wiring is the v2 test's, unchanged. The test uses five of the eight wires:
 

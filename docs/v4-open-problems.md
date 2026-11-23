@@ -149,6 +149,13 @@ are not errors: they are claims this machine cannot test.
   runner now leaves out wire delays to diodes, which have no logic.
 * A board run above 12 MHz (Muath); the repository is public (18 Nov); CI GDS runs need
   Sam's go-ahead (plan section 7.3); the bench session and video (section 11).
+  **23 Nov:** a 48 MHz build is ready to run, not yet built or run: `build.tcl --mhz 48`
+  (`pl_clk0` from the DPLL, exactly 48 MHz), the v3 peer assembled with `CLK_SHIFT = 2`
+  (`test_mcu_v3_pass_48mhz` runs that image on the RTL), and the steps for both clocks
+  in [board-run-v4.md](board-run-v4.md), with `fpga/ps/build_platform.py` for the
+  platform step that went wrong on 14 Nov. Not checked here: whether Vivado accepts the
+  DPLL as `pl_clk0`'s source, and the platform script, which has not run on a Vitis
+  install.
 * `firmware/spi_flash.s` moved its store to SRAM 1536-2047 (`v4-bugs.md` F1). Two things use
   it. The gate-level `test/test_gl_firmware.py::test_gl_spi_flash` (it now preloads at
   `FLASH` from `test_targets.py`) **passed on 15 Nov** on the 8x4 netlist. Not run here: the FPGA's C test

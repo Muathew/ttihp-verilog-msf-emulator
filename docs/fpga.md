@@ -18,7 +18,9 @@ PS software (loader, protocol tests, EMIO bit map, how to build in Vitis):
 | PMOD JA `[7:0]` | `uio[7:0]` | protocol pins (3.3 V), high-Z while the PS owns the pins |
 | PS EMIO GPIO bank 3 (32 bits) | everything above | loading, single-step, pin read-back |
 
-The core clock is `pl_clk0` at 12 MHz (the boot ROM's 115200 baud timing).
+The core clock is `pl_clk0` at 12 MHz (the boot ROM's 115200 baud timing),
+or 48 MHz in a build with `--mhz 48` (below; the board test's firmware has a
+48 MHz build, [board-run-v4.md](board-run-v4.md) part B).
 It reaches the core through a `BUFGCE`, so the PS can also step it one
 cycle at a time. The core is held in reset until the PS releases it.
 
@@ -65,10 +67,19 @@ It makes a fresh project in `fpga/build/vivado` (or the directory given
 after `-tclargs`), adds `fpga/rtl/sources.f` and the XDC, sources
 `msf_bd.tcl`, synthesises the block design in one run (no out-of-context
 IP runs), and writes `msf_aup_zu3.xsa` with the bitstream, plus
-`utilization.rpt`, `timing.rpt` and `build_info.txt` (commit, WNS, cell
+`utilization.rpt`, `timing.rpt` and `build_info.txt` (commit, core clock, WNS, cell
 counts: the figures §2.1 of the plan asks for). After synthesis it stops if
 an IHP cell or a black box is left or the SRAM is not in block RAM, and at
-the end if timing is not met. Expected size: about 3,400 LUTs, 1,700
+the end if timing is not met.
+
+`-tclargs --mhz 48` builds for a 48 MHz core clock instead, in
+`fpga/build/vivado_48mhz`: `pl_clk0` then comes from the PS's DPLL (1200 MHz)
+÷ 25, exactly 48 MHz, because the IOPLL that makes the 12 MHz (1500 MHz ÷ 125)
+can only give 48.39 or 46.88. The script reads back the clock Vivado constrains
+and stops if it is not the one asked for. Not yet built: the first 48 MHz build is
+part B of [board-run-v4.md](board-run-v4.md). After any new XSA, make the Vitis
+platform again (`vitis -s fpga/ps/build_platform.py`): the apps' scripts reuse the
+platform, and the bitstream Vitis programs is the one inside it. Expected size: about 3,400 LUTs, 1,700
 flip-flops and one RAMB18 for the core (Yosys `synth_xilinx` estimate), a
 few per cent of the XCZU3EG.
 
@@ -194,12 +205,11 @@ What these figures do and do not show:
 
 * `fpga/rtl/tt_um_msf_bootrom_data.v` is unused (the ROM is pasted into
   `tt_um_msf_bootrom.v`).
-* The pasted ROM is one fix behind `src/`: words 79 and 80 are still in the
-  order from before 24 Oct, so on the FPGA the loader stops its TX engine before
-  releasing `uio[0]`, which drives the pin low for one cycle at handover. The PS
-  owns the pins during its boots, so JA is high-Z and nothing outside sees it.
-  It is left as it is to match the bitstream behind the board results;
-  `tools/check_fpga_sync.py` skips this file. Paste the new words before any
-  new bitstream.
+* The pasted ROM's 128 words are the same as `src/tt_um_msf_bootrom_data.v`'s
+  (compared on 23 Nov; the note that stood here, that words 79 and 80 were a fix
+  behind, is out of date). The module around them still reads through a
+  registered output, where `src/` registers the address (784a270, for 50 MHz);
+  the two were proved to give the same word every cycle. `tools/check_fpga_sync.py`
+  skips this file, so compare the words again after any change to the boot loader.
 * The XDC header refers to `fpga/board/constraints/zu3.xdc`, which isn't in
   the repository; check the pins against the board schematic.

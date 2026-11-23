@@ -7,7 +7,8 @@ is not ours (here 1.3 % fast, then 1.7 % slow: the LaunchPad runs on its interna
 oscillator), and does what v3_test.c does with the answers: it decodes the FPGA's
 UART (uio[1], 115200), checks each verdict, and reads the guarded pin as the MCU
 does, with a pull-up and then a pull-down. The core runs at 12 MHz, as on the
-FPGA. The order of the calls into v3_lines.c is v3_test.c's, so the frames, packets
+FPGA, and in one more pass with the 48 MHz bitstream's image (CLK_SHIFT = 2) at
+four times as many cycles a microsecond. The order of the calls into v3_lines.c is v3_test.c's, so the frames, packets
 and phases are the ones the board will see.
 
 What it cannot show: how the MCU's SPI really spaces its words (v3_test.c times
@@ -19,14 +20,15 @@ import random
 import subprocess
 
 import cocotb
-from cocotb.triggers import ClockCycles, ReadOnly, RisingEdge
+from cocotb.triggers import ClockCycles, ReadOnly, Timer
 
 from fw_tb import fw_boot
+from msf_tb import CLK_NS
+from pins import now
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "..", "mcu_ext", "protocol_tests")
-CORE_HZ = 12_000_000
-UART_BIT = 104
+UART_BIT = 104                         # at 12 MHz; x CLK_X at 12 MHz x CLK_X
 TXP, LINEP, SCLP, POCIP = 1, 6, 2, 7
 
 ETH = [(64, 0, 0), (64, 100, 0), (64, -100, 0), (1518, -100, 0), (64, 0, 1)]   # v3_test.c
@@ -67,26 +69,22 @@ MAX_WORDS = 5800
 
 
 class Mcu:
-    """v3_test.c's side: its SPI on MOSI, its UART receive, its pins."""
+    """v3_test.c's side: its SPI on MOSI, its UART receive, its pins. clk_shift: the
+    core at 12 MHz << clk_shift, so x core cycles stand for what one did at 12 MHz."""
 
-    def __init__(self, dut, clock_error, seed):
+    def __init__(self, dut, clock_error, seed, clk_shift=0):
         self.dut = dut
-        self.q = 0.75 / (1 + clock_error)     # core cycles a SPI bit (2 MCU cycles)
+        self.x = 1 << clk_shift
+        self.q = 0.75 * self.x / (1 + clock_error)   # core cycles a SPI bit (2 MCU cycles)
+        self.uart_bit = UART_BIT * self.x
         self.rx = []
         self.events = []                       # what the A53 would decode from uo_out
         self.rnd = random.Random(seed)
         self.rng = ctypes.c_uint32(0x4D534633)
         self.words = (ctypes.c_uint16 * MAX_WORDS)()
         self.line = 0
-        self.cycle = 0
         cocotb.start_soon(self._uart())
         cocotb.start_soon(self._uo())
-        cocotb.start_soon(self._count())
-
-    async def _count(self):
-        while True:
-            await RisingEdge(self.dut.clk)
-            self.cycle += 1
 
     def _tx(self):
         d = self.dut
@@ -99,16 +97,16 @@ class Mcu:
             await ReadOnly()
             if self._tx():
                 continue
-            await ClockCycles(self.dut.clk, UART_BIT // 2)
+            await ClockCycles(self.dut.clk, self.uart_bit // 2)
             await ReadOnly()
             if self._tx():
                 continue                       # not a start bit
             b = 0
             for i in range(8):
-                await ClockCycles(self.dut.clk, UART_BIT)
+                await ClockCycles(self.dut.clk, self.uart_bit)
                 await ReadOnly()
                 b |= self._tx() << i
-            await ClockCycles(self.dut.clk, UART_BIT)
+            await ClockCycles(self.dut.clk, self.uart_bit)
             await ReadOnly()
             assert self._tx() == 1, "UART framing error"
             self.rx.append(b)
@@ -133,10 +131,11 @@ class Mcu:
                 first = None
 
     async def get(self, timeout):
-        t0 = self.cycle
+        """The next byte from the FPGA, within timeout cycles of 12 MHz."""
+        t0 = now()
         while not self.rx:
-            assert self.cycle - t0 < timeout, "no byte from the FPGA"
-            await ClockCycles(self.dut.clk, 50)
+            assert now() - t0 < timeout * self.x, "no byte from the FPGA"
+            await Timer(50 * CLK_NS, unit="ns")    # not ClockCycles: one wake-up, not 50
         return self.rx.pop(0)
 
     async def wait_for(self, want, timeout=400_000 * 12):
@@ -150,7 +149,7 @@ class Mcu:
         bits = []
         for w in words:
             bits += [(w >> (15 - i)) & 1 for i in range(16)]
-        await ClockCycles(self.dut.clk, self.rnd.randrange(300, 900))   # the MCU reacting
+        await ClockCycles(self.dut.clk, self.rnd.randrange(300, 900) * self.x)   # the MCU reacting
         t, c = self.rnd.random(), 0
         while True:
             k = int((c + t) / self.q)
@@ -173,18 +172,18 @@ class Mcu:
         return poci, scl
 
 
-async def one_pass(dut, clock_error, seed):
+async def one_pass(dut, clock_error, seed, clk_shift=0):
     lib = lines()
     # no late_ok: the two deadlines this program misses are marked `@late`, so the watch
     # checks that the RTL misses exactly those, and they count in the RTL cross-check
-    await fw_boot(dut, "mcu_v3_peer.s")
-    mcu = Mcu(dut, clock_error, seed)
+    await fw_boot(dut, "mcu_v3_peer.s", defines={"CLK_SHIFT": clk_shift} if clk_shift else None)
+    mcu = Mcu(dut, clock_error, seed, clk_shift)
     await mcu.wait_for("S")
     n = lib.v3_cal_words(mcu.words)
     await mcu.stream(mcu.words[:n])
     await mcu.wait_for("s")
     t = await mcu.get(20_000) | await mcu.get(20_000) << 8
-    want_t = 512 * 32 * mcu.q
+    want_t = 512 * 32 * mcu.q / mcu.x          # T comes back in 12 MHz cycles
     assert abs(t - want_t) <= 2, f"calibration T {t}, want {want_t:.1f}"
     frame = (ctypes.c_uint8 * 1518)()
     for i, (length, ppm, corrupt) in enumerate(ETH):
@@ -214,7 +213,7 @@ async def one_pass(dut, clock_error, seed):
     for k in "ABCD":
         await mcu.wait_for(k)
         late = None if k == "A" else await mcu.get(20_000) | await mcu.get(20_000) << 8
-        await ClockCycles(dut.clk, 2000)       # the MCU switching its pulls
+        await ClockCycles(dut.clk, 2000 * mcu.x)   # the MCU switching its pulls
         up, scl = mcu.pins(1)
         down, _ = mcu.pins(0)
         assert (up, down, scl) == ((1, 0, 0) if k == "B" else (0, 0, 0)), \
@@ -239,3 +238,12 @@ async def test_mcu_v3_pass_fast_mcu(dut):
 async def test_mcu_v3_pass_slow_mcu(dut):
     """The same with the MCU's clock 1.7 % slow."""
     await one_pass(dut, -0.017, 2)
+
+
+@cocotb.test()
+async def test_mcu_v3_pass_48mhz(dut):
+    """The image for the 48 MHz bitstream (CLK_SHIFT = 2), at four core cycles for
+    each one of 12 MHz, against the same MCU code, its clock 1.7 % slow: the UART
+    still at 115200, the frames and packets at 20 and 16 cycles a bit, T back in
+    12 MHz cycles so that v3_test.c accepts it, and the same verdicts."""
+    await one_pass(dut, -0.017, 3, clk_shift=2)

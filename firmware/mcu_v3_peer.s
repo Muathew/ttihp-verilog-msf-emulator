@@ -1,10 +1,20 @@
 ; v3 board peer for PMOD JA: an LP-MSPM0G3519 (mcu_ext/protocol_tests, v3_test.c)
-; tests what v3 added against the FPGA's core, which runs free at 12 MHz:
+; tests what v3 added against the FPGA's core, which runs free at 12 MHz (or at
+; 48 MHz: CLK_SHIFT below):
 ;   * RX mode 3, the phase-tracking Manchester receiver, at 5 cycles a bit: the
 ;     ratio 10BASE-T has at 50 MHz. Ethernet frames, preamble and SFD, FCS checked.
 ;   * the NRZI receiver with de-stuffing and resync at 4 cycles a bit: the ratio
 ;     USB full speed has at 48 MHz. 36-byte packets, CRC16 checked.
 ;   * the late guard: a late WAIT_CMP takes the guarded pin off the bus.
+; 48 MHz: the core clock is 12 MHz << CLK_SHIFT, 0 for the 12 MHz bitstream and 2
+; for the 48 MHz one (fpga/vivado/build.tcl --mhz 48; fpga/ps/mcu_v3/build_vitis.py
+; with MSF_CORE_MHZ=48 assembles this with CLK_SHIFT = 2). Every constant below that
+; stands for a time is scaled by it, so a pass takes the same microseconds at either
+; clock and the MCU's side is unchanged: the UART stays at 115200, each guard state
+; 20 ms, the line signals 2.4 and 3 Mbit/s. At 48 MHz those are 20 and 16 cycles a
+; bit, not 5 and 4: the MCU's SPI puts edges on a 62.5 ns grid, which at 5 cycles a
+; bit of 48 MHz is more spread than any receiver takes. T goes back in 12 MHz cycles
+; (rounded), so the MCU's arithmetic and its check of T hold at both clocks.
 ; The MCU draws the line signals with its SPI: MOSI at 16 Mbit/s, each line symbol
 ; 3 to 6 SPI bits. To place them on our clock it first needs the ratio of its clock
 ; to ours, so it sends a known pattern and this program times it. fpga/ps/mcu_v3
@@ -20,11 +30,11 @@
 ;                   0x0000 0x0000 ...: CAL_EDGES + 1 transitions 32 SPI bits apart,
 ;                   the first rising
 ;   's' Tl Th       cycles from the first transition to the last (0: not all seen)
-;   'M'             Manchester receiver armed (mode 3, RX_DIV 13107)
+;   'M'             Manchester receiver armed (mode 3, RX_DIV STEP)
 ;   'm' st Ll Lh    st 0x81 FCS right, 0x82 FCS wrong, 0x83 no SFD, 0x84 nothing
 ;                   came; L = bytes after the SFD, the FCS included
 ;                   (M_FRAMES of these)
-;   'U'             NRZI receiver armed (RX_DIV 4, de-stuffing, resync)
+;   'U'             NRZI receiver armed (RX_DIV U_DIV, de-stuffing, resync)
 ;   'u' st n b0 b1  st 0x81 CRC16 right, 0x82 wrong, 0x84 not all U_BYTES came;
 ;                   n bytes; the first two (SYNC, PID)
 ;                   (U_PACKETS of these)
@@ -43,23 +53,28 @@
 .equ HOLDP,      2
 .equ LINEP,      6
 .equ GPIN,       7
-.equ UART_BIT,   104                ; 12 MHz / 115200
+.equ CLK_SHIFT,  0                  ; 0: 12 MHz, 2: 48 MHz
+.equ CLK_X,      1 << CLK_SHIFT     ; core cycles a 12 MHz cycle
+.equ UART_BIT,   104 * CLK_X        ; 12 MHz / 115200 = 104.2
 .equ CAL_EDGES,  512
 .equ M_FRAMES,   5
 .equ U_PACKETS,  4
 .equ U_BYTES,    36                 ; SYNC, PID, 32 data bytes, CRC16
-.equ STEP,       13107              ; RX_DIV for mode 3: 65536 / 5 cycles a bit
-.equ GAP,        200                ; 5 byte times without a byte ends a frame
-.equ EDGE_TMO,   200                ; calibration transitions come every 24 cycles
-.equ U_TMO,      200                ; a packet byte every 32 cycles
-.equ TRIES,      40                 ; x 5.46 ms (TMO 0xFFFF) for the MCU to start
-.equ EMIT_HOLD,  50                 ; a uo_out group stays 150 cycles (12.5 us)
-.equ HOLD_OUT,   80                 ; 80 x 1000 x 3 cycles = 20 ms
+.equ STEP,       (13107 + (CLK_X >> 1)) >> CLK_SHIFT   ; RX_DIV for mode 3: 65536 /
+                                    ; (5 x CLK_X) cycles a bit, rounded: 13107, 3277
+.equ U_DIV,      4 * CLK_X          ; RX_DIV for NRZI: 4 x CLK_X cycles a bit
+.equ GAP,        200 * CLK_X        ; 5 byte times without a byte ends a frame
+.equ EDGE_TMO,   200 * CLK_X        ; calibration transitions come every 24 x CLK_X cycles
+.equ U_TMO,      200 * CLK_X        ; a packet byte every 32 x CLK_X cycles
+.equ TRIES,      40 * CLK_X         ; x 65535 cycles (TMO 0xFFFF): 218 ms for the MCU to start
+.equ EMIT_HOLD,  50 * CLK_X         ; a uo_out group stays 150 x CLK_X cycles (12.5 us)
+.equ HOLD_OUT,   80                 ; 80 x HOLD_IN x 3 cycles = 20 ms
+.equ HOLD_IN,    1000 * CLK_X
 .equ PINS,       (1 << GPIN) | (1 << HOLDP)
 
 start:  PIN_SET  (1 << TXP)
         OE_SET   (1 << TXP)
-        LDR      R1, #UART_BIT
+        LDI      R1, UART_BIT
         TX_DIV   R1
         LDI      R1, (TX_EN | TX_IDLE1 | TX_LSB | (10 - 1) << 8 | TXP)
         TX_CFG   R1
@@ -86,6 +101,9 @@ cal_e:  WAIT_EDGE #LINEP
         JNZ      cal_e
         CNT_R    R5                 ; the last (+3 cycles, as for the first)
         SUBS     R5, R5, R2
+        LDR      R1, #(CLK_X >> 1)  ; in 12 MHz cycles, rounded (at 12 MHz: + 0, >> 0)
+        ADDS     R5, R5, R1
+        SHR      R5, R5, #CLK_SHIFT
         JMP      cal_rep
 cal_bad: LDR     R5, #0
 cal_rep: LDR     R1, #'s'
@@ -161,7 +179,7 @@ m_rep:  LDR      R1, #0
 
 ; ---- NRZI, de-stuffing, resync (as firmware/usb_fs_rx.s, a fixed length) ----
         LDR      R0, #U_PACKETS
-usb:    LDR      R1, #4
+usb:    LDR      R1, #U_DIV
         RX_DIV   R1
         LDI      R1, 0xA001         ; CRC16, reflected
         CRC_POLL R1
@@ -274,7 +292,7 @@ u_rep:  LDR      R1, #0
         CALL     send
         JMP      again
 
-; The first byte of a frame or packet into R3, waiting TRIES x 5.46 ms for the MCU:
+; The first byte of a frame or packet into R3, waiting TRIES x 65535 cycles for the MCU:
 ; Z = 1 if none came. Uses R1, R4.
 first:  LDI      R1, 0xFFFF
         TMO      R1
@@ -287,7 +305,7 @@ first_ok: RET
 
 ; About 20 ms. Uses R2, R3.
 hold:   LDR      R2, #HOLD_OUT
-hold_o: LDI      R3, 1000
+hold_o: LDI      R3, HOLD_IN
 hold_i: DECR     R3
         JNZ      hold_i
         DECR     R2
