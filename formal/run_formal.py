@@ -456,6 +456,8 @@ def prove_block(tools, name, depth, solver, fname="tt_um_msf_ctrl.v", mutant=Non
         verdict = "unknown"
     failed = sorted(set(re.findall(r"Assert failed in \S+: (\S+)", out)))
     if mutant:
+        if verdict == "error":
+            print("\n".join(out.splitlines()[-30:]))
         shutil.rmtree(d, ignore_errors=True)
         return verdict, failed
     kept = glob.glob(os.path.join(d, "run", "**", "kept_asserts.txt"), recursive=True)
