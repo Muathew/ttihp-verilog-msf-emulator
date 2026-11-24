@@ -234,12 +234,18 @@ static uint32_t stream(const uint16_t *w, uint32_t n)
     return (t0 - t1) & 0x00FFFFFFU;
 }
 
-/* A stream with gaps lasts longer than its words: 1 % and a few words of slack. */
+/*
+ * A stream with gaps lasts longer than its words. stream()'s timer also counts the start-up
+ * before the first bit and the drain after the last: on the board that is a fixed 191 to 268
+ * cycles (6 to 8 words), the same on every pass for a given length (17 Nov, 3,040 streams).
+ * 1 % and 4 words allowed 162 for a USB packet and called all 1,216 NOT VALID; 2 % and 16
+ * words clears it, and still catches a stall of 12 words in a USB packet (110 in a long frame).
+ */
 static bool gapless(uint32_t cycles, uint32_t n)
 {
     uint32_t want = n * CYCLES_A_WORD;
 
-    return cycles <= want + want / 100U + 4U * CYCLES_A_WORD;
+    return cycles <= want + want / 50U + 16U * CYCLES_A_WORD;
 }
 
 /* ---- the guard: read POCI with each pull, and SCL ---- */
